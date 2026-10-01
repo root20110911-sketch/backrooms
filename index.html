@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Backrooms：切出</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="crosshair">+</div>
+  <div id="objective"></div>
+  <div id="prompt"></div>
+  <div id="inv-bar"></div>
+  <div id="hp-wrap"><div id="hp-fill"></div></div>
+  <div id="toasts"></div>
+  <div id="debug"></div>
+  <div id="dmg-vignette"></div>
+</div>
+
+<!-- 触控 UI（由 input.js 填充） -->
+<div id="touch-ui"></div>
+
+<!-- 标题 -->
+<div id="screen-title" class="screen">
+  <div class="panel">
+    <h1>BACKROOMS</h1>
+    <div class="subtitle">切 出</div>
+    <div id="seed-line">世界种子：-</div>
+    <div class="seed-row">
+      <input id="seed-input" type="number" placeholder="输入种子（可选）" inputmode="numeric">
+      <button id="btn-reseed" class="ghost">🎲</button>
+    </div>
+    <button id="btn-new" class="big">新游戏</button>
+    <button id="btn-continue" class="big">继续游戏</button>
+    <button id="btn-how" class="ghost">玩法说明</button>
+    <button id="btn-wipe" class="ghost">重置存档</button>
+    <div class="foot">第一人称后室生存 · 建议佩戴耳机 🎧</div>
+  </div>
+</div>
+
+<!-- 玩法说明 -->
+<div id="screen-how" class="screen">
+  <div class="panel">
+    <h2>玩法说明</h2>
+    <div class="how">
+      <p><b>目标：</b>从 Level 0 出发，逐层切出，最终逃离后室。</p>
+      <p><b>桌面：</b>WASD 移动 · 鼠标视角 · E 交互 · F 手电 · Shift 跑 · C 蹲 · Esc 暂停</p>
+      <p><b>平板/手机：</b>左侧摇杆移动 · 右侧拖动视角 · ✋ 交互 · 🏃 跑 · ⬇ 蹲 · 🔦 手电</p>
+      <p><b>生存：</b>留意声音和灯光。奔跑会引来注意，蹲下贴墙更安全。杏仁水和绷带可以回血。</p>
+      <p><b>隐藏支线：</b>Level 1 的天花板上……好像有音乐声？=)</p>
+    </div>
+    <button id="btn-how-back" class="big">返回</button>
+  </div>
+</div>
+
+<!-- 加载 -->
+<div id="screen-loading" class="screen">
+  <div class="panel"><div id="loading-text">正在生成……</div><div class="spin">◌</div></div>
+</div>
+
+<!-- 暂停 -->
+<div id="screen-pause" class="screen">
+  <div class="panel">
+    <h2>已暂停</h2>
+    <button id="btn-resume" class="big">继续</button>
+    <button id="btn-quit-title" class="ghost">保存并回到标题</button>
+    <h3>设置</h3>
+    <label>视角灵敏度 <span id="sens-val"></span><input id="set-sens" type="range" min="0.3" max="2.5" step="0.1"></label>
+    <label>音量 <span id="vol-val"></span><input id="set-vol" type="range" min="0" max="1" step="0.05"></label>
+    <label>摇杆大小 <span id="joysize-val"></span><input id="set-joysize" type="range" min="90" max="170" step="5"></label>
+    <label>摇杆位置 <select id="set-joyside"><option value="left">左侧</option><option value="right">右侧</option></select></label>
+    <label>画质 <select id="set-quality"><option value="auto">自动</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
+  </div>
+</div>
+
+<!-- 笔记 -->
+<div id="screen-note" class="screen">
+  <div class="panel note">
+    <h2 id="note-title">字条</h2>
+    <div id="note-body"></div>
+    <button id="btn-note-close" class="big">收起</button>
+  </div>
+</div>
+
+<!-- 死亡 -->
+<div id="screen-death" class="screen">
+  <div class="panel">
+    <h1 class="red">你死了</h1>
+    <p id="death-cause"></p>
+    <button id="btn-retry" class="big">从检查点重试</button>
+    <button id="btn-death-title" class="ghost">回到标题</button>
+  </div>
+</div>
+
+<!-- 结局 -->
+<div id="screen-ending" class="screen">
+  <div class="panel">
+    <h1 id="ending-title"></h1>
+    <div id="ending-body" class="how"></div>
+    <button id="btn-ending-title" class="big">回到标题</button>
+  </div>
+</div>
+
+<!-- 转场 -->
+<div id="screen-trans"><div id="trans-text"></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>if (typeof THREE === "undefined") { document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><' + '/script>'); }</script>
+<script src="js/config.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/textures.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/gen.js"></script>
+<script src="js/world.js"></script>
+<script src="js/player.js"></script>
+<script src="js/input.js"></script>
+<script src="js/entities.js"></script>
+<script src="js/transitions.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/save.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

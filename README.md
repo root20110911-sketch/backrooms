@@ -1,0 +1,105 @@
+# Backrooms：切出
+
+一款以后室（Backrooms）为题材的**第一人称 3D 浏览器游戏**：探索、生存、切出。
+
+- 五个可玩关卡：Level 0（教学）→ Level 1（宜居地带）→ Level 2（废弃公共带）→ Level 3（发电站）→ 完整结局，外加隐藏支线 Level Fun（享乐层 =)）
+- 随机种子生成地图：同一种子同一关卡完全一致，不同种子房间/走廊/道具/事件位置明显不同
+- 实体 AI：猎犬、潜伏者、派对客，各有不同的感知与行为
+- 切出过场动画、死亡重试、检查点、本地存档继续
+- 桌面（WASD+鼠标）与平板/手机（浮动摇杆+拖动视角）双操作，支持双指同屏
+
+## 运行
+
+纯静态页面，无需构建，直接用任意静态服务器打开：
+
+```bash
+cd backrooms
+python3 -m http.server 8080
+# 浏览器打开 http://localhost:8080/index.html
+```
+
+也可以把整个目录丢到任何静态托管（GitHub Pages / Netlify / Cloudflare Pages 等）直接发布。
+
+### 操作
+
+| 桌面 | 平板/手机 |
+|---|---|
+| WASD 移动，鼠标视角 | 左侧浮动摇杆移动，右侧拖动视角 |
+| E 交互，F 手电 | ✋ 交互，🔦 手电 |
+| Shift 跑，C/ Ctrl 蹲 | 🏃 跑，⬇ 蹲 |
+| Esc 暂停 | 右上角 ⏸ 暂停 |
+
+暂停菜单可调：视角灵敏度、音量、摇杆大小/左右位置、画质，自动保存在本地。
+
+### 世界种子
+
+标题界面显示当前种子；输入框可填入任意数字种子开局。相同种子 → 相同地图。
+
+## 工程结构
+
+```
+index.html            页面与全部 UI 结构
+css/style.css         样式（含触控 HUD、横竖屏适配）
+js/
+  vendor/three.min.js Three.js r128（MIT，随附本地）
+  config.js           全局命名空间、常量、事件总线
+  utils.js            RNG（mulberry32）、种子哈希、数学/几何工具
+  textures.js         程序化 Canvas 纹理（墙纸/地毯/混凝土/砖/派对…）
+  audio.js            WebAudio 合成音效与环境声（无外部音频文件）
+  gen.js              随机地图生成器（房间/走廊/POI/连通性保证）
+  world.js            场景、区块流式加载/卸载、碰撞、门、交互、灯光
+  player.js           第一人称控制器（移动/跑/蹲/血量/手电/噪音）
+  input.js            键鼠 + 触控（浮动摇杆/双指）+ 设置持久化
+  entities.js         实体 AI（猎犬/潜伏者/派对客）+ 程序化模型
+  transitions.js      切出过场（黑屏字幕/镜头动画/看门狗）
+  levels.js           五关主题、道具、事件、目标
+  ui.js               标题/HUD/暂停/笔记/死亡/结局/调试面板
+  save.js             localStorage 存档（种子/关卡/位置/拾取/门/事件）
+  main.js             游戏主流程与主循环
+LORE.md               设定考据：五个层级 + 派对客，原作 vs 游戏改编
+SPEC.md               模块接口与系统规格
+ASSETS.md             素材来源与授权说明
+tools/e2e/            自动化测试（puppeteer + 截图）
+```
+
+### 模块加载顺序
+
+`three.min.js → config → utils → textures → audio → gen → world → player → input → entities → transitions → levels → ui → save → main`
+
+所有模块挂在 `window.BR` 下；`main.js` 在 `DOMContentLoaded` 后初始化。
+
+## 存档
+
+进度保存在浏览器 `localStorage`（`backrooms_save_v1`）：种子、关卡、位置、血量、物品、已开的门/箱子/事件。标题界面提供「继续游戏」。通关后存档清除。
+
+## 性能
+
+- 区块流式加载：只完整构建玩家附近区块，远处卸载并释放资源
+- 点光源池化（按画质 3–7 个），灯光按距离分配
+- 远处实体降频 AI（>48 米跳过，>60 米隐藏）
+- 单帧建块预算 10ms，跨区块移动无明显卡顿
+
+## 测试
+
+```bash
+cd tools/e2e && npm install   # 需本机有 Chromium
+node smoke.js                 # 全流程：开局→L0→L1→FUN→L2/L3→暂停→存档
+```
+
+截图输出在 `tools/e2e/shots/`。另有 `node ../../tools/test-gen.js`（地图生成器单元测试，106 项断言）。
+
+## 设定说明
+
+本作基于后室中文维基（backrooms-wiki-cn.wikidot.com）的 Level 0–3 与 Level Fun、Entity 67（派对客）设定改编。
+其中「Level Fun 可凭两条线索经员工通道离开」为**游戏性改编**（原作 Fun 没有可靠出口），游戏内有明确标注。详见 `LORE.md`。
+
+## 测试报告（2026-10-01）
+
+- `tools/test-gen.js`：106 项通过；40 种子 × 5 关共 200 张地图压力测试，同种子一致、异种子差异、关键点可达。
+- `tools/e2e/smoke.js`：L0→L1（异常墙）、L1→Fun（天花板）、Fun 双线索、L2 门开关、L3 三发电机、猎犬攻击（HP 100→78）、死亡界面、检查点重试、暂停、存档/读档、继续游戏；ERRORS(0)。
+- `tools/e2e/smoke-path.js`：自然路径 L1→L2（出口走廊）、L2→L3（未锁门）、Fun→L1（员工通道）；ERRORS(0)。
+- `tools/e2e/smoke-ending.js`：三发电机 → 电梯 → 完整结局；ERRORS(0)。
+- `tools/e2e/smoke-chunks.js`：区块往返 25 区块恒定（无泄漏）、门状态保持、交互对象无重复、内存 9.5MB 稳定；ERRORS(0)。
+- `tools/e2e/smoke-touch.js`：摇杆满值移动、松手零漂移、视角拖动、双指同动、横竖屏旋转进度保留、84px 交互按钮；ERRORS(0)。
+- 本轮修复：箱子可无限重复开启刷物资（canUse 闭包快照，3 处）、死亡重试被转场遮罩拦截、派对客笑脸埋入头内、L1 过曝、空 toast 黑条、audio._noise 报错、Audio.setPaused 缺失、主菜单缺重置存档（已补）。
+- 未在真机验证：三星平板实际触控手感、真实 HTTPS 部署后重测。
