@@ -156,8 +156,12 @@
 
     // ---------- 环境底噪（关卡切换，内部交叉淡化） ----------
     // setAmbient(level, fadeDur?) level: 'L0'|'L1'|'L2'|'L3'|'FUN'|null
-    setAmbient: function (level, fadeDur) {
-      if (!this._ok) return;
+    // 扩建钩子：新关卡注册环境音
+    // 用法：BR.Audio.registerAmbient('L7', function(){ var rig = this._loopRig(function(R){ ... }); rig.target = 0.4; return rig; });
+    registerAmbient: function (name, builderFn) {
+      (BR.Audio._extAmbient = BR.Audio._extAmbient || {})[name] = builderFn;
+    },
+    setAmbient: function (level, fadeDur) {      if (!this._ok) return;
       fadeDur = (fadeDur == null) ? 2.0 : fadeDur;
       if (level === this._ambientLevel) return;
       if (this._ambientLevel === 'FUN') this.partyStop(); // 离开 FUN 停派对音乐
@@ -184,7 +188,10 @@
 
     _buildAmbient: function (level) {
       var rig;
-      if (level === 'L0') {
+      // 扩建钩子：新关卡注册的环境音优先（registerAmbient 在 setAmbient 附近定义）
+      var ext = BR.Audio._extAmbient && BR.Audio._extAmbient[level];
+      if (ext) { rig = ext.call(this); }
+      else if (level === 'L0') {
         // 荧光灯嗡鸣：50Hz 基频 + 谐波 + 高频嘶嘶
         rig = this._loopRig(function (R) {
           var o1 = R.osc('sine', 50), g1 = R.gain(0.55);
@@ -378,6 +385,13 @@
       if (!this._ok) return;
       this._nz({ f: 2600, ft: 'highpass', dur: 0.16, vol: 0.22 });
       this._nz({ f: 3600, ft: 'highpass', dur: 0.12, vol: 0.15, at: 0.06 });
+    },
+    heal: function () { // 绷带包扎：布料摩擦裹缠
+      if (!this._ok) return;
+      for (var i = 0; i < 2; i++) {
+        this._nz({ f: 900, ft: 'bandpass', q: 1.5, dur: 0.18, vol: 0.16, at: i * 0.22 });
+      }
+      this._tone({ f: 520, f1: 660, type: 'sine', dur: 0.12, vol: 0.14, at: 0.46 });
     },
     valve: function () { // 拧阀门：棘轮声 + 蒸汽
       if (!this._ok) return;

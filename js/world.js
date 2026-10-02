@@ -34,6 +34,7 @@
     elevator: null,
     steamVents: [],             // {id,x,z,points,on,chunkKey}
     lowDucts: new Set(),        // "tx,ty" 需要蹲伏通过
+    STEAM_DPS: 9,               // 蒸汽伤害（每秒）；L2 难度可调
     time: 0,
     playerPos: new THREE.Vector3(),
     stats: { chunks: 0, roomsVisible: 0, entities: 0, drawCalls: 0, tris: 0 }
@@ -50,7 +51,22 @@
     return m.tiles[ty * m.w + tx];
   };
   W.isWall = function (tx, ty) { return this.tile(tx, ty) === 0; };
+  // 地面材质（脚步声用）：先查各关登记的多材质区，再回退关卡主题 surface。
+  // 用法（各关 buildContent 里）：W.addSurfaceZone(x0, z0, x1, z1, 'metal')，
+  // 坐标为世界坐标（米）。surface 取值见 audio.js footstep：carpet/concrete/metal/tile/wood。
+  W.addSurfaceZone = function (x0, z0, x1, z1, surface) {
+    this._surfZones = this._surfZones || [];
+    this._surfZones.push({
+      x0: Math.min(x0, x1), z0: Math.min(z0, z1),
+      x1: Math.max(x0, x1), z1: Math.max(z0, z1), surface
+    });
+  };
   W.surfaceAt = function (x, z) {
+    const zs = this._surfZones || [];
+    for (let i = zs.length - 1; i >= 0; i--) {
+      const s = zs[i];
+      if (x >= s.x0 && x <= s.x1 && z >= s.z0 && z <= s.z1) return s.surface;
+    }
     return (this.theme && this.theme.surface) || 'concrete';
   };
   // 该点黑暗度 0(亮)..1(黑)：最近灯具距离 + 手电 + 断电
@@ -176,6 +192,10 @@
     this.steamVents = []; this.lowDucts.clear();
     this.elevator = null; this.blackout = false;
     this._noWall = null; this._openCeil = null; this._matCache = null;
+    this._surfZones = null;
+    // 闪烁风暴出口提示音（updateStormHint 建的循环声）清理
+    if (this._stormHintOn && BR.Audio && BR.Audio.removeLoop) BR.Audio.removeLoop('storm_exit_hint');
+    this._stormHintOn = false;
     if (this.scene) {
       this.scene.traverse((o) => {
         if (o.isInstancedMesh) o.dispose();
@@ -378,6 +398,7 @@
     this.updateLights(dt, px, pz);
     this.updateSteam(dt);
     this.updateDoors(dt);
+    this.updateStormHint();
     // 实体
     if (BR.Entities && BR.Entities.update) {
       const ctx = this.entityCtx(px, pz);
@@ -562,9 +583,27 @@
   };
 
   /* ---------------- 交互物 ---------------- */
+  // 交互物 kind 注册表：扩建各关卡 builder 在此登记 kind（多退少补）。
+  // addInteractable 不强制校验，但未知 kind 在 DEBUG 下会 BR.warn，方便 builder 自查。
+  W.INTERACT_KINDS = [
+    // 旧关（world.js / levels.js 已用）
+    'door', 'crate', 'pickup', 'note', 'hole', 'generator', 'elevator',
+    'clue', 'anomaly', 'valve',
+    // 扩建新关（各 builder 交付清单，陆续接入）
+    'slide', 'npc_meg', 'npc_wanderer', 'radio', 'odd_window', 'stairwell',
+    'pool_exit', 'tunnel', 'deep_exit', 'anomaly_exit', 'car', 'castle',
+    'subway', 'entry_door', 'berry_bush', 'cache', 'hideout', 'house',
+    'shop', 'balcony', 'room_door', 'lounge', 'staff_room',
+    // builder 实际交付中新增的（lv_l11/lv_l37/lv_l7/lv_l94）
+    'exit', 'inspect', 'shop_sign', 'car_exit', 'castle_exit'
+    // 注：'ocean' / 'deep' 是 BR.Swim 的水 zone kind，不是交互物 kind，不在此登记
+  ];
   // {id,kind,meshes,pos,radius,prompt(),canUse(),use()}
   W.addInteractable = function (o) {
     o.chunkKey = o.chunkKey || chunkOf(Math.floor(o.pos.x / T), Math.floor(o.pos.z / T));
+    if (BR.DEBUG && W.INTERACT_KINDS.indexOf(o.kind) < 0) {
+      BR.warn('addInteractable: 未注册的 kind "' + o.kind + '"（id=' + o.id + '），请在 world.js W.INTERACT_KINDS 登记');
+    }
     this.interactables.push(o);
     for (const mm of (o.meshes || [])) { mm.userData.it = o; this.interactMeshes.push(mm); }
     return o;
@@ -637,7 +676,7 @@
       // 蒸汽伤害：站在蒸汽里掉血
       if (BR.Player && BR.Game.state === 'playing') {
         const dx = BR.Player.pos.x - v.x, dz = BR.Player.pos.z - v.z;
-        if (dx * dx + dz * dz < 4.2) BR.Player.hurt(dt * 9, 'steam');
+        if (dx * dx + dz * dz < 4.2) BR.Player.hurt(dt * this.STEAM_DPS, 'steam');
       }
     }
   };
@@ -659,6 +698,23 @@
     BR.log('blackout', on);
   };
 
+  /* ---------------- 闪烁风暴出口提示（L1 "必须判断"元素） ---------------- */
+  // 闪烁风暴期间，在出口走廊入口放一个方位循环声（荧光灯近场嗡鸣，带距离衰减+声像）：
+  // 闪烁时听声辨位可以判断出口方向，但必须顶着闪烁/理智侵蚀走过去——"必须判断"，不是白给。
+  // _exitCorr 由 L1 buildContent 登记（levels.js）；其他关没有则静默不做。
+  W.updateStormHint = function () {
+    const st = this.flickerStorm;
+    const active = !!(st && st.t > 0);
+    const tgt = (active && this._exitCorr) ? this._exitCorr : null;
+    if (!BR.Audio) return;
+    if (tgt && !this._stormHintOn) {
+      BR.Audio.addLoop('storm_exit_hint', 'hum', tgt.x, tgt.z, 0.85);
+      this._stormHintOn = true;
+    } else if (!tgt && this._stormHintOn) {
+      BR.Audio.removeLoop('storm_exit_hint');
+      this._stormHintOn = false;
+    }
+  };
   /* ---------------- 统计 ---------------- */
   W.getStats = function () {
     return {

@@ -108,7 +108,7 @@
     this.seed = seed;
     this.level = 'L0';
     this.inv = {};
-    this.flags = { clues: 0, gens: 0 };
+    this.flags = { clues: 0, gens: 0, riftCount: 0, berryCount: 0 };
     BR.Save.clearSave();
     BR.Input.ensureImmersive(); // 触屏：尝试全屏 + 锁横屏
     this.loadLevel('L0', { intro: true, drop: true });
@@ -120,6 +120,9 @@
     this.seed = d.seed;
     this.inv = d.inv || {};
     this.flags = d.flags || { clues: 0, gens: 0 };
+    // 可选字段向后兼容：老存档没有 riftCount/berryCount 时 ?? 0
+    this.flags.riftCount = d.riftCount != null ? d.riftCount : 0;
+    this.flags.berryCount = d.berryCount != null ? d.berryCount : 0;
     BR.Input.ensureImmersive();
     this.loadLevel(d.level, { saved: d, drop: true });
   };
@@ -148,6 +151,8 @@
           BR.Player.reset(px, pz, yaw);
           if (opts.saved) {
             BR.Player.hp = opts.saved.hp != null ? opts.saved.hp : 100;
+            BR.Player.sanity = opts.saved.sanity != null ? opts.saved.sanity : 100; // 存档读档恢复理智
+            BR.Player.hunger = opts.saved.hunger != null ? opts.saved.hunger : 100; // 老存档缺 hunger 字段时默认 100
             BR.Player.hasFlashlight = !!opts.saved.hasFlashlight;
           } else {
             // 非 L0：给基础物资（跨关不保留手电之外的消耗品也合理，但保留更友好）
@@ -192,7 +197,7 @@
     this.autosave();
     // 跨关保留：手电、部分物资
     return new Promise((resolve) => {
-      this.loadLevel(level, {});
+      this.loadLevel(level, opts); // 修复吞 opts 的 bug：透传给 loadLevel（如 drop/dropText/saved）
       const iv = setInterval(() => {
         if (this.state === 'playing') { clearInterval(iv); resolve(); }
       }, 200);
@@ -200,15 +205,20 @@
   };
 
   G.snapshot = function () {
+    const ws = BR.World.state || { openedDoors: [], picked: [], openedCrates: [], events: [] };
     return {
       v: 1, t: Date.now(),
       seed: this.seed, level: this.level,
       px: BR.Player.pos.x, pz: BR.Player.pos.z, yaw: BR.Player.yaw,
       hp: Math.round(BR.Player.hp),
+      sanity: Math.round(BR.Player.sanity), // 修复已知坑：读档不再回满
+      hunger: Math.round(BR.Player.hunger != null ? BR.Player.hunger : 100),
       hasFlashlight: BR.Player.hasFlashlight,
       inv: Object.assign({}, this.inv),
       flags: Object.assign({}, this.flags),
-      ws: JSON.parse(JSON.stringify(BR.World.state))
+      ws: JSON.parse(JSON.stringify(ws)),
+      riftCount: this.flags.riftCount != null ? this.flags.riftCount : BR.Save.countEvents(ws.events, 'rift_'),
+      berryCount: this.flags.berryCount != null ? this.flags.berryCount : BR.Save.countEvents(ws.events, 'berry_')
     };
   };
 
@@ -268,6 +278,8 @@
         BR.World.update(dt, BR.Player.pos.x, BR.Player.pos.z);
         const L = BR.Levels[this.level];
         if (L && L.tick) L.tick(dt);
+        // Systems A：随机裂隙（关卡 tick 里不要再调，主循环统一调用，内部按帧去重）
+        if (BR.Rifts) BR.Rifts.tick(dt);
         BR.Audio.updateListener(BR.Player.pos.x, BR.Player.pos.z, BR.Player.yaw);
         // 血条/理智条节流刷新
         this._barT = (this._barT || 0) + dt;

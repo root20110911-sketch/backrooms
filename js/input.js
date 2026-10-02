@@ -23,7 +23,7 @@
     runToggle: false,
     _interact: false,
     _orientDismissed: false,   // 本次游玩手动关闭过横屏提示
-    settings: { sens: 1.0, joySize: 120, joySide: 'left', vol: 0.8, quality: 'auto', headbob: 'on' }
+    settings: { sens: 1.0, joySize: 120, joySide: 'left', vol: 0.8, quality: 'auto', headbob: 'on', dropcam: 'full' }
   };
   BR.Input = I;
 
@@ -33,8 +33,9 @@
     try {
       const s = JSON.parse(localStorage.getItem('br_settings') || '{}');
       Object.assign(this.settings, s);
-      // 向后兼容：老存档没有 headbob 时回填默认值
+      // 向后兼容：老存档没有 headbob / dropcam 时回填默认值
       if (!['on', 'weak', 'off'].includes(this.settings.headbob)) this.settings.headbob = 'on';
+      if (!['full', 'soft', 'off'].includes(this.settings.dropcam)) this.settings.dropcam = 'full';
     } catch (e) {}
   };
   I.saveSettings = function () {

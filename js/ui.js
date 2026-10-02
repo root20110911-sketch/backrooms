@@ -8,13 +8,39 @@
   const ITEM_INFO = {
     almond: { name: '杏仁水', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3c3.2 4.2 6 7.4 6 11a6 6 0 0 1-12 0c0-3.6 2.8-6.8 6-11z"/></svg>' },
     bandage: { name: '绷带', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="8.5" width="17" height="7" rx="3.5"/><path d="M12 10.8v2.4M10.8 12h2.4"/></svg>' },
-    flashlight: { name: '手电筒', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v5H9z"/><path d="M10 7.5 6.5 15a2.4 2.4 0 0 0 2.1 3.5h6.8a2.4 2.4 0 0 0 2.1-3.5L14 7.5"/></svg>' }
+    flashlight: { name: '手电筒', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v5H9z"/><path d="M10 7.5 6.5 15a2.4 2.4 0 0 0 2.1 3.5h6.8a2.4 2.4 0 0 0 2.1-3.5L14 7.5"/></svg>' },
+    // —— 迁跃浆果：稀有消耗品 ——
+    // LORE 注释：Wiki 的 Object 74（"Devil's Berries"）并非随机传送，本游戏将其改编为
+    // "随机传送到未知层级"的消耗品。正式 LORE 说明由 Docs 任务写入 LORE.md。
+    berry: {
+      name: '迁跃浆果',
+      desc: '散发着微光的浆果。吃下去会随机传送到未知层级——目标随机，可能更危险，不是安全回城。',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="15" r="4.3"/><circle cx="15" cy="15" r="4.3"/><path d="M12 10.7C12 7 14.2 4.6 18.5 4"/><path d="M12 10.7c-1.8-1.2-4.3-1.3-6.4 0.2"/></svg>'
+    },
+    // —— 食物：回饥饿的主力补给 ——
+    food: {
+      name: '食物',
+      desc: '压缩干粮。食用恢复饥饿 +40，并少量回血 +5。',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M7 9h10v10a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 19z"/><path d="M7 9c0-2.2 2.2-3.8 5-3.8s5 1.6 5 3.8"/><path d="M10 13.5h4M10 16.5h2.5"/></svg>'
+    }
   };
 
   U.init = function () {
     this.cacheEls();
+    this.ensureHungerBar();
+    this.renderKeyHint();
     this.bindButtons();
     this.renderSettings();
+  };
+  // 饥饿条 DOM（index.html 不许动，这里动态创建；桌面/触屏都显示）
+  U.ensureHungerBar = function () {
+    if (!this.$hud || BR.$('hun-wrap')) return;
+    const w = document.createElement('div');
+    w.id = 'hun-wrap';
+    const f = document.createElement('div');
+    f.id = 'hun-fill';
+    w.appendChild(f);
+    this.$hud.appendChild(w);
   };
   U.cacheEls = function () {
     ['screen-title', 'screen-how', 'screen-loading', 'hud', 'screen-pause',
@@ -76,7 +102,7 @@
   U.updateInv = function () {
     const inv = BR.Game.inv || {};
     let html = '';
-    const keys = ['almond', 'bandage', 'flashlight'];
+    const keys = ['almond', 'bandage', 'flashlight', 'berry', 'food'];
     keys.forEach((id, i) => {
       const n = inv[id] || 0;
       const info = ITEM_INFO[id];
@@ -91,10 +117,10 @@
       el.addEventListener('click', () => this.useItem(el.dataset.id));
       el.addEventListener('touchstart', (e) => { e.stopPropagation(); this.useItem(el.dataset.id); }, { passive: true });
     });
-    // 血条 / 理智条
+    // 血条 / 理智条 / 饥饿条
     this.updateBars();
   };
-  // 轻量血条/理智条刷新（主循环节流调用，updateInv 里复用）
+  // 轻量血条/理智条/饥饿条刷新（主循环节流调用，updateInv 里复用）
   U.updateBars = function () {
     if (!BR.Player) return;
     const hp = BR.Player.hp, san = BR.Player.sanity;
@@ -102,6 +128,9 @@
     if (hf) { hf.style.width = hp + '%'; hf.classList.toggle('low', hp < 30); }
     const sf = BR.$('san-fill');
     if (sf) { sf.style.width = san + '%'; sf.classList.toggle('low', san < 30); }
+    const hun = BR.Player.hunger != null ? BR.Player.hunger : 100;
+    const uf = BR.$('hun-fill');
+    if (uf) { uf.style.width = hun + '%'; uf.classList.toggle('low', hun < 25); }
     BR.$('dmg-vignette').style.opacity = hp < 35 ? (0.65 - hp / 60) : 0;
   };
   // 低理智暗角（player.update 每帧调用）
@@ -109,6 +138,29 @@
     const el = BR.$('sanity-vignette');
     if (!el) return;
     el.style.opacity = sanity < 40 ? (0.55 * (1 - sanity / 40)).toFixed(2) : 0;
+  };
+  // 迁跃浆果目的地：候选池权重与裂隙系统同表（EXPANSION_PLAN §2），排除当前关；
+  // 用 seed + ':berry:' + count 派生 RNG（可复现），count = 此前食用浆果次数。
+  // 未注册的关卡（扩建文件未接入时）自动跳过，保证食用不落空。
+  const BERRY_WEIGHTS = [['L0', 15], ['L1', 15], ['L11', 12], ['L37', 12],
+    ['L188', 10], ['L94', 10], ['L7', 8], ['L2', 8], ['L3', 6], ['FUN', 4]];
+  U.countBerryEvents = function () {
+    // 跨关单调计数：flags.berryCount 在食用后递增、存档保留。
+    // （修 bug：原来按本关 ws.events 计数，跨关后新关 events 为空，count 永远从 0 开始导致落点重复）
+    return (BR.Game && BR.Game.flags && BR.Game.flags.berryCount) || 0;
+  };
+  U.pickBerryDest = function () {
+    const G = BR.Game;
+    const count = this.countBerryEvents();
+    const rng = new BR.RNG(BR.hashSeed((G.seed || 0) + ':berry:' + count));
+    const pool = [];
+    for (const [lv, w] of BERRY_WEIGHTS) {
+      if (lv === G.level) continue;                       // 排除当前关
+      if (BR.Levels && !BR.Levels[lv]) continue;          // 关卡未接入时跳过
+      for (let i = 0; i < w; i++) pool.push(lv);
+    }
+    const dest = pool.length ? pool[rng.int(0, pool.length - 1)] : 'L0';
+    return { dest, count };
   };
   U.useItem = function (id) {
     const G = BR.Game, P = BR.Player;
@@ -123,10 +175,49 @@
     } else if (id === 'bandage') {
       if (P.hp >= 100) { this.toast('生命已满，不需要包扎'); return; }
       inv.bandage--; P.heal(55); BR.Audio.heal(); this.toast('包扎伤口，恢复了生命');
+    } else if (id === 'berry') {
+      // 迁跃浆果：食用即传送。物品说明（ITEM_INFO.berry.desc）已明确告知
+      // "目标随机，可能更危险，不是安全回城"，直接执行。
+      inv.berry--;
+      BR.Audio.drink();
+      const pick = this.pickBerryDest();
+      const evs = BR.World && BR.World.state && BR.World.state.events;
+      if (evs) {
+        evs.push('berry_' + pick.count + ':' + G.level + '>' + pick.dest);
+        BR.bus.emit('event', { id: 'berry_' + pick.count });
+      }
+      // 跨关单调计数（见 countBerryEvents 注释）
+      G.flags.berryCount = (G.flags.berryCount || 0) + 1;
+      this.toast('浆果在你嘴里化开——空间开始扭曲！', 2600);
+      if (BR.Cutout && BR.Cutout.travel) {
+        BR.Cutout.travel(pick.dest, { kind: 'berry' });
+      } else {
+        // Systems A 的 cutout.js 尚未接入时的兜底：直接跨关（抵达演出缺失）
+        G.gotoLevel(pick.dest, { drop: true });
+      }
+    } else if (id === 'food') {
+      // 食物：只回饥饿（+40），少量回血（+5）。满饥饿时拒绝使用。
+      if (P.hunger >= 100) { this.toast('已经吃饱了'); return; }
+      inv.food--; P.eat(40); P.heal(5); BR.Audio.drink();
+      this.toast('吃下食物，恢复了饥饿（+40），少量回血');
     }
     this.updateInv();
   };
 
+  // 桌面端 HUD 角落常驻键位提示；触屏端已有触控按钮，不显示
+  U.renderKeyHint = function () {
+    const el = BR.$('key-hint');
+    if (!el) return;
+    el.innerHTML =
+      '<span><kbd>W A S D</kbd>移动</span>' +
+      '<span><kbd>Shift</kbd>疾跑</span>' +
+      '<span><kbd>C</kbd>蹲伏</span>' +
+      '<span><kbd>E</kbd>交互</span>' +
+      '<span><kbd>F</kbd>手电</span>' +
+      '<span><kbd>1-5</kbd>物品</span>' +
+      '<span><kbd>Esc</kbd>暂停</span>';
+    el.style.display = (BR.Input && BR.Input.isTouch) ? 'none' : 'flex';
+  };
   /* ---------- 笔记 ---------- */
   U.showNote = function (title, body) {
     this._noteReturn = 'hud';
@@ -167,6 +258,8 @@
     this.$set_quality.value = s.quality || 'auto';
     const hb = BR.$('set-headbob');
     if (hb) hb.value = s.headbob || 'on';
+    const dc = BR.$('set-dropcam'); // Systems A：坠落镜头强度
+    if (dc) dc.value = s.dropcam || 'full';
     const fs = BR.$('btn-fullscreen');
     if (fs) fs.textContent = BR.Input.isFullscreen() ? '退出全屏' : '进入全屏';
   };
@@ -246,6 +339,8 @@
     this.$set_quality.onchange = (e) => { S.quality = e.target.value; BR.Input.saveSettings(); BR.UI.toast('画质将在下次进入关卡时生效'); };
     const hb = BR.$('set-headbob');
     if (hb) hb.onchange = (e) => { S.headbob = e.target.value; BR.Input.saveSettings(); };
+    const dc = BR.$('set-dropcam'); // Systems A：坠落镜头强度（唯一允许的 ui.js 新增）
+    if (dc) dc.onchange = (e) => { S.dropcam = e.target.value; BR.Input.saveSettings(); };
     const fsb = BR.$('btn-fullscreen');
     if (fsb) fsb.onclick = () => {
       BR.Input.toggleFullscreen();
@@ -257,6 +352,8 @@
       if (e.code === 'Digit1') this.useItem('almond');
       if (e.code === 'Digit2') this.useItem('bandage');
       if (e.code === 'Digit3') this.useItem('flashlight');
+      if (e.code === 'Digit4') this.useItem('berry');
+      if (e.code === 'Digit5') this.useItem('food');
     });
   };
 })();
