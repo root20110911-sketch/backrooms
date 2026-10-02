@@ -30,6 +30,7 @@
         hp: Math.round(P.hp),
         sanity: Math.round(P.sanity),   // 修复已知坑：以前不存理智，读档回满
         hunger: Math.round(P.hunger != null ? P.hunger : 100),
+        flashBat: Math.round(P.flashBat != null ? P.flashBat : 100), // 手电电池（老存档缺字段默认 100）
         hasFlashlight: P.hasFlashlight,
         inv: G.inv,
         flags: G.flags,

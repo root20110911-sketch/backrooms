@@ -500,12 +500,12 @@
         carveV(map, cx1, cy0, cy1, 4);
       }
     }
-    // 马尼拉房间：封闭矩形（内厅 5×4）+ 一圈墙 + 一扇门（走 map.doors，不上锁）
+    // 马尼拉房间：封闭矩形（内厅 3×3 tiles = 9×9m，贴近原设定 8×8m）+ 一圈墙 + 一扇门（走 map.doors，不上锁）
     // 契约（建造工人按此在 levels.js 建内饰）：POI 在门 tile 上，
     // data = {x0,y0,x1,y1（内厅 tile 边界，含）, doorTx, doorTy（门 tile）}
     var hallCenters = map.rooms.map(function (r) { return [Math.round(r.cx), Math.round(r.cy)]; });
     var mh = map.rooms[1 + rng.int(0, map.rooms.length - 2)]; // 不在出生厅
-    var mw = 7, mhh = 6; // 含一圈墙
+    var mw = 5, mhh = 5; // 含一圈墙 → 内厅 3×3 tiles = 9×9m（原设定 8×8m，3m/tile 下最接近的整数解）
     var mx = -1, my = -1;
     for (var mg = 0; mg < 60 && mx < 0; mg++) {
       var tx0 = rng.int(mh.x + 2, mh.x + mh.w - mw - 2);

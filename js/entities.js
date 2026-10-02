@@ -280,6 +280,51 @@
     return n;
   };
 
+  /* ---------- 道具接入（ui.js 的 useItem 调用） ----------
+   * 实体没有 hp 字段：受伤语义 = 驱散 + 爆炸硬直（atkCd 抬高，短时间无法攻击），
+   * 伤害数字由调用方 toast 展示（hurtRadius 返回 {n, dmg}）。 */
+  // 笑魇驱散剂：半径内实体逃跑 dur 秒
+  E.fleeRadius = function (x, z, radius, dur) {
+    let n = 0;
+    for (const e of this.list) {
+      if (!e.active) continue;
+      if (Math.hypot(e.x - x, e.z - z) <= radius) {
+        e.fleeT = dur; e.fleeSpeed = 3.4; n++;
+      }
+    }
+    return n;
+  };
+  // 火盐：半径内实体受伤 + 驱散 8 秒 + 2.5 秒硬直
+  E.hurtRadius = function (x, z, radius, dmg) {
+    let n = 0;
+    for (const e of this.list) {
+      if (!e.active) continue;
+      if (Math.hypot(e.x - x, e.z - z) <= radius) {
+        e.fleeT = Math.max(e.fleeT || 0, 8); e.fleeSpeed = 3.6;
+        e.atkCd = Math.max(e.atkCd || 0, 2.5);
+        n++;
+      }
+    }
+    return { n, dmg: n * dmg };
+  };
+  // 痛液：前方锥形（range 米、方向点积 >= cosHalf）内实体腐蚀 dur 秒 + 疼痛逃窜
+  E.coneCorrode = function (x, z, fx, fz, range, cosHalf, dur) {
+    let n = 0;
+    for (const e of this.list) {
+      if (!e.active) continue;
+      const dx = e.x - x, dz = e.z - z;
+      const d = Math.hypot(dx, dz);
+      if (d > range) continue;
+      const dot = d > 0.01 ? (dx / d) * fx + (dz / d) * fz : 1;
+      if (dot >= cosHalf) {
+        e.corrodeT = dur; e.corrodeFxT = 0;
+        e.fleeT = Math.max(e.fleeT || 0, dur); e.fleeSpeed = 3.2;
+        n++;
+      }
+    }
+    return n;
+  };
+
   /* ---------- 移动 ---------- */
   function moveToward(ent, tx, tz, speed, dt) {
     const dx = tx - ent.x, dz = tz - ent.z;
@@ -361,6 +406,25 @@
       if (dist < 13) {
         const hostile = ent.state === 'chase' || ent.state === 'stalk' || ent.state === 'attack';
         BR.Player.drainSanity(dt * (hostile ? 5 : seen ? 2.5 : 1.2));
+      }
+
+      // —— 道具接入：腐蚀 tick（痛液）——
+      if (ent.corrodeT > 0) {
+        ent.corrodeT -= dt;
+        ent.corrodeFxT = (ent.corrodeFxT || 0) + dt;
+        if (ent.corrodeFxT >= 1) { ent.corrodeFxT = 0; ent.atkCd = Math.max(ent.atkCd || 0, 1); }
+      }
+      // —— 道具接入：驱散（笑魇驱散剂/火盐/痛液）优先于原状态机，逃离玩家 ——
+      if (ent.fleeT > 0) {
+        ent.fleeT -= dt;
+        const d = dist || 0.001, k = 12 / d;
+        moveToward(ent, ent.x + (ent.x - ctx.playerPos.x) * k,
+          ent.z + (ent.z - ctx.playerPos.z) * k, ent.fleeSpeed || 3.4, dt);
+        ent.stateT = 0; // 驱散结束不直接接攻击，状态机自己恢复
+        ent.group.position.set(ent.x, 0, ent.z);
+        ent.group.rotation.y = ent.yaw;
+        animateEnt(ent, dt);
+        continue;
       }
 
       if (ent.type === 'hound') updateHound(ent, dt, ctx, dist, seen);
