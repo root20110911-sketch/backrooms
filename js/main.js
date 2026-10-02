@@ -20,12 +20,20 @@
     mark('textures'); BR.Textures.init();
     mark('input'); BR.Input.init();
     mark('ui'); BR.UI.init();
+    // 先把菜单亮出来：后面 WebGL 若在平板上失败，用户看到菜单+提示，而不是黑屏
+    BR.UI.showTitle();
+    BR.UI.setPrompt(null);
     mark('camera'); BR.Player.initCamera();
     mark('quality'); this.applyQuality();
 
     mark('renderer');
     const cv = BR.$('game-canvas');
-    this.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: false, powerPreference: 'high-performance' });
+    try {
+      this.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: false, powerPreference: 'high-performance' });
+    } catch (e) {
+      showBrErr('WebGL 初始化失败: ' + (e && e.message || e) + ' —— 请关闭其他标签页后刷新重试');
+      return; // 菜单已显示，直接返回，不启动主循环
+    }
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._pr || 1.5));
     this.renderer.outputEncoding = THREE.sRGBEncoding;
@@ -68,8 +76,8 @@
     addEventListener('touchstart', boot, { once: true });
     addEventListener('keydown', boot, { once: true });
 
+    // 菜单已在 init 前段显示过，这里刷新一次种子行即可
     BR.UI.showTitle();
-    BR.UI.setPrompt(null);
     this._lastT = performance.now();
     requestAnimationFrame((t) => this.loop(t));
     BR.log('game init ok');
