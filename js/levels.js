@@ -3,7 +3,11 @@
   const BR = window.BR;
   const T = BR.TILE;
 
-  const ITEM_NAME = { almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', berry: '迁跃浆果', food: '食物' };
+  const ITEM_NAME = {
+    almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', berry: '迁跃浆果', food: '食物',
+    cigarette: '香烟', gum: '口香糖', royal_ration: '皇家口粮', repellent: '笑魇驱散剂',
+    firesalt: '火盐', painliquid: '痛液', cashew: '腰果水', battery: '电池'
+  };
 
   /* ================= 主题 ================= */
   BR.Levels = {
@@ -100,6 +104,148 @@
     });
   }
 
+  /* ================= 马尼拉房间 1:1 还原件 ================= */
+  // 依据 research/manila.md（Wikidot 主 Wiki "The Manila Room"、Fandom Level 0 页面）。
+  // 桌上散落文件：多语言穿墙指南（可阅读的装饰字条，非收集系统）。
+  const MANILA_NOCLIP_TEXT =
+    '【穿墙指南 / NO-CLIPPING GUIDE】\n\n' +
+    '中文：\n' +
+    '穿墙（No-Clipping）是最常见的跨层手段。找一面"不对劲"的墙——颜色发暗、\n' +
+    '嗡鸣声调异常，或者看起来比实际更薄。把肩膀抵住墙角，闭眼，慢慢把\n' +
+    '身体"挤"进去。成功时你会感到一阵失重，像掉进水里。\n\n' +
+    '⚠ 警告：\n' +
+    '1. 只在你知道目标楼层时尝试；穿墙可能把你送到任何地方，包括\n' +
+    '   Level ! ——那里没有"回来"的说法。\n' +
+    '2. 如果挤到一半听见身后有脚步声，立刻停下。那不是你的回声。\n\n' +
+    'English:\n' +
+    'NO-CLIPPING is the most common way to travel between levels. Find a wall\n' +
+    'that feels "wrong" — darker in color, humming at a strange pitch, or\n' +
+    'thinner than it should be. Press your shoulder into the corner, close\n' +
+    'your eyes, and slowly push yourself "in". Success feels like falling\n' +
+    'into water.\n\n' +
+    '⚠ WARNINGS:\n' +
+    '1. Only attempt when you know your target level. No-clipping can take\n' +
+    '   you anywhere — including Level !, from which there is no coming back.\n' +
+    '2. If you hear footsteps behind you halfway through, STOP.\n' +
+    '   That is not your echo.\n\n' +
+    '—— I.M.B.H. 印制 / Printed by I.M.B.H.';
+  const MANILA_SURVIVAL_TEXT =
+    '【马尼拉房间生存守则 / MANILA ROOM — SURVIVAL NOTES】\n\n' +
+    '1. 这里没有已知的敌对实体，但墙里偶尔有敲击声，黑暗时最响。\n' +
+    '   别去想墙里是什么。\n' +
+    '   There are no known hostile entities here, but knocking sometimes\n' +
+    '   comes from inside the walls — loudest in the dark.\n' +
+    '   Don\'t think about what\'s in there.\n\n' +
+    '2. 杏仁水按需取用，绷带在柜子里。食物和水由志愿者定期补给，\n' +
+    '   请给后来的人留一点。\n' +
+    '   Take almond water as needed; bandages are in the cabinet.\n' +
+    '   Please leave some for those who come after you.\n\n' +
+    '3. 在这里待太久，你会被"送"到 Level 1 或 Level 2。\n' +
+    '   有人说这是诅咒，有人说这是仁慈。\n' +
+    '   Stay too long and you will be "sent" to Level 1 or Level 2.\n' +
+    '   Some call it a curse. Some call it mercy.\n\n' +
+    '—— Manila Mary Foundation';
+  // 墙上告示：Manila Mary Foundation 全文（research 第 4 节英文原文 + 中文翻译对照）
+  const MANILA_POSTER_CN =
+    '【中文译文】\n\n' +
+    '你好，读到这张告示的人。我们是 Manila Mary 基金会，我们是来帮你的！\n\n' +
+    '请随意取用这个房间里的食物和水，好好享受你应得的休息。你已经走完了\n' +
+    '这段旅程中最艰难的一程。你所在的这个维度叫做"后室"（Backrooms）。\n' +
+    '许多和你一样的人曾被困在这里，并在各处建立了社区和聚居地。你的目标\n' +
+    '是抵达其中一个聚居地——因为你将在这个维度度过余生。\n\n' +
+    '从你离开的地球来到这里，适应会很艰难，但不要失去希望。即使在这个\n' +
+    '陌生的世界里，我们依然拥有彼此。在这片荒芜之地，我们将建造一个新的\n' +
+    '未来。这个宏观世界中的全人类都同舟共济。\n\n' +
+    '下面的柜子里，我们为你准备了下一步生存所需的文档。一旦你穿过那些\n' +
+    '闪烁的墙壁，前方的远征将不会轻松。';
+  const MANILA_POSTER_EN =
+    '【英文原文 / Original】\n\n' +
+    '"Hello to whoever is reading this. We are the Manila Mary Foundation\n' +
+    'and we are here to help!\n\n' +
+    'Please take any food or water in this room, and enjoy your well-earned\n' +
+    'rest. You have completed the hardest part of the journey. The dimension\n' +
+    'you found yourself in is called the Backrooms. Many others have gotten\n' +
+    'stuck here and have built various communities and settlements throughout.\n' +
+    'Your goal is to make it to one of these settlements, as you will be\n' +
+    'living in this dimension for the rest of your life.\n\n' +
+    'It is going to be a harsh adjustment from the Earth you left behind,\n' +
+    'but do not lose hope. Even in this strange world, we still have each\n' +
+    'other. In this desolate place, we will build a new future. All of\n' +
+    'humanity in this macrocosm are in this together.\n\n' +
+    'In the cupboards below we prepared documents on your next steps to\n' +
+    'survive. Once you enter those flickering walls, the expedition ahead\n' +
+    'will not be easy."';
+  // 告示墙贴：马尼拉纸底 + 英文原文（小字），中文译文走阅读浮层
+  function manilaPosterTexture() {
+    const cv = document.createElement('canvas');
+    cv.width = 1024; cv.height = 640;
+    const c = cv.getContext('2d');
+    c.fillStyle = '#d9b77c'; c.fillRect(0, 0, 1024, 640);
+    c.strokeStyle = '#5a4326'; c.lineWidth = 10; c.strokeRect(14, 14, 996, 612);
+    c.fillStyle = '#3a2a16'; c.textAlign = 'center';
+    c.font = 'bold 50px Georgia, serif';
+    c.fillText('MANILA MARY FOUNDATION', 512, 88);
+    c.strokeStyle = '#5a4326'; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(80, 116); c.lineTo(944, 116); c.stroke();
+    c.font = '23px Georgia, serif'; c.textAlign = 'left';
+    const words = MANILA_POSTER_EN.replace('【英文原文 / Original】\n\n', '').replace(/"/g, '').split(/\s+/);
+    const lines = [];
+    let cur = '';
+    words.forEach(w => {
+      if ((cur + ' ' + w).length > 62) { lines.push(cur); cur = w; }
+      else cur = cur ? cur + ' ' + w : w;
+    });
+    if (cur) lines.push(cur);
+    lines.slice(0, 15).forEach((ln, i) => c.fillText(ln, 70, 165 + i * 30));
+    c.textAlign = 'center'; c.font = 'bold 26px sans-serif';
+    const kl = (BR.interactKeyLabel ? BR.interactKeyLabel() : '【E】');
+    c.fillText('—— 按 ' + kl + ' 阅读中文译文 ——', 512, 600);
+    return new THREE.CanvasTexture(cv);
+  }
+  // 简易木椅
+  function buildChairMesh() {
+    const g = new THREE.Group();
+    const wood = new THREE.MeshLambertMaterial({ color: 0x6f5233 });
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.07, 0.5), wood);
+    seat.position.y = 0.45; g.add(seat);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.07), wood);
+    back.position.set(0, 0.75, -0.25); g.add(back);
+    [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]].forEach(pt => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.45, 0.06), wood);
+      leg.position.set(pt[0], 0.225, pt[1]); g.add(leg);
+    });
+    return g;
+  }
+  // 桌上散落纸张：可阅读的装饰字条（非收集系统，读完不消失、不记 picked）
+  function addTablePaper(W, group, tx, ty, x, y, z, rot, title, body) {
+    const id = 'manila_paper_' + Math.round(x * 10) + '_' + Math.round(z * 10);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.6),
+      new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
+    m.rotation.x = -Math.PI / 2; m.rotation.z = rot;
+    m.position.set(x, y, z);
+    W.reg(group, m);
+    W.addInteractable({
+      id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
+      meshes: [m], pos: m.position.clone(), radius: 2.6,
+      prompt: () => (BR.interactKeyLabel ? BR.interactKeyLabel() : '【E】') + '阅读' + title,
+      canUse: () => true,
+      use: () => { BR.Audio.paper(); BR.UI.showNote(title, body); }
+    });
+  }
+  // 马尼拉全黑 / 久留淡出共用的全屏黑幕（z 59，低于转场黑幕 z 60）
+  function manilaOverlay(show, ms) {
+    let el = document.getElementById('manila-blackout');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'manila-blackout';
+      el.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:59;';
+      document.body.appendChild(el);
+    }
+    el.style.transition = 'opacity ' + ((ms || 600) / 1000) + 's ease';
+    void el.offsetWidth; // 强制 reflow，保证 transition 生效
+    el.style.opacity = show ? '1' : '0';
+  }
+
   function itemMesh(item) {
     const g = new THREE.Group();
     if (item === 'almond') {
@@ -141,6 +287,99 @@
       const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.095, 0.025, 12),
         new THREE.MeshLambertMaterial({ color: 0x7a6a50 }));
       lid.position.y = 0.165; g.add(lid);
+    } else if (item === 'cigarette') {
+      // 香烟：细长白色烟卷 + 棕色滤嘴段
+      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.20, 8),
+        new THREE.MeshLambertMaterial({ color: 0xf2efe8 }));
+      c.rotation.z = Math.PI / 2; c.position.y = 0.05; g.add(c);
+      const f = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.06, 8),
+        new THREE.MeshLambertMaterial({ color: 0x8a5a2a }));
+      f.rotation.z = Math.PI / 2; f.position.set(0.12, 0.05, 0); g.add(f);
+    } else if (item === 'gum') {
+      // 口香糖：粉色小方条 + 两端糖纸小锥体
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.07),
+        new THREE.MeshLambertMaterial({ color: 0xf0a0c0 }));
+      bar.position.y = 0.04; g.add(bar);
+      const wrapM = new THREE.MeshLambertMaterial({ color: 0xc0c8d0 });
+      [-1, 1].forEach(s => {
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.07, 6), wrapM);
+        cone.rotation.z = s * Math.PI / 2; cone.position.set(s * 0.115, 0.04, 0); g.add(cone);
+      });
+    } else if (item === 'royal_ration') {
+      // 皇家口粮：军绿方罐头 + 顶部金色小皇冠（锥体+圆球）
+      const can = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.16, 12),
+        new THREE.MeshLambertMaterial({ color: 0x4a5a30 }));
+      can.position.y = 0.08; g.add(can);
+      const gold = new THREE.MeshLambertMaterial({ color: 0xd8a820 });
+      const crown = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.07, 8), gold);
+      crown.position.y = 0.195; g.add(crown);
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), gold);
+      orb.position.y = 0.24; g.add(orb);
+    } else if (item === 'repellent') {
+      // 笑魇驱散剂：白色喷雾瓶（瓶身+按压喷头）+ 半透明雾锥
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.065, 0.20, 10),
+        new THREE.MeshLambertMaterial({ color: 0xf0f0f0 }));
+      body.position.y = 0.10; g.add(body);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.05),
+        new THREE.MeshLambertMaterial({ color: 0x30343a }));
+      head.position.y = 0.225; g.add(head);
+      const mist = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.22, 10),
+        new THREE.MeshLambertMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.35 }));
+      mist.rotation.x = -Math.PI / 2.4; mist.position.set(0, 0.26, 0.12); g.add(mist);
+    } else if (item === 'firesalt') {
+      // 火盐：粗布束口小袋（压扁球体+束口）+ 袋口红色小火苗
+      const sack = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8),
+        new THREE.MeshLambertMaterial({ color: 0x9a7a52 }));
+      sack.scale.set(1, 0.75, 1); sack.position.y = 0.085; g.add(sack);
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.06, 8),
+        new THREE.MeshLambertMaterial({ color: 0x7a5c3a }));
+      neck.position.y = 0.18; g.add(neck);
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff4a1a }));
+      flame.position.y = 0.25; g.add(flame);
+    } else if (item === 'painliquid') {
+      // 痛液：深绿细颈小瓶 + 瓶身深色斑点
+      const dark = new THREE.MeshLambertMaterial({ color: 0x1e5a2a });
+      const vb = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.16, 10), dark);
+      vb.position.y = 0.08; g.add(vb);
+      const vn = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.035, 0.09, 8), dark);
+      vn.position.y = 0.20; g.add(vn);
+      const spotM = new THREE.MeshLambertMaterial({ color: 0x0d2a12 });
+      [[0.03, 0.06, 0.045], [-0.035, 0.10, 0.04], [0.01, 0.13, -0.05]].forEach(sp => {
+        const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 6, 5), spotM);
+        s.position.set(sp[0], sp[1], sp[2]); g.add(s);
+      });
+    } else if (item === 'cashew') {
+      // 腰果水：与杏仁水几乎一样的瓶子（陷阱）——液体略黄、多一道高光，视觉差细微
+      const b = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.26, 0.13),
+        new THREE.MeshLambertMaterial({ color: 0xe9dcb4 }));
+      b.position.y = 0.13; g.add(b);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.08),
+        new THREE.MeshLambertMaterial({ color: 0x8a2a2a }));
+      cap.position.y = 0.28; g.add(cap);
+      const hl = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const h1 = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.18, 0.004), hl);
+      h1.position.set(-0.05, 0.14, 0.067); g.add(h1);
+      const h2 = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.10, 0.004), hl);
+      h2.position.set(0.055, 0.12, 0.067); g.add(h2); // 第二道高光：唯一的视觉区别
+    } else if (item === 'battery') {
+      // 5 号电池：黑身 + 铜顶 + 黄色闪电标志（小方块拼）
+      const bb = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.11, 10),
+        new THREE.MeshLambertMaterial({ color: 0x1a1a1c }));
+      bb.position.y = 0.055; g.add(bb);
+      const cu = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.03, 10),
+        new THREE.MeshLambertMaterial({ color: 0xb87333 }));
+      cu.position.y = 0.125; g.add(cu);
+      const boltM = new THREE.MeshBasicMaterial({ color: 0xffd820 });
+      const b1 = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.05, 0.005), boltM);
+      b1.position.set(0.005, 0.06, 0.036); b1.rotation.z = 0.35; g.add(b1);
+      const b2 = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.05, 0.005), boltM);
+      b2.position.set(-0.005, 0.03, 0.036); b2.rotation.z = 0.35; g.add(b2);
+    } else {
+      // 未知道具兜底：通用小盒子，避免返回空 group
+      const u = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2),
+        new THREE.MeshLambertMaterial({ color: 0x8a8a8a }));
+      u.position.y = 0.1; g.add(u);
     }
     return g;
   }
@@ -177,49 +416,169 @@
     });
   }
 
+  /* ---------- 容器两段式交互（板条箱 / 柜子）共享件 ---------- */
+  // 交互键标签：按键绑定由另一个工人负责的 input.js 提供（BR.Input.bindingLabel('interact')），
+  // 未就绪时 fallback 为 'E'。prompt() 里调用；player.js 每 0.12s 会刷新 prompt()，绑定变更后自动更新。
+  function interactKeyLabel() {
+    return '【' + ((BR.Input && BR.Input.bindingLabel) ? BR.Input.bindingLabel('interact') : 'E') + '】';
+  }
+  BR.interactKeyLabel = interactKeyLabel;
+
+  // 本 session 内开过的容器 id（箱/柜，运行时态，不进存档）：
+  // 区分"老存档已开（openedCrates 有 id 即视为已处理完，区块重建/读档不重建箱内拾取，避免已拿物资复活）"
+  // 与"本 session 内开过（区块卸载后重建时，若未拾取则重建箱内拾取）"。
+  // 注意：W 在同一次页面会话内是单例（跨关 travel 复用），刷新页面/重进游戏后此表自然清空。
+  function markLiveOpened(W, id) {
+    W._liveOpened = W._liveOpened || {};
+    W._liveOpened[id] = true;
+  }
+  function wasLiveOpened(W, id) {
+    return !!(W._liveOpened && W._liveOpened[id]);
+  }
+
+  // 开盖小动画（setInterval 驱动约 350ms，不新增每帧射线/逻辑）
+  const LID_OPEN = { rz: 1.9, x: -0.5, y: 1.1 };
+  function setLidOpenPose(lid) { lid.rotation.z = LID_OPEN.rz; lid.position.set(LID_OPEN.x, LID_OPEN.y, 0); }
+  function animLidOpen(lid) {
+    const t0 = performance.now(), dur = 350;
+    const frz = lid.rotation.z, fpos = lid.position.clone();
+    const tpos = new THREE.Vector3(LID_OPEN.x, LID_OPEN.y, 0);
+    const iv = setInterval(() => {
+      const k = Math.min(1, (performance.now() - t0) / dur);
+      const e = 1 - Math.pow(1 - k, 2);
+      lid.rotation.z = frz + (LID_OPEN.rz - frz) * e;
+      lid.position.lerpVectors(fpos, tpos, e);
+      if (k >= 1) clearInterval(iv);
+    }, 16);
+  }
+  // 柜门开启动画（pivot 为 buildCabinetMesh 留在 userData.doorPivot 上的铰链组）
+  const CAB_DOOR_OPEN = -1.85;
+  function setCabinetDoorOpen(pivot) { pivot.rotation.y = CAB_DOOR_OPEN; }
+  function animCabinetDoor(pivot) {
+    const t0 = performance.now(), dur = 350;
+    const iv = setInterval(() => {
+      const k = Math.min(1, (performance.now() - t0) / dur);
+      pivot.rotation.y = CAB_DOOR_OPEN * (1 - Math.pow(1 - k, 2));
+      if (k >= 1) clearInterval(iv);
+    }, 16);
+  }
+
+  // 敞口板条箱 mesh：四壁 + 底（能看见里面）+ 盖子。返回 {group, lid, parts}
+  function buildCrateMesh(W) {
+    const g = new THREE.Group();
+    const wood = W.mat('crate');
+    const parts = [];
+    const t = 0.06, wd = 1.05, ht = 0.8;
+    const wall = (w, h, d, x, y, z) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wood);
+      m.position.set(x, y, z); g.add(m); parts.push(m);
+    };
+    wall(wd, ht, t, 0, ht / 2, wd / 2 - t / 2);
+    wall(wd, ht, t, 0, ht / 2, -(wd / 2 - t / 2));
+    wall(t, ht, wd - 2 * t, wd / 2 - t / 2, ht / 2, 0);
+    wall(t, ht, wd - 2 * t, -(wd / 2 - t / 2), ht / 2, 0);
+    wall(wd, t, wd, 0, t / 2, 0); // 底
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(wd, 0.12, wd), wood);
+    lid.position.y = ht + 0.06; g.add(lid); parts.push(lid);
+    return { group: g, lid, parts };
+  }
+  BR.buildCrateMesh = buildCrateMesh;
+
+  // 容器内物资拾取（两段式的第二段）：可见 itemMesh + 隐形命中代理，kind 'pickup'。
+  // pos 为物资底部中心世界坐标；chunkGroup 为 addChunkContent 的 group（随区块卸载，走 W.reg）。
+  function spawnInnerPickup(W, chunkGroup, pos, pickId, item, tx, ty) {
+    if (W.state.picked.includes(pickId)) return null; // 已拾取：不重建
+    const ig = itemMesh(item);
+    ig.position.copy(pos);
+    // 命中代理：隐形大盒子（colorWrite 关，只参与射线不参与渲染），保证小 mesh 也能被射线稳定打中
+    const proxy = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.8, 0.7),
+      new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false })
+    );
+    proxy.position.set(0, 0.25, 0);
+    ig.add(proxy);
+    W.reg(chunkGroup, ig);
+    W.addInteractable({
+      id: pickId, kind: 'pickup', chunkKey: W.chunkKeyOf(tx, ty),
+      meshes: ig.children.slice(),
+      pos: pos.clone().add(new THREE.Vector3(0, 0.25, 0)), radius: 2.6,
+      prompt: () => BR.interactKeyLabel() + '拿起' + (ITEM_NAME[item] || item),
+      canUse: () => true,
+      use: () => {
+        if (item === 'flashlight') {
+          BR.Player.hasFlashlight = true;
+          BR.UI.toast('拾取了手电筒（按 F / 🔦 开关）');
+        } else {
+          BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
+          BR.UI.toast('拿起了' + (ITEM_NAME[item] || item));
+        }
+        BR.Audio.pickup();
+        W.state.picked.push(pickId);
+        BR.bus.emit('picked', { id: pickId });
+        W.removeInteractable(pickId);
+        chunkGroup.remove(ig);
+        BR.UI.updateInv();
+      }
+    });
+    return pickId;
+  }
+
+  // 板条箱两段式接线（L0/L1/L2/L3 共用）：
+  //  第一段：交互"打开板条箱" → 掀盖动画 + 音效 + openedCrates 记录 + toast"箱子打开了，看看里面有什么"，
+  //    同时在箱内刷出可见物资（kind 'pickup'，id 'cratepick_'+crateId，prompt"拿起"+物品名）；
+  //    item==='empty' 时只 toast，不刷拾取；item==='flashlight' 也刷拾取（瞄准拿起获得手电）。
+  //  第二段：准星对准箱内物资交互 → 进物品栏，记 picked，移除 mesh 与交互点。
+  //  区块重建/读档：已开盖（本 session 内开过）且未拾取 → 重建箱内拾取；
+  //    老存档（openedCrates 有 id 但非本 session 开）视为已处理完，不重建，避免已拿物资复活。
+  function wireCrateTwoStage(W, chunkGroup, cm, o) {
+    const id = o.id, item = o.item;
+    const pickId = 'cratepick_' + id;
+    const opened = W.state.openedCrates.includes(id);
+    if (opened) setLidOpenPose(cm.lid);
+    const innerPos = new THREE.Vector3(cm.group.position.x, 0.07, cm.group.position.z);
+    if (opened && wasLiveOpened(W, id) && item !== 'empty' && !W.state.picked.includes(pickId)) {
+      // 本 session 开过、还没拿：重建箱内拾取；箱体不再注册交互，避免挡住箱内物资的射线
+      spawnInnerPickup(W, chunkGroup, innerPos, pickId, item, o.tx, o.ty);
+      return;
+    }
+    if (opened) return; // 老存档已开 / 已拾取 / 空箱：纯装饰
+    W.addInteractable({
+      id, kind: 'crate', chunkKey: W.chunkKeyOf(o.tx, o.ty),
+      meshes: cm.parts,
+      pos: cm.group.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
+      prompt: () => BR.interactKeyLabel() + '打开板条箱',
+      canUse: () => !W.state.openedCrates.includes(id),
+      use: () => {
+        if (W.state.openedCrates.includes(id)) return;
+        animLidOpen(cm.lid);
+        BR.Audio.doorCreak();
+        W.state.openedCrates.push(id);
+        markLiveOpened(W, id);
+        BR.bus.emit('crate:opened', { id });
+        W.removeInteractable(id); // 开盖后箱体移出射线检测，避免挡住箱内物资
+        if (item === 'empty') {
+          BR.UI.toast('箱子里只有灰尘。');
+        } else {
+          BR.UI.toast('箱子打开了，看看里面有什么');
+          spawnInnerPickup(W, chunkGroup, innerPos, pickId, item, o.tx, o.ty);
+        }
+      }
+    });
+  }
+  BR.wireCrateTwoStage = wireCrateTwoStage;
+
   function addCrate(W, poi) {
     const tx = poi.tx, ty = poi.ty;
     const id = 'crate_' + tx + '_' + ty;
     W.addChunkContent(tx, ty, (group) => {
-      const g = new THREE.Group();
-      g.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
-      const wood = W.mat('crate');
-      const box = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.8, 1.05), wood);
-      box.position.y = 0.4; g.add(box);
-      const lid = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.12, 1.05), wood);
-      lid.position.y = 0.86; g.add(lid);
-      W.reg(group, g);
-      const opened = W.state.openedCrates.includes(id);
-      if (opened) { lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0); }
-      W.addInteractable({
-        id, kind: 'crate', chunkKey: W.chunkKeyOf(tx, ty),
-        meshes: [box, lid], pos: g.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
-        prompt: () => W.state.openedCrates.includes(id) ? '空板条箱' : '打开板条箱',
-        canUse: () => !W.state.openedCrates.includes(id),
-        use: () => {
-          if (W.state.openedCrates.includes(id)) return;
-          lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0);
-          BR.Audio.doorCreak();
-          W.state.openedCrates.push(id);
-          BR.bus.emit('crate:opened', { id });
-          const item0 = poi.data.item || 'empty';
-          // 迁跃浆果来源之一：每只箱子 2% 概率（按箱子 id 确定性派生，保证复现）
-          const item = (item0 !== 'flashlight' &&
-            new BR.RNG(BR.hashSeed('crate_berry:' + id)).next() < 0.02) ? 'berry' : item0;
-          if (item === 'empty') {
-            BR.UI.toast('箱子里只有灰尘。');
-          } else if (item === 'flashlight') {
-            BR.Player.hasFlashlight = true;
-            BR.UI.toast('找到了手电筒！（按 F / 🔦 开关）');
-            BR.Audio.pickup();
-          } else {
-            BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
-            BR.UI.toast('找到了' + ITEM_NAME[item] + '！');
-            BR.Audio.pickup();
-          }
-          BR.UI.updateInv();
-        }
-      });
+      const cm = BR.buildCrateMesh(W);
+      cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
+      W.reg(group, cm.group);
+      // 迁跃浆果来源之一：每只箱子 2% 概率（按箱子 id 确定性派生，保证复现；build 时即确定，重建一致）
+      const item0 = (poi.data && poi.data.item) || 'empty';
+      const item = (item0 !== 'flashlight' &&
+        new BR.RNG(BR.hashSeed('crate_berry:' + id)).next() < 0.02) ? 'berry' : item0;
+      BR.wireCrateTwoStage(W, group, cm, { id, tx, ty, item });
     });
   }
 
@@ -324,22 +683,29 @@
     });
     return g;
   }
-  // 柜子：柜体 + 柜门线 + 把手
+  // 柜子：柜体 + 可转动的左扇柜门（铰链在左边缘，门板相对铰链右偏；打开时整扇向左转出）
+  // 铰链组挂在 g.userData.doorPivot，供 addFurniturePickup（container:'cabinet'）做开门动画
   function buildCabinetMesh() {
     const g = new THREE.Group();
     const wood = new THREE.MeshLambertMaterial({ color: 0x77552e });
     const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.5, 0.55), wood);
     body.position.y = 0.75; g.add(body);
     const trim = new THREE.MeshLambertMaterial({ color: 0x4a3013 });
-    const mid = new THREE.Mesh(new THREE.BoxGeometry(0.035, 1.34, 0.02), trim);
-    mid.position.set(0, 0.75, 0.281); g.add(mid); // 柜门中线
     const lip = new THREE.Mesh(new THREE.BoxGeometry(1.09, 0.06, 0.59), trim);
     lip.position.y = 1.47; g.add(lip); // 顶部压条
+    const doorPivot = new THREE.Group();
+    doorPivot.position.set(-0.5, 0.75, 0.30);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.98, 1.34, 0.04), wood);
+    door.position.set(0.49, 0, 0);
+    doorPivot.add(door);
     const hm = new THREE.MeshLambertMaterial({ color: 0x222222 });
-    [-0.13, 0.13].forEach(x => {
-      const h = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.06), hm);
-      h.position.set(x, 0.82, 0.3); g.add(h);
-    });
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.06), hm);
+    handle.position.set(0.88, 0.05, 0.05); // 跟门一起转
+    doorPivot.add(handle);
+    g.add(doorPivot);
+    g.userData.doorPivot = doorPivot;
+    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.03, 1.34, 0.045), trim);
+    seam.position.set(0.5, 0.75, 0.29); g.add(seam); // 右边缘门缝线（装饰）
     return g;
   }
   function buildFurnitureMesh(kind) {
@@ -347,15 +713,23 @@
   }
   BR.buildFurnitureMesh = buildFurnitureMesh; // 家具 mesh 建造器（L1 复用）
 
-  // 家具拾取交互：桌/柜上放一个肉眼可见的物资（itemMesh：小瓶子/绷带卷/罐头），
-  // E 交互后 inv[item]++、toast、音效、记入 W.state.picked（id 含 tx,ty，存档可恢复）、
-  // 物资 mesh 与交互点一起移除。已拾取时返回 null（调用方不要重建 mesh）。
-  // kind 复用 INTERACT_KINDS 已有的 'pickup'（world.js 无需加 kind）。
-  // opts: {tx, ty, item, suffix, group, fx, fz, topY}
+  // 家具拾取交互（桌/柜）：
+  //  container === 'cabinet' → 两段式：第一次交互"打开柜门"（柜门转动动画 + 音效），
+  //    柜内刷出物资拾取（kind 'pickup'，id 'cabpick_'+原id，prompt"拿起"+物品名）；
+  //    第二次准星对准柜内物资交互 → 进物品栏，记 picked，移除 mesh 与交互点。
+  //    柜子 id 'cab_'+tx+'_'+ty+'_'+suffix，开门状态复用 W.state.openedCrates（自动进存档）；
+  //    开门后柜体移出射线检测，避免挡住柜内物资。
+  //    老存档兼容：旧一步流程拾取后 picked 里记的是原 id（fpick_…），同样视为已拾取，不重建。
+  //  container === 'table'（默认）→ 一步拾取（原行为：准星对准桌上物资直接拿起）。
+  // kind 复用 INTERACT_KINDS 已有的 'pickup'；柜门交互 kind 'cabinet'（world.js 已登记）。
+  // opts: {tx, ty, item, suffix, group, fx, fz, topY, container, furniture}
+  //   furniture 为 buildFurnitureMesh 返回的组（cabinet 时用来找柜门铰链 / 算柜内拾取位置）
   function addFurniturePickup(W, opts) {
     const item = opts.item;
     if (!item) return null;
     const id = 'fpick_' + item + '_' + opts.tx + '_' + opts.ty + '_' + (opts.suffix || 'furn');
+    if (opts.container === 'cabinet') return addCabinetTwoStage(W, opts, id, item);
+    // —— table / 默认：一步拾取（原逻辑） ——
     if (W.state.picked.includes(id)) return null; // 已拾取：存档/区块重建时不重建
     const ig = itemMesh(item);
     const rng = new BR.RNG(BR.hashSeed(id));
@@ -374,7 +748,7 @@
       id, kind: 'pickup', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
       meshes: ig.children.slice(),
       pos: ig.position.clone().add(new THREE.Vector3(0, 0.25, 0)), radius: 2.6,
-      prompt: () => '拿起' + (ITEM_NAME[item] || item),
+      prompt: () => BR.interactKeyLabel() + '拿起' + (ITEM_NAME[item] || item),
       canUse: () => true,
       use: () => {
         BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
@@ -390,6 +764,65 @@
     return id;
   }
   BR.addFurniturePickup = addFurniturePickup; // 家具拾取建造器（L1 复用）
+
+  // 柜子两段式（addFurniturePickup container:'cabinet' 时调用）：
+  //  第一段"打开柜门" → 柜门转动动画 + 音效 + openedCrates 记录 + toast，柜内刷出可见物资拾取；
+  //  第二段准星对准柜内物资 → 拾取进物品栏。区块重建/读档规则同 wireCrateTwoStage。
+  function addCabinetTwoStage(W, opts, id, item) {
+    const cabId = 'cab_' + opts.tx + '_' + opts.ty + '_' + (opts.suffix || 'furn');
+    const pickId = 'cabpick_' + id;
+    const pivot = opts.furniture ? opts.furniture.userData.doorPivot : null;
+    const opened = W.state.openedCrates.includes(cabId);
+    if (opened && pivot) setCabinetDoorOpen(pivot); // 读档/重建：保持开门状态
+    // 柜内拾取位置：柜门正前方敞口处，用柜子本地坐标换算（适配柜子朝向）
+    const innerPos = (() => {
+      const f = opts.furniture;
+      if (f) {
+        f.updateMatrixWorld(true);
+        return f.localToWorld(new THREE.Vector3(0, 0.7, 0.44));
+      }
+      return new THREE.Vector3(opts.fx, 0.7, opts.fz);
+    })();
+    // 含老存档一步拾取（picked 里记的是原 id）：视为已拾取，不重建
+    const picked = W.state.picked.includes(pickId) || W.state.picked.includes(id);
+    if (opened && wasLiveOpened(W, cabId) && !picked) {
+      // 本 session 内开过、还没拿：重建柜内拾取；柜体不再注册交互，避免挡住柜内物资的射线
+      spawnInnerPickup(W, opts.group, innerPos, pickId, item, opts.tx, opts.ty);
+      return cabId;
+    }
+    if (opened) return cabId; // 老存档已开 / 已拾取：纯装饰
+    // 展平一层 children（含铰链组里的门板/把手），保证门板也能被射线打中
+    const cabMeshes = [];
+    if (opts.furniture) opts.furniture.children.forEach(c => {
+      cabMeshes.push(c);
+      if (c.children) c.children.forEach(cc => cabMeshes.push(cc));
+    });
+    W.addInteractable({
+      id: cabId, kind: 'cabinet', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
+      meshes: cabMeshes,
+      pos: new THREE.Vector3(opts.fx, 1.0, opts.fz), radius: 2.6,
+      prompt: () => BR.interactKeyLabel() + '打开柜门',
+      canUse: () => !W.state.openedCrates.includes(cabId),
+      use: () => {
+        if (W.state.openedCrates.includes(cabId)) return;
+        if (pivot) animCabinetDoor(pivot);
+        BR.Audio.doorCreak();
+        W.state.openedCrates.push(cabId);
+        markLiveOpened(W, cabId);
+        // main.js 的自动存档只监听 'crate:opened'，柜子开门同样触发一次，保证开门状态落盘
+        BR.bus.emit('crate:opened', { id: cabId });
+        W.removeInteractable(cabId); // 开门后柜体移出射线检测，避免挡住柜内物资
+        if (W.state.picked.includes(id)) {
+          // 老存档：旧一步流程已拾取过（picked 里记的是原 id），不再刷出，避免物资复活
+          BR.UI.toast('柜门打开了，里面是空的。');
+        } else {
+          BR.UI.toast('柜门打开了，看看里面有什么');
+          spawnInnerPickup(W, opts.group, innerPos, pickId, item, opts.tx, opts.ty);
+        }
+      }
+    });
+    return cabId;
+  }
 
   // 所有门：按 exitTo 赋予转场行为
   function buildDoors(map, W) {    for (const d of map.doors) {
@@ -488,9 +921,13 @@
       const n = L0_NOTES[i % L0_NOTES.length];
       addNote(W, p.tx, p.ty, n[0], n[1]);
     });
-    // 马尼拉房间：Level 0 的安全屋（暖光+整间地毯+桌柜补给+回理智）
+    // 马尼拉房间：Level 0 的安全屋（1:1 还原 research/manila.md）
     // 契约（gen.js placeL0）：p.data = {x0,y0,x1,y1, doorTx, doorTy}，
     // (x0,y0)-(x1,y1) 为内部地板 tile 矩形（含边界），(doorTx,doorTy) 为唯一的门 tile（墙已由 gen 围好）。
+    // 还原点：马尼拉纸色墙面+木地板 / 房间唯一一盏橙色顶灯（比 L0 暗、亮度波动）/
+    // 中央八角桌+双椅 / 桌下柜两段式（逻辑不动）/ 桌上多语言穿墙指南（可读装饰）/
+    // 墙上 Manila Mary Foundation 告示全文（中英对照）/ 靠近钢琴曲+嗡鸣减弱 /
+    // 墙内敲击+短暂全黑 / 久留 3 分钟送往 L1。保留：安全区 r=6.5、理智回复、杏仁水/绷带。
     poiList(map, 'manila_room').forEach(p => {
       const d = p.data || {};
       // 兼容旧数据（仅 p.tx/p.ty 为房间中心）：退化为单 tile 房间
@@ -500,40 +937,78 @@
       const isDoor = (tx, ty) => !!(door && door.x === tx && door.y === ty);
       const cx = BR.tileCX((x0 + x1) / 2), cz = BR.tileCZ((y0 + y1) / 2);
       const tcx = Math.round((x0 + x1) / 2), tcy = Math.round((y0 + y1) / 2);
-      // 1) 整间铺地毯（暖色，现有 carpet 贴图）：逐 tile 一块，避免跨区块拉伸
+      const wallH = (BR.Levels.L0.theme.wallH || 2.7);
+      // 供 world.js 跳过房间内 L0 荧光灯具（房间里只有一盏顶灯）；dispose 时清空
+      W._manilaRect = { x0, y0, x1, y1 };
+      const woodFloorMat = new THREE.MeshLambertMaterial({ color: 0x8f6b45 });
+      const manilaWallMat = new THREE.MeshLambertMaterial({ color: 0xc7a06a }); // 马尼拉纸色（牛皮纸/米色）
+      // 1) 木地板（颜色区分 L0 潮湿地毯）：逐 tile 一块，避免跨区块拉伸
       for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
         W.addChunkContent(tx, ty, (group) => {
-          const rug = new THREE.Mesh(new THREE.PlaneGeometry(T, T),
-            new THREE.MeshBasicMaterial({ map: BR.Textures.get('carpet'), color: 0xcf9a5a, transparent: true, opacity: 0.92 }));
-          rug.rotation.x = -Math.PI / 2;
-          rug.position.set(BR.tileCX(tx), 0.02, BR.tileCZ(ty));
-          W.reg(group, rug);
+          const f = new THREE.Mesh(new THREE.PlaneGeometry(T, T), woodFloorMat);
+          f.rotation.x = -Math.PI / 2;
+          f.position.set(BR.tileCX(tx), 0.02, BR.tileCZ(ty));
+          W.reg(group, f);
         });
       }
-      // 2) 房间中心暖光（现有 0xffc37a）
+      // 2) 墙面马尼拉纸色贴面：只贴内墙面（门 tile 跳过），区别于 L0 单黄墙纸
+      for (let ty = y0 - 1; ty <= y1 + 1; ty++) for (let tx = x0 - 1; tx <= x1 + 1; tx++) {
+        if (tx >= x0 && tx <= x1 && ty >= y0 && ty <= y1) continue;
+        if (!W.isWall(tx, ty) || isDoor(tx, ty)) continue;
+        let nx = 0, nz = 0;
+        if (tx < x0) nx = 1; else if (tx > x1) nx = -1;
+        if (ty < y0) nz = 1; else if (ty > y1) nz = -1;
+        if (!nx && !nz) continue;
+        if (nx && nz) nz = 0; // 角 tile 取 x 向贴面
+        const wtx = tx, wty = ty, wnx = nx, wnz = nz;
+        W.addChunkContent(wtx, wty, (group) => {
+          const v = new THREE.Mesh(new THREE.PlaneGeometry(T, wallH), manilaWallMat);
+          v.position.set(BR.tileCX(wtx) + wnx * (T / 2 - 0.04), wallH / 2, BR.tileCZ(wty) + wnz * (T / 2 - 0.04));
+          v.rotation.y = Math.atan2(wnx, wnz);
+          W.reg(group, v);
+        });
+      }
+      // 3) 房间唯一光源：顶灯（灯罩+灯泡+橙色点光），比 L0 暗、明显橙色调；亮度随时间波动（tick 里调制）
       W.addChunkContent(tcx, tcy, (group) => {
-        const L = new THREE.PointLight(0xffc37a, 1.6, 20, 2);
-        L.position.set(cx, 2.3, cz);
+        const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.42, 0.18, 12),
+          new THREE.MeshLambertMaterial({ color: 0x3a2c1c }));
+        shade.position.set(cx, wallH - 0.12, cz); W.reg(group, shade);
+        const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.10, 10, 8),
+          new THREE.MeshBasicMaterial({ color: 0xffb45e }));
+        bulb.position.set(cx, wallH - 0.25, cz); W.reg(group, bulb);
+        const L = new THREE.PointLight(0xff8a35, 0.95, 16, 2);
+        L.position.set(cx, wallH - 0.4, cz);
         W.reg(group, L);
+        W._manilaLamp = L; W._manilaLampBase = 0.95;
       });
-      // 家具摆位：对角两角落并避开门 tile；退化为单 tile（旧数据）时用 tile 内偏移错开
-      let ttx = x0, tty = y0;
-      if (isDoor(ttx, tty)) ttx = (x0 + 1 <= x1) ? x0 + 1 : x0;
+      // 4) 中央八角桌（8 边形桌面）+ 两把椅子（分列两侧、面向桌心）+ 桌上杏仁水拾取（原 manila_table 保留）
+      W.addChunkContent(tcx, tcy, (group) => {
+        const wood = new THREE.MeshLambertMaterial({ color: 0x6f5233 });
+        const table = new THREE.Group();
+        const top = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 0.09, 8), wood);
+        top.position.y = 0.74; top.rotation.y = Math.PI / 8; table.add(top);
+        const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.18, 0.68, 8), wood);
+        ped.position.y = 0.37; table.add(ped);
+        const tbase = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.56, 0.08, 8), wood);
+        tbase.position.y = 0.04; table.add(tbase);
+        table.position.set(cx, 0, cz);
+        W.reg(group, table);
+        [[cx - 1.85, cz, Math.PI / 2], [cx + 1.85, cz, -Math.PI / 2]].forEach(pt => {
+          const ch = buildChairMesh();
+          ch.position.set(pt[0], 0, pt[1]); ch.rotation.y = pt[2];
+          W.reg(group, ch);
+        });
+        BR.addFurniturePickup(W, {
+          tx: tcx, ty: tcy, item: 'almond', suffix: 'manila_table',
+          group, fx: cx, fz: cz, topY: 0.80, container: 'table'
+        });
+        // 5) 桌上散落文件：多语言穿墙指南（可读装饰字条，非收集系统）
+        addTablePaper(W, group, tcx, tcy, cx - 0.62, 0.795, cz + 0.30, 0.5, '《穿墙指南》', MANILA_NOCLIP_TEXT);
+        addTablePaper(W, group, tcx, tcy, cx + 0.60, 0.795, cz - 0.28, -0.35, '《生存守则》', MANILA_SURVIVAL_TEXT);
+      });
+      // 6) 柜子（程序化：柜体+柜门）+ 柜中绷带拾取 —— 两段式逻辑保持不动（另一个工人刚升级过）
       let gtx = x1, gty = y1;
       if (isDoor(gtx, gty)) gtx = (x1 - 1 >= x0) ? x1 - 1 : x1;
-      // 3) 桌子（程序化：桌面+桌腿）+ 桌上杏仁水拾取
-      W.addChunkContent(ttx, tty, (group) => {
-        const fx = BR.tileCX(ttx) - 0.7, fz = BR.tileCZ(tty) - 0.7;
-        const table = buildFurnitureMesh('table');
-        table.position.set(fx, 0, fz);
-        table.rotation.y = Math.atan2(cx - fx, cz - fz); // 面向房间中心
-        W.reg(group, table);
-        BR.addFurniturePickup(W, {
-          tx: ttx, ty: tty, item: 'almond', suffix: 'manila_table',
-          group, fx, fz, topY: 0.78
-        });
-      });
-      // 4) 柜子（程序化：柜体+柜门线）+ 柜中绷带拾取
       W.addChunkContent(gtx, gty, (group) => {
         const fx = BR.tileCX(gtx) + 0.7, fz = BR.tileCZ(gty) + 0.7;
         const cab = buildFurnitureMesh('cabinet');
@@ -542,13 +1017,35 @@
         W.reg(group, cab);
         BR.addFurniturePickup(W, {
           tx: gtx, ty: gty, item: 'bandage', suffix: 'manila_cab',
-          group, fx, fz, topY: 1.54
+          group, fx, fz, topY: 1.54, container: 'cabinet', furniture: cab
         });
       });
-      // 5) 马尼拉字条（文案不动）：贴在房间某面墙上
-      let ntx = x0, nty = tcy;
-      if (isDoor(ntx, nty)) { ntx = x1; }
-      if (isDoor(ntx, nty)) { ntx = tcx; nty = y0; }
+      // 7) 墙上 Manila Mary Foundation 告示（全文：英文原文贴墙 + 中英对照可读）
+      let ptx = x0, pty = tcy;
+      if (isDoor(ptx, pty)) ptx = x1;
+      if (isDoor(ptx, pty)) { ptx = tcx; pty = y0; }
+      W.addChunkContent(ptx, pty, (group) => {
+        const n = wallNormal(W, ptx, pty);
+        const pm = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.94),
+          new THREE.MeshBasicMaterial({ map: manilaPosterTexture() }));
+        pm.position.set(BR.tileCX(ptx) + n.x * (T / 2 - 0.05), 1.62, BR.tileCZ(pty) + n.z * (T / 2 - 0.05));
+        pm.rotation.y = Math.atan2(n.x, n.z);
+        W.reg(group, pm);
+        W.addInteractable({
+          id: 'manila_poster_' + ptx + '_' + pty, kind: 'note', chunkKey: W.chunkKeyOf(ptx, pty),
+          meshes: [pm], pos: pm.position.clone(), radius: 2.8,
+          prompt: () => (BR.interactKeyLabel ? BR.interactKeyLabel() : '【E】') + '阅读基金会告示',
+          canUse: () => true,
+          use: () => {
+            BR.Audio.paper();
+            BR.UI.showNote('Manila Mary Foundation 告示', MANILA_POSTER_CN + '\n\n' + MANILA_POSTER_EN);
+          }
+        });
+      });
+      // 8) 旧马尼拉字条（文案不动）：贴在另一面墙上
+      let ntx = x1, nty = tcy;
+      if (isDoor(ntx, nty)) { ntx = x0; }
+      if (isDoor(ntx, nty)) { ntx = tcx; nty = y1; }
       addNote(W, ntx, nty, '马尼拉房间',
         '如果你读到这个，说明你找到了马尼拉房间。\n\n这里没有实体。灯是暖的，补给是真的。\n\n待到理智恢复再走。记住它的位置——后室里这样的地方不多。\n\n——M.');
       W._manila = { x: cx, z: cz };
@@ -627,6 +1124,73 @@
       W._manilaTold = true;
       BR.UI.toast('马尼拉房间。这里是安全的，待一会儿能恢复理智');
       BR.Audio.checkpoint();
+    }
+    // 马尼拉房间系统（1:1 还原）：钢琴曲+嗡鸣减弱 / 顶灯波动 / 墙内敲击+全黑 / 久留 3 分钟送往 L1
+    if (W._manila) {
+      const dM = Math.hypot(P.pos.x - W._manila.x, P.pos.z - W._manila.z);
+      const inM = dM < 6.5, nearM = dM < 14;
+      // 靠近：L0 嗡鸣减弱 + 舒缓钢琴曲；离开：恢复
+      if (nearM && !W._manilaPiano) {
+        W._manilaPiano = true;
+        BR.Audio.manilaPianoStart(); BR.Audio.manilaHumDuck(true);
+      } else if (!nearM && W._manilaPiano) {
+        W._manilaPiano = false;
+        BR.Audio.manilaPianoStop(); BR.Audio.manilaHumDuck(false);
+      }
+      // 顶灯亮度随时间轻微波动（全黑事件期间保持熄灭）
+      W._manilaT = (W._manilaT || 0) + dt;
+      if (W._manilaLamp && !W._manilaBlackout) {
+        W._manilaLamp.intensity = W._manilaLampBase *
+          (1 + 0.10 * Math.sin(W._manilaT * 1.4) + 0.05 * Math.sin(W._manilaT * 4.3 + 1.7));
+      }
+      // 久留 = 奖励性出口：房内停留超 3 分钟 → 淡出 → 传送到 L1（Fandom 设定）
+      if (inM && !W._manilaSent) {
+        W._manilaStay = (W._manilaStay || 0) + dt;
+        if (W._manilaStay >= 150 && !W._manilaWarned) {
+          W._manilaWarned = true;
+          BR.UI.toast('你感到一阵恍惚……');
+        }
+        if (W._manilaStay >= 180) {
+          W._manilaSent = true;
+          manilaOverlay(true, 1400); // 淡出
+          BR.UI.toast('世界在你眼前溶解……');
+          setTimeout(() => {
+            manilaOverlay(false, 600);
+            if (BR.Game.state === 'playing' && !BR.Cutout.busy) {
+              BR.Audio.manilaPianoStop(); BR.Audio.manilaHumDuck(false);
+              BR.Cutout.travel('L1', { kind: 'manila' });
+            } else {
+              // 被打断（暂停等）：允许离开重进后再次触发
+              W._manilaSent = false; W._manilaPiano = false;
+            }
+          }, 1500);
+        }
+      } else if (!inM) {
+        W._manilaStay = 0; W._manilaWarned = false;
+      }
+      // 偶发：墙内敲击声 + 短暂全黑（2–4 秒，期间理智微降），随机 45–90 秒一次，仅在房内触发
+      if (inM && !W._manilaSent && !W._manilaBlackout) {
+        if (W._manilaEvtT == null) W._manilaEvtT = 45 + Math.random() * 45;
+        W._manilaEvtT -= dt;
+        if (W._manilaEvtT <= 0) {
+          W._manilaEvtT = 45 + Math.random() * 45;
+          W._manilaBlackout = true;
+          W._manilaBlackoutT = 2 + Math.random() * 2;
+          BR.Audio.knock();
+          if (W._manilaLamp) W._manilaLamp.intensity = 0;
+          manilaOverlay(true, 500);
+          BR.UI.toast('墙里传来敲击声……灯灭了');
+        }
+      }
+      if (W._manilaBlackout) {
+        W._manilaBlackoutT -= dt;
+        P.drainSanity(1.2 * dt); // 全黑期间理智微降
+        if (W._manilaBlackoutT <= 0) {
+          W._manilaBlackout = false;
+          manilaOverlay(false, 800);
+          if (W._manilaLamp) W._manilaLamp.intensity = W._manilaLampBase;
+        }
+      }
     }
     // 随机氛围事件：L0 无实体，孤独感里的不确定性（纯氛围 + 轻微理智压力，无实际伤害）
     W._l0ambT = (W._l0ambT == null ? 45 + Math.random() * 30 : W._l0ambT) - dt;
@@ -735,7 +1299,8 @@
       });
     });
     // 家具 POI（gen.js L1 放置）：p.data = {kind:'table'|'cabinet', item:'almond'|'bandage'|'food'|null}
-    // 程序化桌子/柜子 mesh + 家具拾取；item 为 null 时只做装饰
+    // 程序化桌子/柜子 mesh + 家具拾取；item 为 null 时只做装饰。
+    // 柜子（kind:'cabinet'）走两段式（先开门再拿），桌子保持一步拾取。
     poiList(map, 'furniture').forEach((p, i) => {
       const d = p.data || {};
       const kind = (d.kind === 'cabinet') ? 'cabinet' : 'table';
@@ -750,7 +1315,8 @@
         if (item) {
           BR.addFurniturePickup(W, {
             tx: p.tx, ty: p.ty, item, suffix: 'furn' + i,
-            group, fx, fz, topY: kind === 'cabinet' ? 1.54 : 0.78
+            group, fx, fz, topY: kind === 'cabinet' ? 1.54 : 0.78,
+            container: kind, furniture: f
           });
         }
       });
@@ -907,40 +1473,15 @@
       // 管线装饰：沿墙随机管道
       W.addChunkContent(map.rooms[0].cx | 0, map.rooms[0].cy | 0, () => {});
       // 板条箱 / 笔记
+      // 板条箱：两段式（先开盖，再瞄准箱内物资拾取），与 L0/L1 的 addCrate 共用接线
       const crate = (pp) => {
         const id = 'crate_' + pp.tx + '_' + pp.ty;
         W.addChunkContent(pp.tx, pp.ty, (group) => {
-          const g = new THREE.Group();
-          g.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
-          const wood = W.mat('crate');
-          const box = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.8, 1.05), wood);
-          box.position.y = 0.4; g.add(box);
-          const lid = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.12, 1.05), wood);
-          lid.position.y = 0.86; g.add(lid);
-          W.reg(group, g);
-          const opened = W.state.openedCrates.includes(id);
-          if (opened) { lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0); }
-          const ITEM_NAME = { almond: '杏仁水', bandage: '绷带', food: '食物' };
-          W.addInteractable({
-            id, kind: 'crate', chunkKey: W.chunkKeyOf(pp.tx, pp.ty),
-            meshes: [box, lid], pos: g.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
-            prompt: () => W.state.openedCrates.includes(id) ? '空板条箱' : '打开板条箱',
-            canUse: () => !W.state.openedCrates.includes(id),
-            use: () => {
-              if (W.state.openedCrates.includes(id)) return;
-              lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0);
-              BR.Audio.doorCreak();
-              W.state.openedCrates.push(id);
-              BR.bus.emit('crate:opened', { id });
-              const item = pp.data.item || 'empty';
-              if (item === 'empty') BR.UI.toast('箱子里只有灰尘。');
-              else {
-                BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
-                BR.UI.toast('找到了' + ITEM_NAME[item] + '！');
-                BR.Audio.pickup();
-              }
-              BR.UI.updateInv();
-            }
+          const cm = BR.buildCrateMesh(W);
+          cm.group.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
+          W.reg(group, cm.group);
+          BR.wireCrateTwoStage(W, group, cm, {
+            id, tx: pp.tx, ty: pp.ty, item: (pp.data && pp.data.item) || 'empty'
           });
         });
       };
@@ -1161,41 +1702,15 @@
           }
         });
       });
-      // 板条箱
+      // 板条箱：两段式（先开盖，再瞄准箱内物资拾取），与 L0/L1 的 addCrate 共用接线
       poiList(map, 'crate').forEach(pp => {
         const id = 'crate_' + pp.tx + '_' + pp.ty;
         W.addChunkContent(pp.tx, pp.ty, (group) => {
-          const g = new THREE.Group();
-          g.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
-          const wood = W.mat('crate');
-          const box = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.8, 1.05), wood);
-          box.position.y = 0.4; g.add(box);
-          const lid = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.12, 1.05), wood);
-          lid.position.y = 0.86; g.add(lid);
-          W.reg(group, g);
-          const opened = W.state.openedCrates.includes(id);
-          if (opened) { lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0); }
-          const ITEM_NAME = { almond: '杏仁水', bandage: '绷带', food: '食物' };
-          W.addInteractable({
-            id, kind: 'crate', chunkKey: W.chunkKeyOf(pp.tx, pp.ty),
-            meshes: [box, lid], pos: g.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
-            prompt: () => W.state.openedCrates.includes(id) ? '空板条箱' : '打开板条箱',
-            canUse: () => !W.state.openedCrates.includes(id),
-            use: () => {
-              if (W.state.openedCrates.includes(id)) return;
-              lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0);
-              BR.Audio.doorCreak();
-              W.state.openedCrates.push(id);
-              BR.bus.emit('crate:opened', { id });
-              const item = pp.data.item || 'empty';
-              if (item === 'empty') BR.UI.toast('箱子里只有灰尘。');
-              else {
-                BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
-                BR.UI.toast('找到了' + ITEM_NAME[item] + '！');
-                BR.Audio.pickup();
-              }
-              BR.UI.updateInv();
-            }
+          const cm = BR.buildCrateMesh(W);
+          cm.group.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
+          W.reg(group, cm.group);
+          BR.wireCrateTwoStage(W, group, cm, {
+            id, tx: pp.tx, ty: pp.ty, item: (pp.data && pp.data.item) || 'empty'
           });
         });
       });
