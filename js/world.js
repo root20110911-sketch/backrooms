@@ -121,19 +121,20 @@
       const q = BR.QUALITY;
       const fs = (q && q.fogScale) || 1;
       this.scene.fog = new THREE.Fog(th.bg != null ? th.bg : 0x000000,
-        (th.fogNear || 8) * fs, (th.fogFar || 46) * fs);
+        (th.fogNear || 8) * fs, (th.fogFar || 46) * fs * 0.92); // v1.2：雾略浓一点，压住远处过曝
 
+      // v1.2：环境光整体下调，配合 ACES 消除"白茫茫"
       const amb = new THREE.AmbientLight(th.ambient != null ? th.ambient : 0x404040,
-        th.ambInt != null ? th.ambInt : 0.55);
+        (th.ambInt != null ? th.ambInt : 0.55) * 0.8);
       this.scene.add(amb); this._amb = amb;
       const hemi = new THREE.HemisphereLight(th.sky != null ? th.sky : 0x888888,
-        th.ground != null ? th.ground : 0x222222, 0.35);
+        th.ground != null ? th.ground : 0x222222, 0.3);
       this.scene.add(hemi); this._hemi = hemi;
 
       // 点光源池
       const maxL = (q && q.maxLights) || 5;
       for (let i = 0; i < maxL; i++) {
-        const L = new THREE.PointLight(th.light != null ? th.light : 0xfff2cc, 0, 26, 2);
+        const L = new THREE.PointLight(th.light != null ? th.light : 0xfff0d2, 0, 26, 2);
         this.scene.add(L); this.lights.push(L);
       }
       // 玩家基础光 + 手电
@@ -208,7 +209,8 @@
     if (!this._matCache[name]) {
       this._levelMats = this._levelMats || [];
       const tex = BR.Textures.get(name);
-      const m = new THREE.MeshLambertMaterial({ map: tex });
+      // v1.2：整体压暗约一成半并偏暖，消除贴图"发白"的廉价感
+      const m = new THREE.MeshLambertMaterial({ map: tex, color: 0xdbd5c2 });
       this._matCache[name] = m; this._levelMats.push(m);
     }
     return this._matCache[name];
@@ -283,7 +285,8 @@
     if (m) { group.add(m); chunk.meshes.push(m); }
     m = inst(G.plane, this.mat(th.ceil || 'ceiling'), ceilM);
     if (m) { group.add(m); chunk.meshes.push(m); }
-    const fixMat = this._fixMat || (this._fixMat = new THREE.MeshBasicMaterial({ map: BR.Textures.get('fluor') }));
+    // v1.2：灯具面板本身也压暗，避免天花板一片死白（仍是发光体观感）
+    const fixMat = this._fixMat || (this._fixMat = new THREE.MeshBasicMaterial({ map: BR.Textures.get('fluor'), color: 0xbdb7a6 }));
     m = inst(G.plane, fixMat, fixM);
     if (m) { group.add(m); chunk.meshes.push(m); chunk.fixtureMesh = m; }
     if (this.blackout && chunk.fixtureMesh) chunk.fixtureMesh.visible = false;
@@ -421,7 +424,7 @@
       if (this.blackout || i >= near.length || i >= maxL) { L.intensity = 0; continue; }
       const f = near[i].f;
       L.position.set(f.x, f.y, f.z);
-      let inten = th.lightInt != null ? th.lightInt : 0.9;
+      let inten = (th.lightInt != null ? th.lightInt : 0.9) * 0.92;
       const flickDepth = th.flickerDepth != null ? th.flickerDepth : 0.15;
       if (f.flicker && !this.blackout) {
         const n = Math.sin(this.time * 37 + f.phase) * Math.sin(this.time * 13.7 + f.phase * 2);
@@ -434,7 +437,7 @@
         if (sd < st.r && Math.sin(this.time * 31 + f.phase * 3) > 0.1) inten *= 0.08;
       }
       L.intensity = inten;
-      L.color.setHex(th.light != null ? th.light : 0xfff2cc);
+      L.color.setHex(th.light != null ? th.light : 0xfff0d2); // 默认灯色偏微黄
     }
     // 玩家光跟随
     if (this.playerLight && BR.Player) {

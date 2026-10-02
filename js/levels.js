@@ -10,7 +10,7 @@
     L0: {
       name: 'Level 0 ——「教学关卡」',
       theme: {
-        bg: 0x0a0906, fogNear: 6, fogFar: 40, ambient: 0xbfb49a, ambInt: 0.75,
+        bg: 0x0a0906, fogNear: 6, fogFar: 40, ambient: 0xbfb49a, ambInt: 0.62,
         sky: 0xfff2cc, ground: 0x3a3325, light: 0xffe9a8, lightInt: 0.95,
         wallH: 2.7, wall: 'wallpaper', floor: 'carpet', ceil: 'ceiling',
         surface: 'carpet', fixtureEvery: 4, hum: 0.5
@@ -47,7 +47,7 @@
     FUN: {
       name: 'Level Fun ——「享乐层」=)',
       theme: {
-        bg: 0x0d0608, fogNear: 8, fogFar: 48, ambient: 0xd8a0b0, ambInt: 0.8,
+        bg: 0x0d0608, fogNear: 8, fogFar: 48, ambient: 0xd8a0b0, ambInt: 0.68,
         sky: 0xffd0e0, ground: 0x3a2a30, light: 0xffc0d8, lightInt: 1.0,
         wallH: 3.0, wall: 'partyWall', floor: 'partyFloor', ceil: 'ceiling',
         surface: 'tile', fixtureEvery: 4, hum: 0
@@ -226,17 +226,17 @@
     }
   }
   function noclipRandom(W, P) {
-    // 野生切出：随机传送到同层较远的房间
+    // 野生切出：随机传送到同层较远的房间（带掉落转场，掩盖区块加载）
+    if (BR.Trans.active) return; // 已有转场时不叠加
     const rooms = (W.map.rooms || []).filter(r =>
       Math.hypot(r.cx * T - P.pos.x, r.cy * T - P.pos.z) > 18);
     const r = rooms.length ? rooms[(Math.random() * rooms.length) | 0] : W.map.rooms[0];
     P.pos.set(BR.tileCX(Math.round(r.cx)), 0, BR.tileCZ(Math.round(r.cy)));
     P.vel.set(0, 0, 0);
     P.drainSanity(12);
-    P.shake(0.5);
     BR.Audio.stinger();
-    BR.UI.toast('你卡进了墙里……再睁眼，已经在别处了');
     BR.bus.emit('noclip:wild');
+    BR.Trans.play('drop', { text: '你卡进了墙里……再睁眼，已经在别处了' });
   }
 
   // 所有门：按 exitTo 赋予转场行为
