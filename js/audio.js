@@ -107,6 +107,9 @@
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       osc.connect(g); g.connect(o.dest || this._sfx);
       try { osc.start(t); osc.stop(t + dur + 0.05); } catch (e) { /* 忽略 */ }
+      // 修：ended 后断开连接，否则每个音符留一个 GainNode 挂在总线上，
+      // 长时间播放（钢琴曲/环境音乐）会让 audio graph 节点数无界增长。
+      osc.onended = function () { try { osc.disconnect(); g.disconnect(); } catch (e) {} };
     },
 
     // 一次性噪声：{f, f1, ft(滤波类型), q, dur, vol, a, at, dest}
@@ -126,6 +129,8 @@
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       src.connect(f); f.connect(g); g.connect(o.dest || this._sfx);
       try { src.start(t); src.stop(t + dur + 0.05); } catch (e) { /* 忽略 */ }
+      // 修：同 _tone，ended 后断开，避免无界累积。
+      src.onended = function () { try { src.disconnect(); f.disconnect(); g.disconnect(); } catch (e) {} };
     },
 
     // 循环声源装配：返回 {group, srcs[]}，srcs 需在停止时 stop
@@ -585,6 +590,82 @@
       // stage2 加一个不和谐的低鸣
       if (P.stage >= 2 && step % 8 === 0) {
         this._tone({ f: det(55.7), type: 'sawtooth', dur: spb * 6, vol: 0.10, at: at, dest: P.lp });
+      }
+    },
+
+    // ---------- 马尼拉房间：舒缓钢琴曲 + 嗡鸣减弱 + 墙内敲击 ----------
+    // 靠近房间时 levels.js 调用 manilaPianoStart/manilaHumDuck(true)，离开时停止/恢复。
+    manilaPianoStart: function () {
+      if (!this._ok || !this._ctx) return;
+      if (this._piano && this._piano.on) return;
+      var ctx = this._ctx;
+      var mg = ctx.createGain(); mg.gain.value = 0; mg.connect(this._music);
+      var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600; lp.connect(mg);
+      var dly = ctx.createDelay(1.0); dly.delayTime.value = 0.45; // 轻微回声：空房间感
+      var fb = ctx.createGain(); fb.gain.value = 0.3;
+      dly.connect(fb); fb.connect(dly); dly.connect(mg);
+      try { mg.gain.setTargetAtTime(0.38, this._t(), 2.5); } catch (e) {}
+      var self = this;
+      this._piano = { on: true, step: 0, next: 0, gain: mg, lp: lp, delay: dly, timer: null };
+      this._piano.timer = setInterval(function () { self._pianoTick(); }, 180);
+    },
+    manilaPianoStop: function () {
+      var Pc = this._piano;
+      if (!Pc || !Pc.on) return;
+      Pc.on = false;
+      if (Pc.timer) { clearInterval(Pc.timer); Pc.timer = null; }
+      this._piano = null;
+      var t = this._t();
+      try { Pc.gain.gain.setTargetAtTime(0.0001, t, 0.8); } catch (e) {}
+      setTimeout(function () {
+        try { Pc.lp.disconnect(); Pc.delay.disconnect(); Pc.gain.disconnect(); } catch (e) {}
+      }, 2500);
+    },
+    // 音序器心跳：向前 0.45s 预定音符（仿 _partyTick 写法）
+    _pianoTick: function () {
+      var Pc = this._piano;
+      if (!Pc || !Pc.on || !this._ok) return;
+      // 离开 L0（跨关）时自停并恢复嗡鸣：levels.js 的 tick 不再运行，这里兜底
+      if (BR.Game && BR.Game.level !== 'L0') {
+        this.manilaPianoStop(); this.manilaHumDuck(false); return;
+      }
+      var ctx = this._ctx;
+      if (Pc.next < ctx.currentTime) Pc.next = ctx.currentTime + 0.1;
+      var spb = 0.52, guard = 0;
+      while (Pc.next < ctx.currentTime + 0.45 && guard++ < 16) {
+        this._pianoNote(Pc.step, Pc.next - ctx.currentTime, spb, Pc);
+        Pc.next += spb;
+        Pc.step = (Pc.step + 1) % 32;
+      }
+    },
+    _pianoNote: function (step, at, spb, Pc) {
+      function mf(m) { return 440 * Math.pow(2, (m - 69) / 12); } // midi -> Hz
+      var dest = Pc.lp;
+      // 低音：每 8 步一个根音（C - Am - F - G，舒缓进行）
+      var bass = [48, 45, 41, 43];
+      if (step % 8 === 0) {
+        this._tone({ f: mf(bass[(step / 8) | 0]), type: 'sine', dur: spb * 6, vol: 0.10, a: 0.08, at: at, dest: dest });
+      }
+      // 主旋律：32 步摇篮曲式五声音阶
+      var mel = [64, -1, 67, -1, 69, -1, 72, -1, 74, -1, 72, 69, 67, -1, 64, -1,
+                 65, -1, 69, -1, 72, -1, 76, -1, 74, 72, 69, 67, 64, -1, -1, -1];
+      var m = mel[step % 32];
+      if (m > 0) {
+        this._tone({ f: mf(m), type: 'triangle', dur: spb * 3.2, vol: 0.11, a: 0.03, at: at, dest: dest });
+        this._tone({ f: mf(m), type: 'sine', dur: spb * 2.0, vol: 0.05, a: 0.05, at: at, dest: Pc.delay });
+      }
+    },
+    // 靠近马尼拉房间时压低 L0 荧光灯嗡鸣（环境总线），离开恢复
+    manilaHumDuck: function (on) {
+      if (!this._ok || !this._ctx || !this._amb) return;
+      try { this._amb.gain.setTargetAtTime(on ? 0.22 : 1.0, this._t(), 1.2); } catch (e) {}
+    },
+    knock: function () { // 墙内敲击：闷响 4 下，间隔随机
+      if (!this._ok) return;
+      for (var i = 0; i < 4; i++) {
+        var at = i * (0.38 + Math.random() * 0.15);
+        this._tone({ f: 95 - i * 7, f1: 42, type: 'sine', dur: 0.22, vol: 0.5, at: at });
+        this._nz({ f: 260, ft: 'lowpass', dur: 0.14, vol: 0.30, at: at });
       }
     },
 

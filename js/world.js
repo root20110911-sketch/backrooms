@@ -192,6 +192,7 @@
     this.steamVents = []; this.lowDucts.clear();
     this.elevator = null; this.blackout = false;
     this._noWall = null; this._openCeil = null; this._matCache = null;
+    this._manilaRect = null; // 马尼拉房间灯具禁区（levels.js 登记，跨关不残留）
     this._surfZones = null;
     // 闪烁风暴出口提示音（updateStormHint 建的循环声）清理
     if (this._stormHintOn && BR.Audio && BR.Audio.removeLoop) BR.Audio.removeLoop('storm_exit_hint');
@@ -262,9 +263,11 @@
             dummy.position.set(wx, wallH, wz); dummy.rotation.set(Math.PI / 2, 0, 0);
             dummy.updateMatrix(); ceilM.push(dummy.matrix.clone());
           }
-          // 灯具：按主题密度
+          // 灯具：按主题密度（马尼拉房间内不放 L0 荧光灯具：房间里只有一盏橙色顶灯，levels.js 登记 W._manilaRect）
           const dens = th.fixtureEvery || 5;
-          if (rngH.int(1, dens) === 1 && !this.blackout) {
+          const _mz = this._manilaRect;
+          const _inMz = _mz && tx >= _mz.x0 && tx <= _mz.x1 && ty >= _mz.y0 && ty <= _mz.y1;
+          if (rngH.int(1, dens) === 1 && !this.blackout && !_inMz) {
             dummy.position.set(wx, wallH - 0.02, wz); dummy.rotation.set(Math.PI / 2, 0, 0);
             dummy.updateMatrix(); fixM.push(dummy.matrix.clone());
             chunk.fixtures.push({ x: wx, y: wallH - 0.15, z: wz, phase: rngH.next() * 9, flicker: rngH.chance(th.flickerRate != null ? th.flickerRate : 0.12) });
@@ -588,7 +591,7 @@
   W.INTERACT_KINDS = [
     // 旧关（world.js / levels.js 已用）
     'door', 'crate', 'pickup', 'note', 'hole', 'generator', 'elevator',
-    'clue', 'anomaly', 'valve',
+    'clue', 'anomaly', 'valve', 'cabinet',
     // 扩建新关（各 builder 交付清单，陆续接入）
     'slide', 'npc_meg', 'npc_wanderer', 'radio', 'odd_window', 'stairwell',
     'pool_exit', 'tunnel', 'deep_exit', 'anomaly_exit', 'car', 'castle',
