@@ -161,11 +161,9 @@
     await wait(1200);
     glitch(false);
     await fade(1, 500);
-    await BR.Game.gotoLevel('L1');
-    setText('Level 1 ——「宜居地带」');
-    await wait(2000);
     setText('');
-    await fade(0, 2000);
+    // Systems A：前段演出保留，后续统一走 BR.Cutout.travel（统一切出状态机）
+    await BR.Cutout.travel('L1', { kind: 'walk', dropText: 'Level 1 ——「宜居地带」' });
   }
 
   async function trCorridor() {
@@ -180,11 +178,9 @@
     });
     glitch(false);
     await fade(1, 800);
-    await BR.Game.gotoLevel('L2');
-    setText('Level 2 ——「废弃公共带」');
-    await wait(2000);
     setText('');
-    await fade(0, 2000);
+    // Systems A：统一走 BR.Cutout.travel
+    await BR.Cutout.travel('L2', { kind: 'walk', dropText: 'Level 2 ——「废弃公共带」' });
   }
 
   async function trCeiling() {
@@ -198,11 +194,9 @@
     BR.Audio.partyStart();
     setText('上面传来音乐声……还有笑声。');
     await fade(1, 900);
-    await BR.Game.gotoLevel('FUN');
-    setText('Level Fun ——「享乐层」=)');
-    await wait(2200);
     setText('');
-    await fade(0, 2200);
+    // Systems A：被拉入天花板 = hole 前段，统一走 BR.Cutout.travel
+    await BR.Cutout.travel('FUN', { kind: 'hole', dropText: 'Level Fun ——「享乐层」=)' });
   }
 
   async function trGate() {
@@ -210,11 +204,9 @@
     setText('门后是向下的阶梯，和发电机的轰鸣。');
     await wait(1800);
     await fade(1, 900);
-    await BR.Game.gotoLevel('L3');
-    setText('Level 3 ——「发电站」');
-    await wait(2000);
     setText('');
-    await fade(0, 2000);
+    // Systems A：统一走 BR.Cutout.travel
+    await BR.Cutout.travel('L3', { kind: 'walk', dropText: 'Level 3 ——「发电站」' });
   }
 
   async function trElevator() {
@@ -239,11 +231,9 @@
     setText('你撞开员工通道的门，身后派对的音乐戛然而止。');
     await wait(1600);
     await fade(1, 700);
-    await BR.Game.gotoLevel('L1', { fromFun: true });
-    setText('你回到了 Level 1。荧光灯依旧嗡鸣。');
-    await wait(2000);
     setText('');
-    await fade(0, 2000);
+    // Systems A：统一走 BR.Cutout.travel（gotoLevel 曾吞掉的 {fromFun:true} 本就未生效，不再传递）
+    await BR.Cutout.travel('L1', { kind: 'walk', dropText: '你回到了 Level 1。荧光灯依旧嗡鸣。' });
   }
 
   async function trFail(cause) {

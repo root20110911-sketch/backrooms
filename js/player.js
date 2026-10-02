@@ -10,6 +10,7 @@
     crouching: false, running: false,
     hp: 100, noise: 0,
     sanity: 100,          // 理智 0..100：黑暗/实体/断电侵蚀，杏仁水与安全屋恢复
+    hunger: 100,          // 饥饿 0..100：随时间缓慢下降，食物恢复；<25 时回血减半、移速降低
     hasFlashlight: false, flashlightOn: false,
     camera: null,
     bobPhase: 0, stepAcc: 0,
@@ -34,6 +35,7 @@
     this.yaw = yaw || 0; this.pitch = 0;
     this.hp = 100; this.noise = 0; this.trauma = 0;
     this.sanity = 100; this.sanWhispT = 6; this.sanStingT = 20;
+    this.hunger = 100; this._hungerWarned = false;
     this.crouching = false; this.running = false;
     this.extDipY = 0; this.extRoll = 0; this.extPitch = 0; this.extFov = 0;
     this.eyeCur = C().EYE;
@@ -59,8 +61,13 @@
     if (this.hp <= 0) { this.hp = 0; BR.bus.emit('died', { cause }); }
   };
   P.heal = function (n) {
+    // 饥饿过低（<25）时回血减半
+    if (this.hunger < 25) n *= 0.5;
     this.hp = Math.min(100, this.hp + n);
     BR.bus.emit('heal', { hp: this.hp });
+  };
+  P.eat = function (n) {
+    this.hunger = Math.min(100, this.hunger + n);
   };
   // —— 理智 ——
   P.drainSanity = function (n) {
@@ -88,7 +95,11 @@
     const mv = input.getMove(); // {x:右, z:前} -1..1
     const wantRun = (input.runHeld || input.runToggle) && mv.z > 0.1 && !this.crouching;
     this.running = wantRun;
-    const speed = this.crouching ? cfg.CROUCH : (wantRun ? cfg.RUN : cfg.WALK);
+    var speed = this.crouching ? cfg.CROUCH : (wantRun ? cfg.RUN : cfg.WALK);
+    // 饥饿过低（<25）时移速小幅下降（约 10%）
+    if (this.hunger < 25) speed *= 0.9;
+    // 扩建钩子：游泳/涉水减速（BR.Swim 由水关卡提供，未加载时为 undefined）
+    if (BR.Swim && BR.Swim.speedMul) speed *= BR.Swim.speedMul;
     // 世界方向（yaw=0 面向 -z）
     const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
     const rx = Math.cos(this.yaw), rz = -Math.sin(this.yaw);
@@ -111,12 +122,18 @@
     this.noise = BR.damp(this.noise, target, 6, dt);
 
     // —— 理智：黑暗/断电侵蚀，明亮处与安全屋恢复 ——
+    // v1.3 修 Bug A：灯具太密导致 dark 恒 <0.3、玩家持续回理智。
+    // 新规则：安全屋 +5/s；断电 -3.5/s；真黑区（dark>0.55）按 -(1.2+dark*2.2)/s；
+    // dim 区（0.1<=dark<=0.55，有灯但较暗）-0.5/s 缓慢掉；
+    // 明亮区（dark<0.1）才 +0.5/s 缓慢回（darknessAt 最低 0.15，实际到不了，条件苛刻）。
+    // 实体 proximity 侵蚀在 entities.js 里，保留不动。
     const dark = world.darknessAt ? world.darknessAt(this.pos.x, this.pos.z) : 0;
     const inSafe = world.safeZoneAt ? world.safeZoneAt(this.pos.x, this.pos.z) : false;
     if (inSafe) this.restoreSanity(dt * 5);
-    else if (world.blackout) this.drainSanity(dt * 2.4);
-    else if (dark > 0.55) this.drainSanity(dt * (0.5 + dark * 1.5));
-    else if (dark < 0.3) this.restoreSanity(dt * 0.8);
+    else if (world.blackout) this.drainSanity(dt * 3.5);
+    else if (dark > 0.55) this.drainSanity(dt * (1.2 + dark * 2.2));
+    else if (dark >= 0.1) this.drainSanity(dt * 0.5);
+    else this.restoreSanity(dt * 0.5);
     // —— 低理智幻觉：耳语/惊吓/视线晃动 ——
     if (this.sanity < 38) {
       this.sanWhispT -= dt;
@@ -134,6 +151,13 @@
       }
     }
     if (BR.UI.setSanityFx) BR.UI.setSanityFx(this.sanity);
+
+    // —— 饥饿：随时间缓慢下降（0.1/s，100 点约撑 16~17 分钟）——
+    if (this.hunger > 0) this.hunger = Math.max(0, this.hunger - dt * 0.1);
+    if (this.hunger < 25 && !this._hungerWarned) {
+      this._hungerWarned = true;
+      BR.UI.toast('你饿得发慌，回血变慢了，找点吃的吧！', 3200);
+    } else if (this.hunger >= 30) this._hungerWarned = false;
 
     // —— 蹲伏眼高 ——
     const eyeT = this.crouching ? cfg.CROUCH_EYE : cfg.EYE;
