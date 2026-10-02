@@ -42,6 +42,8 @@ window.addEventListener('unhandledrejection', function (e) {
 <div id="fx-vignette"></div>
 <div id="fx-grain"></div>
 <div id="fx-drop"></div>
+<div id="fx-water"></div>
+<div id="breath-wrap"><div id="breath-fill"></div></div>
 
 <!-- HUD -->
 <div id="hud">
@@ -49,6 +51,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="objective"></div>
   <div id="prompt"></div>
   <div id="inv-bar"></div>
+  <div id="key-hint"></div>
   <div id="hp-wrap"><div id="hp-fill"></div></div>
   <div id="san-wrap"><div id="san-fill"></div></div>
   <div id="toasts"></div>
@@ -101,7 +104,17 @@ window.addEventListener('unhandledrejection', function (e) {
       <h4>目标</h4>
       <p>从 Level 0 出发，逐层切出，最终逃离后室。主线：L0 → L1 → L2 → L3 → 结局。</p>
       <h4>操作</h4>
-      <p><b>桌面：</b>WASD 移动 · 鼠标视角 · E 交互 · F 手电 · Shift 跑 · C 蹲 · Esc 暂停</p>
+      <p><b>桌面：</b>键位总览见下表。</p>
+      <table class="keys-table">
+        <tr><td>移动</td><td><span class="k">W</span><span class="k">A</span><span class="k">S</span><span class="k">D</span><span class="dim">（方向键亦可）</span></td></tr>
+        <tr><td>视角</td><td>鼠标<span class="dim">（点击画面锁定）</span></td></tr>
+        <tr><td>疾跑</td><td><span class="k">Shift</span></td></tr>
+        <tr><td>蹲伏</td><td><span class="k">C</span> 或 <span class="k">左 Ctrl</span></td></tr>
+        <tr><td>交互</td><td><span class="k">E</span></td></tr>
+        <tr><td>手电筒</td><td><span class="k">F</span></td></tr>
+        <tr><td>物品 1–5</td><td><span class="k">1</span>杏仁水 <span class="k">2</span>绷带 <span class="k">3</span>手电 <span class="k">4</span>迁跃浆果 <span class="k">5</span>食物</td></tr>
+        <tr><td>暂停</td><td><span class="k">Esc</span></td></tr>
+      </table>
       <p><b>手机/平板：</b>左侧摇杆移动 · 右侧拖动视角 · 准星按钮交互<br>建议<b>横屏 + 全屏</b>游玩，视野更宽。</p>
       <h4>生存</h4>
       <p>留意声音和灯光。奔跑会引来注意，蹲下贴墙更安全。杏仁水回血，绷带治伤。</p>
@@ -134,6 +147,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <label>视角灵敏度 <span class="val" id="sens-val"></span><input id="set-sens" type="range" min="0.3" max="2.5" step="0.1"></label>
     <label>音量 <span class="val" id="vol-val"></span><input id="set-vol" type="range" min="0" max="1" step="0.05"></label>
     <label>镜头晃动 <select id="set-headbob"><option value="on">开</option><option value="weak">弱</option><option value="off">关</option></select></label>
+    <label>坠落镜头 <select id="set-dropcam"><option value="full">完整</option><option value="soft">柔和</option><option value="off">关闭</option></select></label>
     <label>摇杆大小 <span class="val" id="joysize-val"></span><input id="set-joysize" type="range" min="90" max="170" step="5"></label>
     <label>摇杆位置 <select id="set-joyside"><option value="left">左侧</option><option value="right">右侧</option></select></label>
     <label>画质 <select id="set-quality"><option value="auto">自动</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
@@ -183,12 +197,23 @@ window.addEventListener('unhandledrejection', function (e) {
 <script src="js/textures.js?v=1.2.3"></script>
 <script src="js/audio.js?v=1.2.3"></script>
 <script src="js/gen.js?v=1.2.3"></script>
+<script src="js/gen_l188.js?v=1.2.3"></script>
+<script src="js/gen_l37.js?v=1.2.3"></script>
+<script src="js/gen_l94.js?v=1.2.3"></script>
+<script src="js/gen_l7.js?v=1.2.3"></script>
+<script src="js/gen_l11.js?v=1.2.3"></script>
 <script src="js/world.js?v=1.2.3"></script>
 <script src="js/player.js?v=1.2.3"></script>
 <script src="js/input.js?v=1.2.3"></script>
 <script src="js/entities.js?v=1.2.3"></script>
 <script src="js/transitions.js?v=1.2.3"></script>
+<script src="js/cutout.js?v=1.2.3"></script>
 <script src="js/levels.js?v=1.2.3"></script>
+<script src="js/lv_l188.js?v=1.2.3"></script>
+<script src="js/lv_l37.js?v=1.2.3"></script>
+<script src="js/lv_l94.js?v=1.2.3"></script>
+<script src="js/lv_l7.js?v=1.2.3"></script>
+<script src="js/lv_l11.js?v=1.2.3"></script>
 <script src="js/ui.js?v=1.2.3"></script>
 <script src="js/save.js?v=1.2.3"></script>
 <script src="js/main.js?v=1.2.3"></script>

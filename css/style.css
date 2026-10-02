@@ -122,6 +122,16 @@ button:disabled { opacity: 0.4; }
 .how h4:first-child { margin-top: 0; }
 .how b { color: #d3ba72; font-weight: 600; }
 .how .dim { color: #7d7a6c; }
+/* 玩法说明里的完整键位表 */
+.keys-table { width: 100%; border-collapse: collapse; margin: 4px 0 6px; font-size: 13px; line-height: 1.7; }
+.keys-table td { padding: 5px 4px; border-bottom: 1px solid rgba(59,56,46,0.6); color: #b9b5a6; vertical-align: top; }
+.keys-table tr:last-child td { border-bottom: none; }
+.keys-table td:first-child { width: 76px; color: #8f8b7d; letter-spacing: 2px; white-space: nowrap; }
+.keys-table .k {
+  display: inline-block; border: 1px solid #4a463a; border-radius: 4px;
+  padding: 1px 7px; margin: 1px 2px; color: #d3ba72;
+  background: rgba(20,21,25,0.9); font-size: 12px;
+}
 #note-body { white-space: pre-line; text-align: left; line-height: 2; color: #cfcaba; margin: 10px 0 16px; font-size: 15px; }
 .panel.note { border-color: #6d5a26; }
 #death-cause, #ending-body { margin: 12px 0 18px; line-height: 2; color: #a8a496; }
@@ -192,6 +202,26 @@ button:disabled { opacity: 0.4; }
 #san-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #6a4f96, #9a76d0); transition: width 0.3s; }
 #san-fill.low { background: linear-gradient(90deg, #5a2f96, #7a3fd0); animation: sanpulse 1.2s ease-in-out infinite; }
 @keyframes sanpulse { 50% { opacity: 0.55; } }
+#hun-wrap {
+  position: absolute; left: 12px; top: calc(68px + env(safe-area-inset-top));
+  width: 132px; height: 6px; background: rgba(16,10,6,0.72);
+  border: 1px solid #50402e; border-radius: 3px; overflow: hidden;
+}
+#hun-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #a8742f, #d8a04a); transition: width 0.3s; }
+#hun-fill.low { background: linear-gradient(90deg, #96422f, #d06a3f); animation: sanpulse 1.2s ease-in-out infinite; }
+/* HUD 角落常驻键位提示（桌面端；触屏由 ui.js 设 display:none） */
+#key-hint {
+  position: absolute; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
+  display: flex; flex-wrap: wrap; gap: 4px 10px; max-width: 46vw; justify-content: flex-end;
+  background: rgba(10,11,14,0.72); border: 1px solid #3f3d33; border-radius: 6px;
+  padding: 7px 11px; font-size: 11px; letter-spacing: 1px; color: #8f8b7d;
+  text-shadow: 0 1px 3px #000; pointer-events: none; white-space: nowrap;
+}
+#key-hint kbd {
+  display: inline-block; border: 1px solid #4a463a; border-radius: 3px;
+  padding: 0 5px; margin-right: 4px; color: #d3ba72;
+  background: rgba(20,21,25,0.9); font-family: inherit; font-size: 10px; line-height: 1.6;
+}
 #toasts { position: absolute; left: 50%; top: 20%; transform: translateX(-50%); width: max-content; max-width: 88vw; }
 .toast {
   background: rgba(8,9,11,0.88); border: 1px solid #4a463a; border-radius: 6px;
@@ -300,6 +330,7 @@ body.need-orient #screen-orient { display: flex; }
   .panel h1, #title-logo { font-size: 30px; }
   .subtitle { font-size: 20px; margin-bottom: 8px; }
   #prompt { bottom: 38%; }
+  #key-hint { font-size: 10px; padding: 5px 8px; gap: 3px 8px; max-width: 58vw; }
   button { padding: 10px 14px; margin: 6px 0; font-size: 15px; }
   .how { font-size: 13px; line-height: 1.75; }
   .tbtn { width: 54px; height: 54px; }
@@ -311,3 +342,18 @@ body.need-orient #screen-orient { display: flex; }
   .panel { padding: 20px 18px; }
   .panel h1, #title-logo { font-size: 32px; letter-spacing: 8px; }
 }
+
+/* ---------- 扩建：水下效果 ---------- */
+body.underwater #fx-water {
+  position: fixed; inset: 0; z-index: 14; pointer-events: none;
+  background: linear-gradient(180deg, rgba(20,80,110,0.35), rgba(8,40,70,0.55));
+}
+body.underwater #game-canvas { filter: saturate(1.2) brightness(0.85); }
+#breath-wrap {
+  position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%);
+  width: 180px; height: 8px; z-index: 45; display: none;
+  background: rgba(10,20,30,0.6); border: 1px solid #3b5a6a; border-radius: 4px;
+}
+body.underwater #breath-wrap.need { display: block; }
+#breath-fill { height: 100%; width: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #4fc3e8, #9fe8ff); transition: width 0.2s; }

@@ -553,6 +553,8 @@
     L3: 'brick',
     FUN: 'partyWall'
   };
+  // 扩建钩子：新关卡注册墙面贴图映射（buildContent 里也可用 theme.wall/floor/ceil 指定）
+  // （挂载点在文件末尾 BR.Textures 字面量赋值之后，避免被覆盖）
 
   BR.Textures = {
     // 预生成全部贴图（游戏启动时调用一次）
@@ -582,4 +584,11 @@
       return m;
     }
   };
+
+  // 扩建钩子：新关卡注册程序化贴图（painter(ctx, w, h) 在 256x256 canvas 上绘制）
+  // 用法：BR.Textures.registerTex('pool_tile', function(ctx,w,h){ ... });
+  BR.Textures.registerTex = function (name, painter) { painters[name] = painter; };
+  // 扩建钩子：新关卡注册墙面贴图映射
+  // 用法：BR.Textures.registerWallTex('L7', 'ocean_wall');
+  BR.Textures.registerWallTex = function (level, texName) { WALL_TEX[level] = texName; };
 })();
