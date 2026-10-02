@@ -64,7 +64,7 @@
     const fns = {
       intro: trIntro, noclip_wall: trNoclip, corridor: trCorridor,
       ceiling: trCeiling, gate: trGate, elevator: trElevator,
-      fun_escape: trFunEscape, fail: trFail, fade: trFade
+      fun_escape: trFunEscape, fail: trFail, fade: trFade, drop: trDrop
     };
     const fn = fns[name] || trFade;
     return Promise.resolve(fn(opts)).then(() => this._finish(), () => this._finish());
@@ -72,6 +72,10 @@
 
   TR._finish = function () {
     clearTimeout(this._watchdog);
+    // 掉落转场的外部镜头偏移兜底复位
+    const P = BR.Player;
+    if (P) { P.extDipY = 0; P.extRoll = 0; P.extPitch = 0; P.extFov = 0; }
+    document.body.classList.remove('dropping');
     const ov = $ov();
     ov.style.transition = 'opacity 400ms linear';
     ov.style.opacity = 0;
@@ -104,6 +108,36 @@
   }
 
   /* ---------- 各转场 ---------- */
+  // 掉落切入：黑屏 → 失重下坠（镜头从高处加速下沉 + 晃动 + 暗角收紧 + 低频嗡鸣）
+  //          → 落地（闷响 + 震屏）→ 恢复控制。用于新游戏 / 进关 / 重生 / 野生切出。
+  async function trDrop(opts) {
+    opts = opts || {};
+    const P = BR.Player, ov = $ov();
+    document.body.classList.add('dropping');
+    if (opts.text) setText(opts.text); else setText('');
+    BR.Audio.dropRumble(1.9);
+    const dur = 1500, t0 = performance.now();
+    await new Promise((res) => {
+      const iv = setInterval(() => {
+        if (TR.active && TR.active.skipped) { clearInterval(iv); res(); return; }
+        const t = Math.min(1, (performance.now() - t0) / dur);
+        const fall = t * t;                       // 加速下坠
+        P.extDipY = 1.45 * (1 - fall);            // 从 1.45m 高处落下
+        P.extRoll = Math.sin(t * 11) * 0.05 * (1 - t);
+        P.extPitch = Math.sin(t * 7 + 1) * 0.03 * (1 - t);
+        P.extFov = Math.sin(t * Math.PI) * 8;      // 下坠速度感
+        ov.style.opacity = Math.max(0, 1 - t * 1.7); // 黑屏渐开，露出下坠
+        if (t >= 1) { clearInterval(iv); res(); }
+      }, 33);
+    });
+    P.extDipY = 0; P.extRoll = 0; P.extPitch = 0; P.extFov = 0;
+    BR.Audio.thud();
+    P.shake(0.5); P.landDip();
+    await wait(450);
+    document.body.classList.remove('dropping');
+    setText('');
+  }
+
   async function trIntro() {
     setText('你切出了现实。');
     await wait(2200);

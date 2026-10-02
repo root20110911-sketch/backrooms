@@ -6,10 +6,9 @@
   BR.UI = U;
 
   const ITEM_INFO = {
-    almond: { name: '杏仁水', icon: '🥛' },
-    bandage: { name: '绷带', icon: '🩹' },
-    flashlight: { name: '手电筒', icon: '🔦' },
-    key: { name: '钥匙', icon: '🗝' }
+    almond: { name: '杏仁水', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3c3.2 4.2 6 7.4 6 11a6 6 0 0 1-12 0c0-3.6 2.8-6.8 6-11z"/></svg>' },
+    bandage: { name: '绷带', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3.5" y="8.5" width="17" height="7" rx="3.5"/><path d="M12 10.8v2.4M10.8 12h2.4"/></svg>' },
+    flashlight: { name: '手电筒', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v5H9z"/><path d="M10 7.5 6.5 15a2.4 2.4 0 0 0 2.1 3.5h6.8a2.4 2.4 0 0 0 2.1-3.5L14 7.5"/></svg>' }
   };
 
   U.init = function () {
@@ -166,6 +165,10 @@
     this.$set_joysize.value = s.joySize; this.$joysize_val.textContent = s.joySize + 'px';
     this.$set_joyside.value = s.joySide;
     this.$set_quality.value = s.quality || 'auto';
+    const hb = BR.$('set-headbob');
+    if (hb) hb.value = s.headbob || 'on';
+    const fs = BR.$('btn-fullscreen');
+    if (fs) fs.textContent = BR.Input.isFullscreen() ? '退出全屏' : '进入全屏';
   };
 
   /* ---------- 死亡 / 结局 ---------- */
@@ -241,6 +244,13 @@
     this.$set_joysize.oninput = (e) => { S.joySize = +e.target.value; this.$joysize_val.textContent = S.joySize + 'px'; BR.Input.saveSettings(); };
     this.$set_joyside.onchange = (e) => { S.joySide = e.target.value; BR.Input.applyJoySide(); BR.Input.saveSettings(); };
     this.$set_quality.onchange = (e) => { S.quality = e.target.value; BR.Input.saveSettings(); BR.UI.toast('画质将在下次进入关卡时生效'); };
+    const hb = BR.$('set-headbob');
+    if (hb) hb.onchange = (e) => { S.headbob = e.target.value; BR.Input.saveSettings(); };
+    const fsb = BR.$('btn-fullscreen');
+    if (fsb) fsb.onclick = () => {
+      BR.Input.toggleFullscreen();
+      setTimeout(() => this.renderSettings(), 400);
+    };
     // 物品快捷键
     addEventListener('keydown', (e) => {
       if (G().state !== 'playing') return;

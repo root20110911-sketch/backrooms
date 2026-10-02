@@ -27,6 +27,9 @@
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._pr || 1.5));
     this.renderer.outputEncoding = THREE.sRGBEncoding;
+    // v1.2：ACES 色调映射压住过曝，保留荧光灯泛黄感
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.85;
 
     addEventListener('resize', () => {
       this.renderer.setSize(innerWidth, innerHeight);
@@ -78,12 +81,14 @@
       q = (BR.Input.isTouch && small) ? 'medium' : 'high';
     }
     const cfgs = {
-      high: { fogScale: 1.15, maxLights: 7, pr: 2 },
-      medium: { fogScale: 1.0, maxLights: 5, pr: 1.5 },
-      low: { fogScale: 0.8, maxLights: 3, pr: 1 }
+      high: { fogScale: 1.15, maxLights: 7, pr: 2, grain: 1 },
+      medium: { fogScale: 1.0, maxLights: 5, pr: 1.5, grain: 1 },
+      low: { fogScale: 0.8, maxLights: 3, pr: 1, grain: 0 }
     };
     BR.QUALITY = cfgs[q] || cfgs.medium;
     this._pr = BR.QUALITY.pr;
+    // 低画质：关掉胶片颗粒 overlay
+    document.body.classList.toggle('fx-low', !BR.QUALITY.grain);
     if (this.renderer) this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._pr));
     BR.log('quality', q);
   };
@@ -95,7 +100,8 @@
     this.inv = {};
     this.flags = { clues: 0, gens: 0 };
     BR.Save.clearSave();
-    this.loadLevel('L0', { intro: true });
+    BR.Input.ensureImmersive(); // 触屏：尝试全屏 + 锁横屏
+    this.loadLevel('L0', { intro: true, drop: true });
   };
 
   G.continueGame = function () {
@@ -104,7 +110,8 @@
     this.seed = d.seed;
     this.inv = d.inv || {};
     this.flags = d.flags || { clues: 0, gens: 0 };
-    this.loadLevel(d.level, { saved: d });
+    BR.Input.ensureImmersive();
+    this.loadLevel(d.level, { saved: d, drop: true });
   };
 
   /* ---------- 关卡加载 ---------- */
@@ -150,10 +157,17 @@
           // 检查点 + 存档
           this.checkpoint = this.snapshot();
           this.autosave();
-          if (opts.intro && level === 'L0') {
-            BR.Trans.play('intro');
-            setTimeout(() => BR.UI.toast('WASD/摇杆移动，E/✋ 交互', 4000), 6000);
-          }
+          BR.Input.checkOrient();
+          const afterEnter = () => {
+            if (opts.intro && level === 'L0') {
+              BR.Trans.play('intro');
+              setTimeout(() => BR.UI.toast('WASD / 左摇杆移动，E / 交互键使用物品', 4000), 6000);
+            }
+          };
+          // 入场掉落感：新游戏 / 读档 / 重生（已有转场进行中时不叠加）
+          if (opts.drop && !BR.Trans.active) {
+            BR.Trans.play('drop', { text: opts.dropText }).then(afterEnter);
+          } else afterEnter();
         });
       } catch (e) {
         BR.warn('loadLevel failed', e);
@@ -210,7 +224,7 @@
     this.inv = Object.assign({}, cp.inv);
     this.flags = Object.assign({}, cp.flags);
     BR.Trans.play('fade').then(() => {
-      this.loadLevel(cp.level, { saved: cp });
+      this.loadLevel(cp.level, { saved: cp, drop: true });
     });
   };
 

@@ -15,6 +15,8 @@
     bobPhase: 0, stepAcc: 0,
     trauma: 0,           // 镜头震动 0..1
     landDipT: 0,
+    // 外部镜头偏移（掉落转场等写入，update 中应用，不与转场抢相机）
+    extDipY: 0, extRoll: 0, extPitch: 0, extFov: 0,
     hurtCd: 0,
     sanWhispT: 6, sanStingT: 20,
     eyeCur: 1.62
@@ -33,6 +35,7 @@
     this.hp = 100; this.noise = 0; this.trauma = 0;
     this.sanity = 100; this.sanWhispT = 6; this.sanStingT = 20;
     this.crouching = false; this.running = false;
+    this.extDipY = 0; this.extRoll = 0; this.extPitch = 0; this.extFov = 0;
     this.eyeCur = C().EYE;
   };
 
@@ -137,6 +140,10 @@
     this.eyeCur = BR.damp(this.eyeCur, eyeT, 10, dt);
 
     // —— headbob + 脚步 ——
+    // 镜头晃动设置：on=1 / weak=0.45 / off=0
+    const hbSet = (input.settings && input.settings.headbob) || 'on';
+    const hb = hbSet === 'off' ? 0 : (hbSet === 'weak' ? 0.45 : 1);
+    const runK = wantRun ? 1.75 : 1;   // 冲刺幅度加大
     if (moving) {
       this.bobPhase += dt * (4 + hSpeed * 1.6);
       this.stepAcc += hSpeed * dt;
@@ -148,8 +155,9 @@
     } else {
       this.bobPhase = BR.damp(this.bobPhase, Math.round(this.bobPhase / Math.PI) * Math.PI, 8, dt);
     }
-    const bobY = moving ? Math.abs(Math.sin(this.bobPhase)) * (this.crouching ? 0.03 : 0.055) : 0;
-    const bobX = moving ? Math.sin(this.bobPhase) * 0.03 : 0;
+    const bobY = moving ? Math.abs(Math.sin(this.bobPhase)) * (this.crouching ? 0.03 : 0.055) * hb * runK : 0;
+    const bobX = moving ? Math.sin(this.bobPhase) * 0.035 * hb * runK : 0;
+    const bobRoll = moving ? Math.sin(this.bobPhase) * 0.014 * hb * runK : 0;
 
     // —— 镜头 ——
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
@@ -163,11 +171,15 @@
     const swayY = sanSway * 0.02 * Math.cos(performance.now() * 0.0009);
     this.camera.position.set(
       this.pos.x + bobX * Math.cos(this.yaw),
-      this.eyeY() + bobY - this.landDipT * 0.22 + shy,
+      this.eyeY() + bobY - this.landDipT * 0.22 + shy + (this.extDipY || 0),
       this.pos.z - bobX * Math.sin(this.yaw)
     );
-    this.camera.rotation.set(this.pitch + shx * 0.4 + swayX, this.yaw + swayY, shx * 0.3);
-    const fovT = wantRun && moving ? cfg.FOV_RUN : cfg.FOV;
+    this.camera.rotation.set(
+      this.pitch + shx * 0.4 + swayX + (this.extPitch || 0),
+      this.yaw + swayY,
+      shx * 0.3 + bobRoll + (this.extRoll || 0)
+    );
+    const fovT = (wantRun && moving ? cfg.FOV_RUN : cfg.FOV) + (this.extFov || 0);
     if (Math.abs(this.camera.fov - fovT) > 0.1) {
       this.camera.fov = BR.damp(this.camera.fov, fovT, 6, dt);
       this.camera.updateProjectionMatrix();
