@@ -16,12 +16,14 @@
   BR.Game = G;
 
   G.init = function () {
-    BR.Textures.init();
-    BR.Input.init();
-    BR.UI.init();
-    BR.Player.initCamera();
-    this.applyQuality();
+    var mark = function (s) { window.__brStep = s; };
+    mark('textures'); BR.Textures.init();
+    mark('input'); BR.Input.init();
+    mark('ui'); BR.UI.init();
+    mark('camera'); BR.Player.initCamera();
+    mark('quality'); this.applyQuality();
 
+    mark('renderer');
     const cv = BR.$('game-canvas');
     this.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setSize(innerWidth, innerHeight);
@@ -274,8 +276,12 @@
     }
   };
 
-  // 启动
+  // 启动（含诊断：init 抛错时把原因显示在屏幕上，而不是黑屏）
+  var boot = function () {
+    try { G.init(); window.__brStep = 'ok'; }
+    catch (e) { showBrErr('INIT FAIL: ' + (e && e.message || e)); }
+  };
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => G.init());
-  } else G.init();
+    document.addEventListener('DOMContentLoaded', boot);
+  } else boot();
 })();

@@ -6,7 +6,34 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="screen-orientation" content="landscape">
 <title>Backrooms：切出</title>
-<link rel="stylesheet" href="css/style.css?v=1.2.1">
+<script>
+/* 启动诊断：捕获报错并直接显示在屏幕上（定位平板黑屏用） */
+window.__brErrs = [];
+window.__brStep = 'head';
+function showBrErr(extra) {
+  try {
+    if (extra) window.__brErrs.push(extra);
+    var box = document.getElementById('br-errbox');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'br-errbox';
+      box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;' +
+        'background:rgba(140,20,20,.94);color:#fff;font:12px/1.6 monospace;' +
+        'padding:10px 12px;border-radius:6px;white-space:pre-wrap;word-break:break-all;';
+      (document.body || document.documentElement).appendChild(box);
+    }
+    box.textContent = '诊断(卡在步骤: ' + window.__brStep + '):\n' +
+      window.__brErrs.slice(-5).join('\n') + '\n请把这段文字拍照发我';
+  } catch (e) {}
+}
+window.addEventListener('error', function (e) {
+  showBrErr('ERR: ' + (e.message || e.type) + ' @' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '?'));
+});
+window.addEventListener('unhandledrejection', function (e) {
+  var r = e.reason; showBrErr('REJ: ' + (r && (r.message || r) || '?'));
+});
+</script>
+<link rel="stylesheet" href="css/style.css?v=1.2.2">
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
@@ -145,20 +172,20 @@
 <!-- 转场 -->
 <div id="screen-trans"><div id="trans-text"></div></div>
 
-<script src="js/vendor/three.min.js?v=1.2.1"></script>
-<script src="js/config.js?v=1.2.1"></script>
-<script src="js/utils.js?v=1.2.1"></script>
-<script src="js/textures.js?v=1.2.1"></script>
-<script src="js/audio.js?v=1.2.1"></script>
-<script src="js/gen.js?v=1.2.1"></script>
-<script src="js/world.js?v=1.2.1"></script>
-<script src="js/player.js?v=1.2.1"></script>
-<script src="js/input.js?v=1.2.1"></script>
-<script src="js/entities.js?v=1.2.1"></script>
-<script src="js/transitions.js?v=1.2.1"></script>
-<script src="js/levels.js?v=1.2.1"></script>
-<script src="js/ui.js?v=1.2.1"></script>
-<script src="js/save.js?v=1.2.1"></script>
-<script src="js/main.js?v=1.2.1"></script>
+<script src="js/vendor/three.min.js?v=1.2.2"></script>
+<script src="js/config.js?v=1.2.2"></script>
+<script src="js/utils.js?v=1.2.2"></script>
+<script src="js/textures.js?v=1.2.2"></script>
+<script src="js/audio.js?v=1.2.2"></script>
+<script src="js/gen.js?v=1.2.2"></script>
+<script src="js/world.js?v=1.2.2"></script>
+<script src="js/player.js?v=1.2.2"></script>
+<script src="js/input.js?v=1.2.2"></script>
+<script src="js/entities.js?v=1.2.2"></script>
+<script src="js/transitions.js?v=1.2.2"></script>
+<script src="js/levels.js?v=1.2.2"></script>
+<script src="js/ui.js?v=1.2.2"></script>
+<script src="js/save.js?v=1.2.2"></script>
+<script src="js/main.js?v=1.2.2"></script>
 </body>
 </html>
