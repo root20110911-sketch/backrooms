@@ -33,7 +33,7 @@ window.addEventListener('unhandledrejection', function (e) {
   var r = e.reason; showBrErr('REJ: ' + (r && (r.message || r) || '?'));
 });
 </script>
-<link rel="stylesheet" href="css/style.css?v=1.2.3">
+<link rel="stylesheet" href="css/style.css?v=1.2.8">
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
@@ -104,17 +104,8 @@ window.addEventListener('unhandledrejection', function (e) {
       <h4>目标</h4>
       <p>从 Level 0 出发，逐层切出，最终逃离后室。主线：L0 → L1 → L2 → L3 → 结局。</p>
       <h4>操作</h4>
-      <p><b>桌面：</b>键位总览见下表。</p>
-      <table class="keys-table">
-        <tr><td>移动</td><td><span class="k">W</span><span class="k">A</span><span class="k">S</span><span class="k">D</span><span class="dim">（方向键亦可）</span></td></tr>
-        <tr><td>视角</td><td>鼠标<span class="dim">（点击画面锁定）</span></td></tr>
-        <tr><td>疾跑</td><td><span class="k">Shift</span></td></tr>
-        <tr><td>蹲伏</td><td><span class="k">C</span> 或 <span class="k">左 Ctrl</span></td></tr>
-        <tr><td>交互</td><td><span class="k">E</span></td></tr>
-        <tr><td>手电筒</td><td><span class="k">F</span></td></tr>
-        <tr><td>物品 1–5</td><td><span class="k">1</span>杏仁水 <span class="k">2</span>绷带 <span class="k">3</span>手电 <span class="k">4</span>迁跃浆果 <span class="k">5</span>食物</td></tr>
-        <tr><td>暂停</td><td><span class="k">Esc</span></td></tr>
-      </table>
+      <p><b>桌面：</b>键位总览见下表（可在暂停菜单 → 按键设置里改键）。</p>
+      <table class="keys-table" id="keys-table"></table>
       <p><b>手机/平板：</b>左侧摇杆移动 · 右侧拖动视角 · 准星按钮交互<br>建议<b>横屏 + 全屏</b>游玩，视野更宽。</p>
       <h4>生存</h4>
       <p>留意声音和灯光。奔跑会引来注意，蹲下贴墙更安全。杏仁水回血，绷带治伤。</p>
@@ -151,7 +142,23 @@ window.addEventListener('unhandledrejection', function (e) {
     <label>摇杆大小 <span class="val" id="joysize-val"></span><input id="set-joysize" type="range" min="90" max="170" step="5"></label>
     <label>摇杆位置 <select id="set-joyside"><option value="left">左侧</option><option value="right">右侧</option></select></label>
     <label>画质 <select id="set-quality"><option value="auto">自动</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
+    <h3>⌨ 按键设置</h3>
+    <div id="bindings-list"></div>
+    <div class="binding-note">浏览器可能拦截部分 Ctrl 组合键（如 Ctrl+W），可自行改键。</div>
+    <button id="btn-bindings-reset" class="ghost wide">恢复默认按键</button>
     <div class="pause-note">手机建议横屏 + 全屏游玩。<br>画质更改在下次进入关卡时生效。</div>
+  </div>
+</div>
+
+<!-- 背包 -->
+<div id="screen-backpack" class="screen">
+  <div class="panel bp-panel">
+    <h2>背包 <span class="bp-key-hint" id="bp-key-hint"></span></h2>
+    <div class="bp-body">
+      <div id="bp-grid"></div>
+      <div id="bp-detail"><div class="bp-empty">选择一件道具查看说明</div></div>
+    </div>
+    <button id="btn-bp-close" class="big">关闭</button>
   </div>
 </div>
 
@@ -195,27 +202,27 @@ window.addEventListener('unhandledrejection', function (e) {
 <script src="js/config.js?v=1.2.3"></script>
 <script src="js/utils.js?v=1.2.3"></script>
 <script src="js/textures.js?v=1.2.3"></script>
-<script src="js/audio.js?v=1.2.3"></script>
-<script src="js/gen.js?v=1.2.3"></script>
+<script src="js/audio.js?v=1.2.7"></script>
+<script src="js/gen.js?v=1.2.8"></script>
 <script src="js/gen_l188.js?v=1.2.3"></script>
 <script src="js/gen_l37.js?v=1.2.3"></script>
 <script src="js/gen_l94.js?v=1.2.3"></script>
 <script src="js/gen_l7.js?v=1.2.3"></script>
 <script src="js/gen_l11.js?v=1.2.3"></script>
 <script src="js/world.js?v=1.2.3"></script>
-<script src="js/player.js?v=1.2.3"></script>
-<script src="js/input.js?v=1.2.6"></script>
-<script src="js/entities.js?v=1.2.3"></script>
+<script src="js/player.js?v=1.2.9"></script>
+<script src="js/input.js?v=1.2.7"></script>
+<script src="js/entities.js?v=1.2.8"></script>
 <script src="js/transitions.js?v=1.2.3"></script>
 <script src="js/cutout.js?v=1.2.3"></script>
-<script src="js/levels.js?v=1.2.3"></script>
+<script src="js/levels.js?v=1.2.6"></script>
 <script src="js/lv_l188.js?v=1.2.3"></script>
 <script src="js/lv_l37.js?v=1.2.3"></script>
 <script src="js/lv_l94.js?v=1.2.3"></script>
 <script src="js/lv_l7.js?v=1.2.3"></script>
 <script src="js/lv_l11.js?v=1.2.3"></script>
-<script src="js/ui.js?v=1.2.3"></script>
-<script src="js/save.js?v=1.2.3"></script>
-<script src="js/main.js?v=1.2.3"></script>
+<script src="js/ui.js?v=1.2.8"></script>
+<script src="js/save.js?v=1.2.8"></script>
+<script src="js/main.js?v=1.2.8"></script>
 </body>
 </html>

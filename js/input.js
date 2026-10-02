@@ -38,6 +38,138 @@
   };
   BR.Input = I;
 
+  /* ---------- 可改键系统 ---------- */
+  // 动作表：id → 中文名
+  I.ACTION_NAMES = {
+    fwd: '前移', back: '后退', left: '左移', right: '右移',
+    run: '疾跑', crouch: '蹲下', flashlight: '手电筒', interact: '交互',
+    backpack: '背包', thirdperson: '第三人称', pause: '暂停', useItem: '使用选中道具'
+  };
+  // 默认绑定（疾跑=Ctrl，蹲下=Shift；交互=鼠标左键+E）
+  I.DEFAULT_BINDINGS = {
+    fwd: ['KeyW', 'ArrowUp'],
+    back: ['KeyS', 'ArrowDown'],
+    left: ['KeyA', 'ArrowLeft'],
+    right: ['KeyD', 'ArrowRight'],
+    run: ['ControlLeft', 'ControlRight'],
+    crouch: ['ShiftLeft', 'ShiftRight'],
+    flashlight: ['KeyF'],
+    interact: ['MouseLeft', 'KeyE'],
+    backpack: ['KeyB'],
+    thirdperson: ['KeyV'],
+    pause: ['Escape'],
+    useItem: []
+  };
+  // code → 中文显示（左修饰键用通用名，右修饰键加"右"前缀）
+  I.CODE_LABELS = {
+    MouseLeft: '鼠标左键', MouseRight: '鼠标右键', MouseMiddle: '鼠标中键',
+    Escape: 'Esc', Space: '空格', Enter: '回车', Tab: 'Tab',
+    Backspace: '退格', Delete: '删除', Insert: '插入',
+    Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn',
+    ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+    ShiftLeft: 'Shift', ShiftRight: '右Shift',
+    ControlLeft: 'Ctrl', ControlRight: '右Ctrl',
+    AltLeft: 'Alt', AltRight: '右Alt',
+    MetaLeft: 'Win', MetaRight: '右Win',
+    CapsLock: '大写锁定', NumLock: '数字锁定', ContextMenu: '菜单键',
+    Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'",
+    BracketLeft: '[', BracketRight: ']', Backslash: '\\', Minus: '-', Equal: '=',
+    Backquote: '`',
+    NumpadDivide: '小键盘/', NumpadMultiply: '小键盘*', NumpadSubtract: '小键盘-',
+    NumpadAdd: '小键盘+', NumpadEnter: '小键盘回车', NumpadDecimal: '小键盘.'
+  };
+  I.codeLabel = function (code) {
+    if (this.CODE_LABELS[code]) return this.CODE_LABELS[code];
+    let m;
+    if ((m = /^Key([A-Z])$/.exec(code))) return m[1];       // KeyW → W
+    if ((m = /^Digit([0-9])$/.exec(code))) return m[1];      // Digit5 → 5
+    if ((m = /^Numpad([0-9])$/.exec(code))) return m[1];     // Numpad1 → 1
+    if ((m = /^F([1-9]|1[0-9]|2[0-4])$/.exec(code))) return 'F' + m[1];
+    return code; // 未知 code 原样显示
+  };
+  I.isValidCode = function (code) {
+    if (typeof code !== 'string') return false;
+    if (this.CODE_LABELS[code]) return true;
+    return /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|F([1-9]|1[0-9]|2[0-4]))$/.test(code);
+  };
+  // 深拷贝一份绑定（DEFAULT_BINDINGS 永不被改动）
+  I.cloneBindings = function (src) {
+    const out = {};
+    for (const a of Object.keys(I.DEFAULT_BINDINGS)) {
+      const v = src && src[a];
+      out[a] = Array.isArray(v) ? v.slice() : [];
+    }
+    return out;
+  };
+  // 校验：非法值（非数组/空数组/非法 code）回填默认，保证向后兼容
+  I.sanitizeBindings = function (raw) {
+    const out = {};
+    for (const a of Object.keys(I.DEFAULT_BINDINGS)) {
+      const v = raw && raw[a];
+      const ok = Array.isArray(v) && v.length > 0 && v.every(c => this.isValidCode(c));
+      out[a] = ok ? v.slice() : I.DEFAULT_BINDINGS[a].slice();
+    }
+    return out;
+  };
+  I.bindings = I.sanitizeBindings(null); // 先填默认；init 时 loadSettings 会从存档覆盖
+
+  // 动作 → 中文显示，如 "Ctrl / 右Ctrl"、"鼠标左键 / E"、"未绑定"
+  // （契约：别的工人用 BR.Input.bindingLabel(actionName)，一定存在）
+  I.bindingLabel = function (action) {
+    const list = (this.bindings && this.bindings[action]) || [];
+    if (!list.length) return '未绑定';
+    return list.map(c => this.codeLabel(c)).join(' / ');
+  };
+  // code 反查动作（同一 code 绑多个动作时按动作表顺序取第一个）
+  I.actionForCode = function (code) {
+    if (!this.bindings) return null;
+    for (const a of Object.keys(I.DEFAULT_BINDINGS)) {
+      if (this.bindings[a].indexOf(code) !== -1) return a;
+    }
+    return null;
+  };
+  // 动作分发（keydown / mousedown 共用）
+  I.dispatchAction = function (action) {
+    if (!action) return;
+    const P = BR.Player;
+    if (action === 'interact') this._interact = true;
+    else if (action === 'flashlight') P.toggleFlashlight();
+    else if (action === 'crouch') P.toggleCrouch();
+    else if (action === 'pause') BR.UI.togglePause();
+    else if (action === 'backpack') { if (BR.UI.toggleBackpack) BR.UI.toggleBackpack(); }
+    else if (action === 'thirdperson') { if (P.toggleThirdPerson) P.toggleThirdPerson(); }
+  };
+
+  /* ---------- 改键捕获 ---------- */
+  I.captureAction = null; // 正在改键的动作 id；非 null 时下一次按键/鼠标写入绑定
+  I._captureEndT = 0;     // 上次捕获写入的时间戳（防写入那次 mousedown 紧接着的 click 又开捕获）
+  I.startCapture = function (action) { this.captureAction = action; };
+  I.cancelCapture = function () {
+    this.captureAction = null;
+    if (BR.UI && BR.UI.renderBindings) BR.UI.renderBindings();
+  };
+  I.finishCapture = function (code) {
+    const a = this.captureAction;
+    this.captureAction = null;
+    this._captureEndT = Date.now();
+    let changed = false;
+    if (a && this.isValidCode(code)) {
+      this.bindings[a] = [code]; // 单键绑定，直接覆盖
+      this.saveSettings();
+      changed = true;
+    }
+    if (BR.UI) {
+      if (BR.UI.renderBindings) BR.UI.renderBindings();
+      if (BR.UI.renderKeyHint) BR.UI.renderKeyHint();
+      if (BR.UI.renderKeysTable) BR.UI.renderKeysTable();
+      if (changed && BR.UI.toast) BR.UI.toast('已更改');
+    }
+  };
+  I.resetBindings = function () {
+    this.bindings = this.cloneBindings(I.DEFAULT_BINDINGS);
+    this.saveSettings();
+  };
+
   I.sens = function () { return 0.0026 * this.settings.sens; };
 
   I.loadSettings = function () {
@@ -48,9 +180,14 @@
       if (!['on', 'weak', 'off'].includes(this.settings.headbob)) this.settings.headbob = 'on';
       if (!['full', 'soft', 'off'].includes(this.settings.dropcam)) this.settings.dropcam = 'full';
     } catch (e) {}
+    // 按键绑定：从 br_settings.bindings 读；老存档无 bindings 时用默认，非法值回填默认
+    this.bindings = this.sanitizeBindings(this.settings.bindings);
   };
   I.saveSettings = function () {
-    try { localStorage.setItem('br_settings', JSON.stringify(this.settings)); } catch (e) {}
+    try {
+      this.settings.bindings = this.bindings;
+      localStorage.setItem('br_settings', JSON.stringify(this.settings));
+    } catch (e) {}
   };
   I.setLocked = function (b) { this.locked = b; };
 
@@ -114,18 +251,23 @@
   I.init = function () {
     this.loadSettings();
     this.buildTouchUI();
-    // —— 键盘 ——
+    // —— 键盘：走按键绑定分发 ——
     addEventListener('keydown', (e) => {
+      // 改键捕获优先：暂停菜单点"更改"后，下一次按键写入绑定（Esc 取消）
+      if (this.captureAction) {
+        e.preventDefault(); e.stopPropagation();
+        if (e.code === 'Escape') this.cancelCapture();
+        else this.finishCapture(e.code);
+        return;
+      }
       if (e.repeat) return;
       this.keys[e.code] = true;
       if (BR.Game.state !== 'playing' || this.locked) {
-        if (e.code === 'Escape') BR.UI.togglePause();
+        // 非游玩 / 锁定状态只响应暂停键
+        if (this.actionForCode(e.code) === 'pause') BR.UI.togglePause();
         return;
       }
-      if (e.code === 'KeyE') this._interact = true;
-      if (e.code === 'KeyF') BR.Player.toggleFlashlight();
-      if (e.code === 'KeyC' || e.code === 'ControlLeft') BR.Player.toggleCrouch();
-      if (e.code === 'Escape') BR.UI.togglePause();
+      this.dispatchAction(this.actionForCode(e.code));
       if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
     });
     addEventListener('keyup', (e) => { this.keys[e.code] = false; });
@@ -133,13 +275,32 @@
     // 不再用 isTouch 门禁：触屏笔记本曾被误判导致鼠标无法锁定；
     // 移动端浏览器本来就没有 requestPointerLock，按特性检测即可。
     const cv = BR.$('game-canvas');
-    cv.addEventListener('click', () => {
-      if (BR.Game.state === 'playing' && !this.locked && document.pointerLockElement !== cv) {
+    // 改键捕获：暂停菜单等待按键时，鼠标按下也写入绑定（document 级，面板遮住画布）
+    document.addEventListener('mousedown', (e) => {
+      if (!this.captureAction) return;
+      e.preventDefault(); e.stopPropagation();
+      const code = e.button === 0 ? 'MouseLeft' : e.button === 1 ? 'MouseMiddle' : e.button === 2 ? 'MouseRight' : null;
+      if (code) this.finishCapture(code);
+    }, true);
+    // —— 鼠标按键 → 动作分发（左键交互在 pointer lock 下生效） ——
+    cv.addEventListener('mousedown', (e) => {
+      const code = e.button === 0 ? 'MouseLeft' : e.button === 1 ? 'MouseMiddle' : e.button === 2 ? 'MouseRight' : null;
+      if (code) this.keys[code] = true;
+      if (BR.Game.state !== 'playing' || this.locked) return;
+      if (e.button === 0 && document.pointerLockElement !== cv) {
+        // 未锁定：这次点击只负责请求锁定，不触发动作（原有 click 逻辑合并至此）
         if (cv.requestPointerLock) {
           try { const p = cv.requestPointerLock(); if (p && p.catch) p.catch(() => {}); }
-          catch (e) {}
+          catch (err) {}
         }
+        return;
       }
+      this.dispatchAction(this.actionForCode(code));
+    });
+    document.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.keys['MouseLeft'] = false;
+      else if (e.button === 1) this.keys['MouseMiddle'] = false;
+      else if (e.button === 2) this.keys['MouseRight'] = false;
     });
     document.addEventListener('pointerlockchange', () => {
       if (document.pointerLockElement !== cv && BR.Game.state === 'playing' && !this.locked) {
@@ -282,16 +443,17 @@
     if (this.locked) return { x: 0, z: 0 };
     let x = 0, z = 0;
     const k = this.keys;
-    if (k['KeyW'] || k['ArrowUp']) z += 1;
-    if (k['KeyS'] || k['ArrowDown']) z -= 1;
-    if (k['KeyA'] || k['ArrowLeft']) x -= 1;
-    if (k['KeyD'] || k['ArrowRight']) x += 1;
+    const down = (a) => (this.bindings[a] || []).some(c => k[c]);
+    if (down('fwd')) z += 1;
+    if (down('back')) z -= 1;
+    if (down('left')) x -= 1;
+    if (down('right')) x += 1;
     x += this.joyX; z += -this.joyY; // 摇杆上推 = 前
     const m = Math.hypot(x, z);
     if (m > 1) { x /= m; z /= m; }
     return { x, z };
   };
-  Object.defineProperty(I, 'runHeld', { get() { return !!this.keys['ShiftLeft'] || !!this.keys['ShiftRight']; } });
+  Object.defineProperty(I, 'runHeld', { get() { const k = this.keys; return (this.bindings.run || []).some(c => !!k[c]); } });
   I.consumeLook = function () {
     const r = { dx: this.lookDX, dy: this.lookDY };
     this.lookDX = 0; this.lookDY = 0;

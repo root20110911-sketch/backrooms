@@ -153,6 +153,7 @@
             BR.Player.hp = opts.saved.hp != null ? opts.saved.hp : 100;
             BR.Player.sanity = opts.saved.sanity != null ? opts.saved.sanity : 100; // 存档读档恢复理智
             BR.Player.hunger = opts.saved.hunger != null ? opts.saved.hunger : 100; // 老存档缺 hunger 字段时默认 100
+            BR.Player.flashBat = opts.saved.flashBat != null ? opts.saved.flashBat : 100; // 老存档缺 flashBat 字段时默认 100
             BR.Player.hasFlashlight = !!opts.saved.hasFlashlight;
           } else {
             // 非 L0：给基础物资（跨关不保留手电之外的消耗品也合理，但保留更友好）
@@ -213,6 +214,7 @@
       hp: Math.round(BR.Player.hp),
       sanity: Math.round(BR.Player.sanity), // 修复已知坑：读档不再回满
       hunger: Math.round(BR.Player.hunger != null ? BR.Player.hunger : 100),
+      flashBat: Math.round(BR.Player.flashBat != null ? BR.Player.flashBat : 100), // 手电电池
       hasFlashlight: BR.Player.hasFlashlight,
       inv: Object.assign({}, this.inv),
       flags: Object.assign({}, this.flags),

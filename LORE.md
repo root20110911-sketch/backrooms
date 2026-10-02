@@ -35,6 +35,26 @@
 - Level 1 页面故事线佐证："要找到外观诡谲的墙壁，进入其中才行"——切出靠的是找到异常的墙并进入。
 - 因此游戏中的"异常斑痕墙→触碰切入→Level 1"有直接的原著依据。
 
+### 马尼拉房间（1:1 还原，2026-10-02）
+> 调研全文见 `research/manila.md`。以下为原设定 → 游戏实现的对照。
+
+| 原设定 | 来源 | 游戏实现 |
+|---|---|---|
+| 墙纸和地板像**马尼拉纸**（牛皮纸/米色），与 Level 0 单黄色明显不同 | Wikidot 主 Wiki "The Manila Room"；Fandom Level 0「The Manila Room」章节 | 墙面内贴面 0xc7a06a 牛皮纸色、木地板 0x8f6b45（颜色区分 L0 潮湿地毯） |
+| 木地板，区别于 Level 0 的潮湿地毯 | Wikidot 主 Wiki | 木地板色平面逐 tile 铺设 |
+| 房间里只有一盏顶灯，**比 Level 0 暗得多、明显橙色调**；亮度随时间波动，偶尔彻底黑暗 | Fandom Level 0 章节；Wikidot 灯光异常段落 | 唯一 PointLight 0xff8a35 / 强度 0.95（L0 为 0xffe9a8/0.95 每 4 tile 一盏）；亮度正弦波动；房间内 L0 荧光灯具被跳过（world.js `_manilaRect` 禁区） |
+| 靠近房间 L0 嗡鸣**逐渐减弱**，转而听到天花板/墙壁里的**舒缓钢琴曲** | Wikidot 主 Wiki | 14 米内钢琴曲渐入（WebAudio 合成摇篮曲循环）+ 环境嗡鸣压到 0.22；离开恢复 |
+| 中央**大型八角桌 + 两把椅子**；桌下橱柜放食物/水/文档 | Wikidot 主 Wiki（Fandom 版为圆桌+旋转办公椅） | 中央 8 边形桌面八角桌 + 两把木椅面向桌心；桌下柜为两段式柜子（`manila_cab`，逻辑沿用） |
+| 桌上纸质便条：后室生存信息、**穿墙（no-clipping）指南**，十几种语言，I.M.B.H. 定期补货 | Wikidot "History" | 桌上两份可读装饰字条《穿墙指南》《生存守则》（中英对照，阅读浮层，非收集系统） |
+| Manila Mary Foundation 告示全文（2017 年成立的志愿者组织） | Wikidot "The Manila Room" 页尾 | 墙上 1.5m 告示贴（英文原文）+ 交互阅读中英对照全文 |
+| 有人报告墙内**敲击声**，黑暗时段最响；房间偶尔**全黑** | Wikidot 早期版本异常段落；Fandom Level 0 页面 | 房内随机 45–90 秒一次：闷响敲击 4 下 + 全黑 2–4 秒（顶灯熄灭），期间理智以 1.2/s 微降 |
+| **待太久会被送往 Level 1 或 Level 2**（稳定出口之一） | Fandom Level 0「The Manila Room」章节 | 房内停留超 3 分钟 → 150 秒时 toast 预警"你感到一阵恍惚……" → 180 秒淡出 → 传送到 L1（奖励性出口，与随机切出区分） |
+| 杏仁水 / 食物和水 / 生存文档定期补给 | Wikidot "History"（2017 Phoenix Casey 提案；Mary Mitchell 1965 年起蹲守救人） | 保留：桌上杏仁水拾取、柜中绷带、安全区 r=6.5、理智 +5/s |
+
+- **[本游戏改编]** 房间尺寸：原设定 8m×8m；本游戏 tile 为 3m，gen.js 生成的内厅为 5×4 tiles（15m×12m），levels.js 按 POI 矩形自适应建造，未改 gen.js（超出本次改动范围，待确认）。
+- **[本游戏改编]** 钢琴曲为 WebAudio 合成的原创摇篮曲循环（C–Am–F–G），非原著指定曲目；敲击声/全黑为氛围事件，无 jump scare。
+- 来源标注：Wikidot 主 Wiki `backrooms-wiki.wikidot.com/manila-room`（"The Manila Room"）；Fandom `backrooms.fandom.com/wiki/Level_0`「The Manila Room」章节；游戏《Escape the Backrooms》Wiki（补给品参照）。中文关键词搜索无中文维基对应条目，以上均为英文 Wiki 来源（见 research/manila.md）。
+
 ---
 
 ## Level 1 —— 「宜居地带」
