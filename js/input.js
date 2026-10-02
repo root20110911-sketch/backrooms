@@ -1,6 +1,16 @@
-/* input.js —— 键盘鼠标 + 平板触控（摇杆/视角/按钮，多点触控） */
+/* input.js —— 键盘鼠标 + 平板触控（摇杆/视角/按钮，多点触控）
+ * v1.2：SVG 线条图标 / 全屏与横屏引导 / 镜头晃动设置 */
 (function () {
   const BR = window.BR;
+
+  // 统一线条图标（SVG，currentColor）
+  const ICONS = {
+    flashlight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v5H9z"/><path d="M10 7.5 6.5 15a2.4 2.4 0 0 0 2.1 3.5h6.8a2.4 2.4 0 0 0 2.1-3.5L14 7.5"/><circle cx="12" cy="16.5" r="1.2"/></svg>',
+    crouch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="M6.5 9.5 12 15l5.5-5.5"/><path d="M4.5 20.5h15"/></svg>',
+    run: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h9M3 12h13M3 17.5h9"/><path d="M15.5 8.5 19.5 12l-4 3.5"/></svg>',
+    interact: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6"/><path d="M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/></svg>'
+  };
 
   const I = {
     keys: {},
@@ -12,7 +22,8 @@
     lookDX: 0, lookDY: 0,
     runToggle: false,
     _interact: false,
-    settings: { sens: 1.0, joySize: 120, joySide: 'left', vol: 0.8, quality: 'auto' }
+    _orientDismissed: false,   // 本次游玩手动关闭过横屏提示
+    settings: { sens: 1.0, joySize: 120, joySide: 'left', vol: 0.8, quality: 'auto', headbob: 'on' }
   };
   BR.Input = I;
 
@@ -22,12 +33,71 @@
     try {
       const s = JSON.parse(localStorage.getItem('br_settings') || '{}');
       Object.assign(this.settings, s);
+      // 向后兼容：老存档没有 headbob 时回填默认值
+      if (!['on', 'weak', 'off'].includes(this.settings.headbob)) this.settings.headbob = 'on';
     } catch (e) {}
   };
   I.saveSettings = function () {
     try { localStorage.setItem('br_settings', JSON.stringify(this.settings)); } catch (e) {}
   };
   I.setLocked = function (b) { this.locked = b; };
+
+  /* ---------- 全屏 / 横屏 ---------- */
+  I.isFullscreen = function () {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  };
+  // 点击"开始游戏"后调用（用户手势内成功率最高）
+  I.tryFullscreen = function () {
+    try {
+      if (this.isFullscreen()) return true;
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) {
+        const p = req.call(el, { navigationUI: 'hide' });
+        if (p && p.catch) p.catch(() => {});
+        return true;
+      }
+    } catch (e) {}
+    return false; // iOS Safari 等：优雅降级，由暂停菜单按钮手动触发
+  };
+  I.toggleFullscreen = function () {
+    try {
+      if (this.isFullscreen()) {
+        const ex = document.exitFullscreen || document.webkitExitFullscreen;
+        if (ex) ex.call(document);
+      } else this.tryFullscreen();
+    } catch (e) {}
+  };
+  I.tryLandscape = function () {
+    try {
+      const o = screen.orientation;
+      if (o && o.lock) {
+        const p = o.lock('landscape');
+        if (p && p.catch) p.catch(() => {}); // 浏览器拒绝则静默，靠遮罩引导
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  // 进入游戏时的沉浸式尝试：先全屏，再锁横屏（部分浏览器锁方向要求全屏）
+  I.ensureImmersive = function () {
+    this._orientDismissed = false;
+    if (!this.isTouch) return;
+    this.tryFullscreen();
+    setTimeout(() => this.tryLandscape(), 350);
+    setTimeout(() => this.checkOrient(), 600);
+  };
+  I.isPortrait = function () {
+    return innerHeight > innerWidth;
+  };
+  // 横屏遮罩：触屏 + 竖屏 + 游戏中才显示；转横屏自动消失
+  I.checkOrient = function () {
+    if (!this.isTouch) return;
+    const G = BR.Game;
+    const inGame = G && (G.state === 'playing' || G.state === 'loading' || G.state === 'paused');
+    const need = inGame && this.isPortrait() && !this._orientDismissed;
+    document.body.classList.toggle('need-orient', need);
+  };
 
   I.init = function () {
     this.loadSettings();
@@ -65,6 +135,17 @@
         this.lookDX += e.movementX; this.lookDY += e.movementY;
       }
     });
+    // 旋转 / 尺寸变化：不重置进度，只重查横屏遮罩
+    addEventListener('resize', () => this.checkOrient());
+    addEventListener('orientationchange', () => setTimeout(() => this.checkOrient(), 350));
+    // 全屏变化后也重查一次
+    document.addEventListener('fullscreenchange', () => setTimeout(() => this.checkOrient(), 300));
+    // 遮罩上的"仍要继续"
+    const go = BR.$('btn-orient-go');
+    if (go) go.addEventListener('click', () => {
+      this._orientDismissed = true;
+      this.checkOrient();
+    });
     // 阻止手势干扰
     document.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('dblclick', (e) => e.preventDefault());
@@ -77,12 +158,12 @@
     root.innerHTML =
       '<div id="joy-zone"><div id="joy-base"><div id="joy-knob"></div></div></div>' +
       '<div id="touch-btns">' +
-      '<button id="btn-use" class="tbtn">🔦</button>' +
-      '<button id="btn-crouch" class="tbtn">⬇</button>' +
-      '<button id="btn-run" class="tbtn">🏃</button>' +
-      '<button id="btn-interact" class="tbtn big">✋</button>' +
+      '<button id="btn-use" class="tbtn" aria-label="手电筒">' + ICONS.flashlight + '</button>' +
+      '<button id="btn-crouch" class="tbtn" aria-label="蹲伏">' + ICONS.crouch + '</button>' +
+      '<button id="btn-run" class="tbtn" aria-label="奔跑">' + ICONS.run + '</button>' +
+      '<button id="btn-interact" class="tbtn big" aria-label="交互">' + ICONS.interact + '</button>' +
       '</div>' +
-      '<button id="btn-pause-t" class="tbtn mini">⏸</button>';
+      '<button id="btn-pause-t" class="tbtn mini" aria-label="暂停">' + ICONS.pause + '</button>';
     const joyZone = BR.$('joy-zone'), base = BR.$('joy-base'), knob = BR.$('joy-knob');
     const R = () => this.settings.joySize / 2;
 

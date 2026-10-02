@@ -446,6 +446,18 @@
       this._nz({ f: 1600, f1: 3200, ft: 'bandpass', q: 3, dur: 1.3, vol: 0.16, a: 0.3 });
       this._nz({ f: 2400, f1: 1400, ft: 'bandpass', q: 3, dur: 1.0, vol: 0.10, a: 0.4, at: 0.3 });
     },
+    dropRumble: function (dur) { // 掉落转场：低频嗡鸣渐强后骤停（失重感）
+      if (!this._ok) return;
+      dur = dur || 1.9;
+      this._tone({ f: 52, f1: 27, type: 'sine', dur: dur, vol: 0.55, a: dur * 0.7 });
+      this._tone({ f: 104, f1: 55, type: 'triangle', dur: dur, vol: 0.16, a: dur * 0.7 });
+      this._nz({ f: 220, f1: 90, ft: 'lowpass', dur: dur, vol: 0.22, a: dur * 0.6 });
+    },
+    thud: function () { // 落地闷响
+      if (!this._ok) return;
+      this._tone({ f: 64, f1: 30, type: 'sine', dur: 0.32, vol: 0.65, a: 0.008 });
+      this._nz({ f: 300, ft: 'lowpass', dur: 0.22, vol: 0.28, a: 0.008 });
+    },
     uiClick: function () {
       if (!this._ok) return;
       this._tone({ f: 1250, type: 'square', dur: 0.04, vol: 0.10 });

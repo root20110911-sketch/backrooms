@@ -4,11 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="screen-orientation" content="landscape">
 <title>Backrooms：切出</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
+
+<!-- 轻量氛围后处理 -->
+<div id="fx-vignette"></div>
+<div id="fx-grain"></div>
+<div id="fx-drop"></div>
 
 <!-- HUD -->
 <div id="hud">
@@ -27,21 +33,36 @@
 <!-- 触控 UI（由 input.js 填充） -->
 <div id="touch-ui"></div>
 
+<!-- 横屏引导遮罩 -->
+<div id="screen-orient">
+  <div class="orient-box">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <rect x="7" y="2.5" width="10" height="19" rx="2.5"/>
+      <path d="M11 18.5h2"/>
+      <path d="M3 12h3M18 12h3M12 3v0" opacity="0.6"/>
+    </svg>
+    <div class="orient-title">请旋转设备</div>
+    <div class="orient-sub">本游戏为横屏体验设计<br>旋转后将自动继续</div>
+    <button id="btn-orient-go" class="ghost orient-go">仍要继续</button>
+  </div>
+</div>
+
 <!-- 标题 -->
 <div id="screen-title" class="screen">
+  <div class="menu-atmo"><div class="breath"></div><div class="scan"></div></div>
   <div class="panel">
-    <h1>BACKROOMS</h1>
+    <div id="title-logo">BACKROOMS</div>
     <div class="subtitle">切 出</div>
     <div id="seed-line">世界种子：-</div>
     <div class="seed-row">
       <input id="seed-input" type="number" placeholder="输入种子（可选）" inputmode="numeric">
-      <button id="btn-reseed" class="ghost">🎲</button>
+      <button id="btn-reseed" class="ghost">随机</button>
     </div>
     <button id="btn-new" class="big">新游戏</button>
     <button id="btn-continue" class="big">继续游戏</button>
     <button id="btn-how" class="ghost">玩法说明</button>
     <button id="btn-wipe" class="ghost">重置存档</button>
-    <div class="foot">第一人称后室生存 · 建议佩戴耳机 🎧</div>
+    <div class="foot">第一人称后室生存 · 建议横屏并佩戴耳机</div>
   </div>
 </div>
 
@@ -50,12 +71,21 @@
   <div class="panel">
     <h2>玩法说明</h2>
     <div class="how">
-      <p><b>目标：</b>从 Level 0 出发，逐层切出，最终逃离后室。</p>
+      <h4>目标</h4>
+      <p>从 Level 0 出发，逐层切出，最终逃离后室。主线：L0 → L1 → L2 → L3 → 结局。</p>
+      <h4>操作</h4>
       <p><b>桌面：</b>WASD 移动 · 鼠标视角 · E 交互 · F 手电 · Shift 跑 · C 蹲 · Esc 暂停</p>
-      <p><b>平板/手机：</b>左侧摇杆移动 · 右侧拖动视角 · ✋ 交互 · 🏃 跑 · ⬇ 蹲 · 🔦 手电</p>
-      <p><b>生存：</b>留意声音和灯光。奔跑会引来注意，蹲下贴墙更安全。杏仁水和绷带可以回血。</p>
-      <p><b>理智：</b>血条下方的紫色是理智值。黑暗、断电和实体会侵蚀理智；理智过低会出现幻听、视线晃动，还更容易被实体发现。杏仁水和安全屋（比如 Level 0 的马尼拉房间）能恢复理智。</p>
-      <p><b>隐藏支线：</b>Level 1 的天花板上……好像有音乐声？=)</p>
+      <p><b>手机/平板：</b>左侧摇杆移动 · 右侧拖动视角 · 准星按钮交互<br>建议<b>横屏 + 全屏</b>游玩，视野更宽。</p>
+      <h4>生存</h4>
+      <p>留意声音和灯光。奔跑会引来注意，蹲下贴墙更安全。杏仁水回血，绷带治伤。</p>
+      <h4>理智</h4>
+      <p>血条下方的<b>紫色是理智值</b>。黑暗、断电和实体会侵蚀理智；理智过低会出现幻听、视线晃动，还更容易被实体发现。杏仁水恢复 30 点理智，安全屋能缓慢恢复。</p>
+      <h4>马尼拉房间</h4>
+      <p>Level 0 里有一间暖黄色的安全屋——地毯、补给箱和字条。在里面待着可以回理智，是整层唯一安全的地方。</p>
+      <h4>薄墙切出</h4>
+      <p>有些墙"薄得不对劲"。贴着它持续往里挤约 1.4 秒，你会被随机甩到本层的另一个角落（-12 理智）。这是条野路子，但落点不保证安全。</p>
+      <h4>隐藏支线</h4>
+      <p class="dim">Level 1 的天花板上……好像有音乐声？=)</p>
     </div>
     <button id="btn-how-back" class="big">返回</button>
   </div>
@@ -71,13 +101,16 @@
   <div class="panel">
     <h2>已暂停</h2>
     <button id="btn-resume" class="big">继续</button>
-    <button id="btn-quit-title" class="ghost">保存并回到标题</button>
+    <button id="btn-fullscreen" class="ghost wide">进入全屏</button>
+    <button id="btn-quit-title" class="ghost wide">保存并回到标题</button>
     <h3>设置</h3>
-    <label>视角灵敏度 <span id="sens-val"></span><input id="set-sens" type="range" min="0.3" max="2.5" step="0.1"></label>
-    <label>音量 <span id="vol-val"></span><input id="set-vol" type="range" min="0" max="1" step="0.05"></label>
-    <label>摇杆大小 <span id="joysize-val"></span><input id="set-joysize" type="range" min="90" max="170" step="5"></label>
+    <label>视角灵敏度 <span class="val" id="sens-val"></span><input id="set-sens" type="range" min="0.3" max="2.5" step="0.1"></label>
+    <label>音量 <span class="val" id="vol-val"></span><input id="set-vol" type="range" min="0" max="1" step="0.05"></label>
+    <label>镜头晃动 <select id="set-headbob"><option value="on">开</option><option value="weak">弱</option><option value="off">关</option></select></label>
+    <label>摇杆大小 <span class="val" id="joysize-val"></span><input id="set-joysize" type="range" min="90" max="170" step="5"></label>
     <label>摇杆位置 <select id="set-joyside"><option value="left">左侧</option><option value="right">右侧</option></select></label>
     <label>画质 <select id="set-quality"><option value="auto">自动</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
+    <div class="pause-note">手机建议横屏 + 全屏游玩。<br>画质更改在下次进入关卡时生效。</div>
   </div>
 </div>
 
@@ -112,8 +145,7 @@
 <!-- 转场 -->
 <div id="screen-trans"><div id="trans-text"></div></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>if (typeof THREE === "undefined") { document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><\/script>'); }</script>
+<script src="js/vendor/three.min.js"></script>
 <script src="js/config.js"></script>
 <script src="js/utils.js"></script>
 <script src="js/textures.js"></script>
