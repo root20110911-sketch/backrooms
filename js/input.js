@@ -12,9 +12,20 @@
     pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/></svg>'
   };
 
+  // 触屏判定：触屏笔记本/台式机的 maxTouchPoints>0，不能直接判触屏，
+  // 否则桌面端指针锁定被禁用、鼠标"融不进去"。只认移动端 UA 或小屏。
+  function detectTouchDevice() {
+    var hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    if (!hasTouch) return false;
+    var ua = navigator.userAgent || '';
+    if (/Android|iPhone|iPad|iPod|Mobile|Tablet/i.test(ua)) return true;
+    try { if (Math.min(screen.width, screen.height) < 820) return true; } catch (e) {}
+    return false;
+  }
+
   const I = {
     keys: {},
-    isTouch: ('ontouchstart' in window) || navigator.maxTouchPoints > 0,
+    isTouch: detectTouchDevice(),
     locked: false,            // 转场/菜单时锁定输入
     // 触控状态
     joyId: null, joyOX: 0, joyOY: 0, joyX: 0, joyY: 0,
@@ -119,15 +130,20 @@
     });
     addEventListener('keyup', (e) => { this.keys[e.code] = false; });
     // —— 鼠标视角（pointer lock，桌面） ——
+    // 不再用 isTouch 门禁：触屏笔记本曾被误判导致鼠标无法锁定；
+    // 移动端浏览器本来就没有 requestPointerLock，按特性检测即可。
     const cv = BR.$('game-canvas');
     cv.addEventListener('click', () => {
-      if (BR.Game.state === 'playing' && !this.locked && !this.isTouch && document.pointerLockElement !== cv) {
-        cv.requestPointerLock();
+      if (BR.Game.state === 'playing' && !this.locked && document.pointerLockElement !== cv) {
+        if (cv.requestPointerLock) {
+          try { const p = cv.requestPointerLock(); if (p && p.catch) p.catch(() => {}); }
+          catch (e) {}
+        }
       }
     });
     document.addEventListener('pointerlockchange', () => {
-      if (document.pointerLockElement !== cv && BR.Game.state === 'playing' && !this.isTouch && !this.locked) {
-        // 桌面端退出 pointer lock → 暂停（避免视角乱飞）
+      if (document.pointerLockElement !== cv && BR.Game.state === 'playing' && !this.locked) {
+        // 退出 pointer lock → 暂停（避免视角乱飞）
         BR.UI.togglePause(true);
       }
     });
