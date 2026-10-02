@@ -238,6 +238,9 @@
     BR.bus.emit('noclip:wild');
     BR.Trans.play('drop', { text: '你卡进了墙里……再睁眼，已经在别处了' });
   }
+  // 挂到 BR 共享命名空间：L2/L3/FUN 在独立 IIFE 中，不在同一作用域，直接调用会 ReferenceError
+  BR.buildThinWalls = buildThinWalls;
+  BR.thinWallTick = thinWallTick;
 
   // 所有门：按 exitTo 赋予转场行为
   function buildDoors(map, W) {    for (const d of map.doors) {
@@ -670,7 +673,7 @@
         addNoteShared(W, p.tx, p.ty, nn[0], nn[1]);
       });
       W.objective = '找到那扇没上锁的门，前往 Level 3（小心蒸汽和管道阴影）';
-      buildThinWalls(map, W);
+      BR.buildThinWalls(map, W);
     };
 
     function addNoteShared(W, tx, ty, title, body) {
@@ -703,7 +706,7 @@
     };
     BR.Levels.L2.tick = function (dt) {
       const W = BR.World;
-      thinWallTick(dt);
+      BR.thinWallTick(dt);
       if (W._steamTimers) {
         for (const id in W._steamTimers) {
           W._steamTimers[id] -= dt;
@@ -907,7 +910,7 @@
         addNoteShared(W, p.tx, p.ty, nn[0], nn[1]);
       });
       W.objective = '启动 3 台发电机，然后乘坐电梯离开';
-      buildThinWalls(map, W);
+      BR.buildThinWalls(map, W);
     };
 
     BR.Levels.L3.onEnter = function () {
@@ -916,7 +919,7 @@
       BR.UI.toast('远处传来发电机的轰鸣，还有……别的声音');
     };
     BR.Levels.L3.tick = function (dt) {
-      thinWallTick(dt);
+      BR.thinWallTick(dt);
     };
   })();
 
@@ -1061,7 +1064,7 @@
         });
       })();
       W.objective = '……留下来陪我们吧 =)';
-      buildThinWalls(map, W);
+      BR.buildThinWalls(map, W);
     };
 
     BR.Levels.FUN.onEnter = function () {
@@ -1072,7 +1075,7 @@
     };
     BR.Levels.FUN.tick = function (dt) {
       const W = BR.World;
-      thinWallTick(dt);
+      BR.thinWallTick(dt);
       W._partyT = (W._partyT || 0) - dt;
       if (W._partyT <= 0 && BR.Game.state === 'playing') {
         W._partyT = 26;
