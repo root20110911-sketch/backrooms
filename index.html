@@ -172,7 +172,12 @@ window.addEventListener('unhandledrejection', function (e) {
 <!-- 转场 -->
 <div id="screen-trans"><div id="trans-text"></div></div>
 
-<script src="js/vendor/three.min.js?v=1.2.3"></script>
+<!-- three.js r128：改走 CDN（vendor 版 600KB 超过推送大小限制，仓库里没有这个文件）。
+     主用 BootCDN（国内快），失败时依次回退 cdnjs / unpkg，均为 r128 与本地逐字节一致 -->
+<script src="https://cdn.bootcdn.net/ajax/libs/three.js/r128/three.min.js"></script>
+<script>window.THREE || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>')</script>
+<script>window.THREE || document.write('<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>')</script>
+<script>window.THREE || showBrErr('3D 引擎加载失败：请检查网络后刷新重试')</script>
 <script src="js/config.js?v=1.2.3"></script>
 <script src="js/utils.js?v=1.2.3"></script>
 <script src="js/textures.js?v=1.2.3"></script>
