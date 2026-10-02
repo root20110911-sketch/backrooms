@@ -24,8 +24,10 @@
 
   // 各关卡生成参数：房间尺寸 / 走廊宽 / 回环数 / 墙高
   var LEVEL_CFG = {
-    L0:  { rw: [4, 9], rh: [4, 9], corrW: [1, 2], loops: [2, 4], wallH: 3.0, alcove: true },
-    L1:  { rw: [3, 6], rh: [3, 6], corrW: [1, 2], loops: [2, 4], wallH: 3.4, warehouse: true },
+    L0:  { rw: [4, 9], rh: [4, 9], corrW: [1, 2], loops: [2, 4], wallH: 3.0, alcove: true,
+           openHall: true }, // L0 不用房间+窄走廊：carveOpenHall 挖开阔大厅+柱子+半墙
+    L1:  { rw: [3, 6], rh: [3, 6], corrW: [1, 2], loops: [2, 4], wallH: 3.4, warehouse: true,
+           garagePillars: true }, // L1 大房间里布混凝土柱阵（connectRooms 之后，_segs 避让）
     L2:  { rw: [3, 5], rh: [3, 5], corrW: [1, 2], loops: [3, 5], wallH: 2.9, wideCorr: true },
     L3:  { rw: [3, 7], rh: [3, 7], corrW: [1, 1], loops: [2, 4], wallH: 3.2 },
     FUN: { rw: [5, 9], rh: [5, 9], corrW: [2, 2], loops: [1, 3], wallH: 3.0, chain: true }
@@ -79,7 +81,7 @@
       if (L[0] === L[2] && L[1] === L[3]) continue;
       if (L[1] === L[3]) carveH(map, L[1], L[0], L[2], w);
       else carveV(map, L[0], L[1], L[3], w);
-      map._segs.push({ x1: L[0], y1: L[1], x2: L[2], y2: L[3] });
+      map._segs.push({ x1: L[0], y1: L[1], x2: L[2], y2: L[3], w: w });
     }
   }
 
@@ -299,6 +301,18 @@
       placed++;
     }
   }
+  // 迁跃浆果灌木：极稀有（约 35% 概率出现 0~1 株），种在离出生点偏远的房间。
+  // 只用 rng；调用点放在各 placer 末尾，不扰动已有 rng 消耗顺序（已有 POI 位置不变）。
+  function placeBerryBush(map, rng) {
+    if (rng.next() >= 0.35) return; // 本局没有浆果灌木
+    var cands = [];
+    for (var i = 1; i < map.rooms.length; i++) cands.push(map.rooms[i]);
+    cands.sort(function (a, b) { return b._d - a._d; });
+    var far = cands.slice(0, Math.max(1, Math.ceil(cands.length / 3)));
+    var r = rng.pick(far);
+    var t = randTileInRoom(rng, map, r);
+    addPOI(map, 'berry_bush', t[0], t[1], {});
+  }
   function addDoor(map, tx, ty, axis, locked, label, exitTo) {
     var d = { id: 'd' + map.doors.length, tx: tx, ty: ty, axis: axis, locked: !!locked, label: label, exitTo: exitTo || null };
     map.doors.push(d);
@@ -359,6 +373,14 @@
     }
     return null;
   }
+  // 含 (tx,ty) 的房间（无则 null）
+  function roomOf(map, tx, ty) {
+    for (var i = 0; i < map.rooms.length; i++) {
+      var r = map.rooms[i];
+      if (tx >= r.x && tx < r.x + r.w && ty >= r.y && ty < r.y + r.h) return r;
+    }
+    return null;
+  }
   // 终极兜底：直接取房间北墙第一格（理论上不会走到，保证不崩）
   function manualWallSpot(room) {
     return { tx: room.x, ty: room.y - 1, fx: room.x, fy: room.y, axis: 'z' };
@@ -415,6 +437,18 @@
     return pts;
   }
 
+  // 离 (tx,ty) 最近的走廊 tile（走廊不存在则退化为全地板）
+  function nearestCorrTile(map, tx, ty) {
+    var cands = corridorTiles(map);
+    if (!cands.length) cands = allFloorTiles(map);
+    var best = null, bd = Infinity;
+    for (var i = 0; i < cands.length; i++) {
+      var d = (cands[i][0] - tx) * (cands[i][0] - tx) + (cands[i][1] - ty) * (cands[i][1] - ty);
+      if (d < bd) { bd = d; best = cands[i]; }
+    }
+    return best;
+  }
+
   // ---- 各关 POI 放置 ----
   function placeCommonSpawn(map) {
     var s = map.rooms[0];
@@ -422,29 +456,347 @@
     addPOI(map, 'spawn', Math.round(s.cx), Math.round(s.cy), {});
   }
 
+  // 矩形相交检测（含边界接触）
+  function boxIntersects(a, b) {
+    return a.x0 <= b.x1 && a.x1 >= b.x0 && a.y0 <= b.y1 && a.y1 >= b.y0;
+  }
+
+  // ---- L0 开阔大厅地形（后室观感：半开放大空间 + 柱子/半墙遮挡，不用窄迷宫走廊） ----
+  // 思路来源：开源后室生成（davidpcahill/backrooms 的 pillar halls；
+  // H1an1/meathill backrooms 的"大厅被独立半墙 slab 分隔 + 经典柱林区"）——只借鉴思路。
+  // 4 个相互重叠的大厅（重叠=天然连通）+ 独立半墙 + 柱阵 + 封闭马尼拉房间。
+  // 结果存 map._slabs（半墙列表）/ map._manila（门与内厅边界）供 placeL0 用，generate 末尾删除。
+  function carveOpenHall(rng, map) {
+    var defs = [
+      { x: 4,  y: 5,  w: 21, h: 18 },
+      { x: 23, y: 4,  w: 21, h: 19 },
+      { x: 11, y: 21, w: 22, h: 19 },
+      { x: 31, y: 22, w: 20, h: 18 }
+    ];
+    for (var i = 0; i < defs.length; i++) {
+      var d = defs[i];
+      var x = clamp(d.x + rng.int(-2, 2), 2, W - 2 - d.w);
+      var y = clamp(d.y + rng.int(-2, 2), 2, H - 2 - d.h);
+      var w = Math.min(d.w + rng.int(-2, 2), W - 2 - x);
+      var h = Math.min(d.h + rng.int(-2, 2), H - 2 - y);
+      for (var yy = y; yy < y + h; yy++)
+        for (var xx = x; xx < x + w; xx++) map.tiles[T(xx, yy)] = 1;
+      var room = { id: map.rooms.length, x: x, y: y, w: w, h: h, cx: 0, cy: 0, tag: '' };
+      room.cx = x + (w - 1) / 2; room.cy = y + (h - 1) / 2;
+      map.rooms.push(room);
+    }
+    // 抖动后若某厅与其余厅不连通（无重叠/贴边），用 4 格宽走廊接上，保持开阔感
+    for (var j = 1; j < map.rooms.length; j++) {
+      var rj = map.rooms[j], touch = false;
+      for (var k = 0; k < j; k++) {
+        var rk = map.rooms[k];
+        if (rj.x <= rk.x + rk.w && rj.x + rj.w >= rk.x &&
+            rj.y <= rk.y + rk.h && rj.y + rj.h >= rk.y) { touch = true; break; }
+      }
+      if (!touch) {
+        var cx0 = Math.round(rj.cx), cy0 = Math.round(rj.cy);
+        var cx1 = Math.round(map.rooms[0].cx), cy1 = Math.round(map.rooms[0].cy);
+        carveH(map, cy0, cx0, cx1, 4);
+        carveV(map, cx1, cy0, cy1, 4);
+      }
+    }
+    // 马尼拉房间：封闭矩形（内厅 5×4）+ 一圈墙 + 一扇门（走 map.doors，不上锁）
+    // 契约（建造工人按此在 levels.js 建内饰）：POI 在门 tile 上，
+    // data = {x0,y0,x1,y1（内厅 tile 边界，含）, doorTx, doorTy（门 tile）}
+    var hallCenters = map.rooms.map(function (r) { return [Math.round(r.cx), Math.round(r.cy)]; });
+    var mh = map.rooms[1 + rng.int(0, map.rooms.length - 2)]; // 不在出生厅
+    var mw = 7, mhh = 6; // 含一圈墙
+    var mx = -1, my = -1;
+    for (var mg = 0; mg < 60 && mx < 0; mg++) {
+      var tx0 = rng.int(mh.x + 2, mh.x + mh.w - mw - 2);
+      var ty0 = rng.int(mh.y + 2, mh.y + mh.h - mhh - 2);
+      var clash = false;
+      for (var ci = 0; ci < hallCenters.length; ci++) { // 不压住任何大厅中心（POI 落点）
+        var hc = hallCenters[ci];
+        if (hc[0] >= tx0 && hc[0] < tx0 + mw && hc[1] >= ty0 && hc[1] < ty0 + mhh) { clash = true; break; }
+      }
+      if (!clash) { mx = tx0; my = ty0; }
+    }
+    if (mx < 0) { mx = mh.x + 2; my = mh.y + 2; } // 终极兜底（理论上走不到）
+    var x0 = mx + 1, y0 = my + 1, x1 = mx + mw - 2, y1 = my + mhh - 2;
+    for (var wy = my; wy < my + mhh; wy++)
+      for (var wx = mx; wx < mx + mw; wx++)
+        if (wx === mx || wy === my || wx === mx + mw - 1 || wy === my + mhh - 1)
+          setT(map, wx, wy, 0);
+    var sides = rng.shuffle([0, 1, 2, 3]); // 0北 1南 2西 3东
+    var dtx = -1, dty = -1, daxis = 'x', doorOk = false;
+    for (var s = 0; s < 4 && !doorOk; s++) {
+      var offs = [];
+      var span = sides[s] < 2 ? mw - 2 : mhh - 2;
+      for (var q = 1; q <= span; q++) offs.push(q);
+      rng.shuffle(offs);
+      for (var oi = 0; oi < offs.length; oi++) {
+        var o = offs[oi], tx, ty, ox, oy;
+        if (sides[s] === 0)      { tx = mx + o; ty = my;           ox = tx; oy = ty - 1; daxis = 'x'; }
+        else if (sides[s] === 1) { tx = mx + o; ty = my + mhh - 1; ox = tx; oy = ty + 1; daxis = 'x'; }
+        else if (sides[s] === 2) { tx = mx;     ty = my + o;       ox = tx - 1; oy = ty; daxis = 'z'; }
+        else                     { tx = mx + mw - 1; ty = my + o;  ox = tx + 1; oy = ty; daxis = 'z'; }
+        // 门外必须是厅地板（房间整体埋在大厅里，恒成立；仍做检查防极端种子）
+        if (map.tiles[T(ox, oy)] === 1 && !doorAt(map, tx, ty)) {
+          addDoor(map, tx, ty, daxis, false, '木门', null);
+          dtx = tx; dty = ty; doorOk = true; break;
+        }
+      }
+    }
+    if (!doorOk) { // 终极兜底（理论上走不到）
+      dtx = mx + 1; dty = my;
+      addDoor(map, dtx, dty, 'x', false, '木门', null);
+    }
+    map._manila = { doorTx: dtx, doorTy: dty, x0: x0, y0: y0, x1: x1, y1: y1 };
+    var manilaEx = { x0: mx - 1, y0: my - 1, x1: mx + mw, y1: my + mhh };
+    // 独立半墙（freestanding slabs）：大厅里的遮挡，直段、互不接触、不贴厅边——不形成封闭口袋
+    var slabs = [];
+    var nSlab = 10 + rng.int(0, 5), sguard = 0;
+    while (slabs.length < nSlab && sguard++ < 250) {
+      var h = rng.pick(map.rooms);
+      var len = rng.int(3, 7), horiz = rng.chance(0.5);
+      var sw = horiz ? len : 1, sh = horiz ? 1 : len;
+      if (h.w < sw + 5 || h.h < sh + 5) continue;
+      var sx = rng.int(h.x + 2, h.x + h.w - 2 - sw);
+      var sy = rng.int(h.y + 2, h.y + h.h - 2 - sh);
+      // 不压任何大厅中心（大厅互相重叠，半墙可能落在别厅的中心 POI 落点上）
+      var badC = false;
+      for (var ci2 = 0; ci2 < hallCenters.length; ci2++) {
+        var hx = hallCenters[ci2][0], hy = hallCenters[ci2][1];
+        if (sx <= hx + 1 && sx + sw - 1 >= hx - 1 && sy <= hy + 1 && sy + sh - 1 >= hy - 1) { badC = true; break; }
+      }
+      if (badC) continue;
+      var box = { x0: sx - 2, y0: sy - 2, x1: sx + sw + 1, y1: sy + sh + 1 };
+      if (boxIntersects(box, manilaEx)) continue;
+      var ok = true;
+      for (var bi = 0; bi < slabs.length; bi++)
+        if (boxIntersects(box, slabs[bi].box)) { ok = false; break; }
+      if (!ok) continue;
+      for (var by = sy; by < sy + sh; by++)
+        for (var bx = sx; bx < sx + sw; bx++) setT(map, bx, by, 0);
+      slabs.push({ x: sx, y: sy, w: sw, h: sh, box: box });
+    }
+    // 柱阵：网格柱林（经典后室柱林），随机缺几根，柱距 4 不可能围死人
+    var zones = [], nZone = 2 + rng.int(0, 1), zguard = 0, zplaced = 0;
+    while (zplaced < nZone && zguard++ < 120) {
+      var hz = rng.pick(map.rooms);
+      var zw = rng.int(7, 10), zh = rng.int(7, 10);
+      if (hz.w < zw + 5 || hz.h < zh + 5) continue;
+      var zx = rng.int(hz.x + 2, hz.x + hz.w - 2 - zw);
+      var zy = rng.int(hz.y + 2, hz.y + hz.h - 2 - zh);
+      var zbox = { x0: zx - 1, y0: zy - 1, x1: zx + zw, y1: zy + zh };
+      if (boxIntersects(zbox, manilaEx)) continue;
+      var zok = true;
+      for (var zi = 0; zi < slabs.length; zi++)
+        if (boxIntersects(zbox, slabs[zi].box)) { zok = false; break; }
+      for (var pj = 0; pj < zones.length; pj++)
+        if (boxIntersects(zbox, zones[pj])) { zok = false; break; }
+      if (!zok) continue;
+      for (var py = zy; py < zy + zh; py += 4)
+        for (var px = zx; px < zx + zw; px += 4) {
+          if (rng.chance(0.25)) continue;
+          var nearC = false; // 不压任何大厅中心
+          for (var ci3 = 0; ci3 < hallCenters.length; ci3++)
+            if (Math.hypot(px - hallCenters[ci3][0], py - hallCenters[ci3][1]) < 3) { nearC = true; break; }
+          if (nearC) continue;
+          setT(map, px, py, 0);
+        }
+      zones.push(zbox); zplaced++;
+    }
+    map._slabs = slabs;
+  }
+
+  // L0 薄墙（不稳定切出点）×6：大厅贴外墙的地板格 / 半墙旁（开阔地形专用）
+  function placeThinWallsOpen(map, rng, count) {
+    var spawn = null;
+    for (var i = 0; i < map.pois.length; i++)
+      if (map.pois[i].type === 'spawn') spawn = map.pois[i];
+    var cands = [];
+    for (var ri = 0; ri < map.rooms.length; ri++) {
+      var r = map.rooms[ri];
+      for (var x = r.x; x < r.x + r.w; x++) {
+        if (map.tiles[T(x, r.y)] === 1 && map.tiles[T(x, r.y - 1)] === 0)
+          cands.push([x, r.y, 0, -1]);
+        if (map.tiles[T(x, r.y + r.h - 1)] === 1 && map.tiles[T(x, r.y + r.h)] === 0)
+          cands.push([x, r.y + r.h - 1, 0, 1]);
+      }
+      for (var y = r.y; y < r.y + r.h; y++) {
+        if (map.tiles[T(r.x, y)] === 1 && map.tiles[T(r.x - 1, y)] === 0)
+          cands.push([r.x, y, -1, 0]);
+        if (map.tiles[T(r.x + r.w - 1, y)] === 1 && map.tiles[T(r.x + r.w, y)] === 0)
+          cands.push([r.x + r.w - 1, y, 1, 0]);
+      }
+    }
+    var slabs = map._slabs || [];
+    for (var s = 0; s < slabs.length; s++) {
+      var sb = slabs[s];
+      var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (var sy = sb.y; sy < sb.y + sb.h; sy++)
+        for (var sx = sb.x; sx < sb.x + sb.w; sx++)
+          for (var dd = 0; dd < 4; dd++) {
+            var nx = sx + dirs[dd][0], ny = sy + dirs[dd][1];
+            if (map.tiles[T(nx, ny)] === 1) cands.push([nx, ny, -dirs[dd][0], -dirs[dd][1]]);
+          }
+    }
+    rng.shuffle(cands);
+    var placed = 0;
+    for (var i = 0; i < cands.length && placed < count; i++) {
+      var c = cands[i];
+      if (spawn && Math.hypot(c[0] - spawn.tx, c[1] - spawn.ty) < 6) continue;
+      var dup = false;
+      for (var k = 0; k < map.pois.length; k++) {
+        var p = map.pois[k];
+        if (p.type === 'thin_wall' && Math.hypot(p.tx - c[0], p.ty - c[1]) < 8) { dup = true; break; }
+      }
+      if (dup) continue;
+      addPOI(map, 'thin_wall', c[0], c[1], { dx: c[2], dz: c[3] });
+      placed++;
+    }
+  }
+
+  // L1 车库柱阵：大房间（≥6×6）内按 3 格间距布 1×1 混凝土柱；
+  // 在 connectRooms 之后调用，用 _segs 走廊带避让（柱子不压走廊、不堵路）；
+  // 单柱不相连、不贴房间边，不可能围死人；房间中心 tile 留空（出生点）。
+  function scatterGaragePillars(rng, map) {
+    var segs = map._segs || [];
+    function onCorrBand(px, py) {
+      for (var i = 0; i < segs.length; i++) {
+        var s = segs[i];
+        var m = ((s.w || 1) >> 1); // 走廊精确带：柱子可贴走廊放（不压走廊 tile 就不堵路）
+        if (px >= Math.min(s.x1, s.x2) - m && px <= Math.max(s.x1, s.x2) + m &&
+            py >= Math.min(s.y1, s.y2) - m && py <= Math.max(s.y1, s.y2) + m) return true;
+      }
+      return false;
+    }
+    for (var i = 0; i < map.rooms.length; i++) {
+      var r = map.rooms[i];
+      if (r.w < 6 || r.h < 6) continue;
+      for (var py = r.y + 1; py <= r.y + r.h - 2; py += 3)
+        for (var px = r.x + 1; px <= r.x + r.w - 2; px += 3) {
+          if (rng.chance(0.25)) continue;
+          if (map.tiles[T(px, py)] !== 1) continue;
+          if (Math.hypot(px - r.cx, py - r.cy) < 1.5) continue;
+          if (onCorrBand(px, py)) continue;
+          setT(map, px, py, 0);
+        }
+    }
+  }
+
+  // L1 薄墙（不稳定切出点）：优先放在走廊直线段中段（显眼），相邻墙为走廊侧壁；
+  // 数量不够时回退到通用随机放置。
+  function placeThinWallsCorridor(map, rng, count) {
+    var spawn = null;
+    for (var i = 0; i < map.pois.length; i++)
+      if (map.pois[i].type === 'spawn') spawn = map.pois[i];
+    var placed = 0;
+    function tryAdd(tx, ty, dx, dz) {
+      if (spawn && Math.hypot(tx - spawn.tx, ty - spawn.ty) < 6) return;
+      for (var k = 0; k < map.pois.length; k++) {
+        var p = map.pois[k];
+        if (p.type === 'thin_wall' && Math.hypot(p.tx - tx, p.ty - ty) < 8) return;
+      }
+      addPOI(map, 'thin_wall', tx, ty, { dx: dx, dz: dz });
+      placed++;
+    }
+    var segs = rng.shuffle((map._segs || []).slice());
+    for (var i = 0; i < segs.length && placed < count; i++) {
+      var s = segs[i];
+      var len = Math.abs(s.x2 - s.x1) + Math.abs(s.y2 - s.y1);
+      if (len < 6) continue;
+      var dx = Math.sign(s.x2 - s.x1), dy = Math.sign(s.y2 - s.y1);
+      var off = (len / 2) | 0;
+      var tx = s.x1 + dx * off, ty = s.y1 + dy * off;
+      if (map.tiles[T(tx, ty)] !== 1) continue;
+      var perp = dx !== 0 ? [[0, 1], [0, -1]] : [[1, 0], [-1, 0]];
+      for (var d = 0; d < 2; d++) {
+        var wx = tx + perp[d][0], wy = ty + perp[d][1];
+        if (map.tiles[T(wx, wy)] === 0) { tryAdd(tx, ty, perp[d][0], perp[d][1]); break; }
+      }
+    }
+    if (placed < count) placeThinWalls(map, rng, count - placed); // 回退：通用放置（自带防重逻辑）
+  }
+
+  // L1 家具 POI ×3~6：桌子/柜子，靠墙放，item 可能是补给；
+  // 契约（建造工人按此在 levels.js 建内饰）：addPOI(map,'furniture',tx,ty,{kind:'table'|'cabinet',item:'almond'|'bandage'|'food'|null})
+  function placeFurnitureL1(map, rng) {
+    var spawn = map.rooms[0];
+    var n = 3 + rng.int(0, 3), placed = 0, guard = 0;
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    while (placed < n && guard++ < 150) {
+      var r = pickRoom(rng, map, [spawn]);
+      var t = randTileInRoom(rng, map, r);
+      var tx = t[0], ty = t[1];
+      var walled = false;
+      for (var d = 0; d < 4; d++) {
+        var wx = tx + dirs[d][0], wy = ty + dirs[d][1];
+        if (wx < 1 || wy < 1 || wx >= map.w - 1 || wy >= map.h - 1) continue;
+        if (map.tiles[T(wx, wy)] === 0) { walled = true; break; }
+      }
+      if (!walled) continue;
+      var dup = false;
+      for (var k = 0; k < map.pois.length; k++) {
+        var p = map.pois[k];
+        if (Math.abs(p.tx - tx) + Math.abs(p.ty - ty) < 2) { dup = true; break; }
+      }
+      if (dup) continue;
+      addPOI(map, 'furniture', tx, ty, {
+        kind: rng.chance(0.5) ? 'table' : 'cabinet',
+        item: rng.pick(['almond', 'bandage', 'food', null, null])
+      });
+      placed++;
+    }
+  }
+
   function placeL0(map, rng) {
     placeCommonSpawn(map);
     var exit = map.farRoom; exit.tag = 'exit';
-    // 异常墙：出口房某面墙，法线指向房间内部；绝不在出生点旁
+    // 异常墙：出口厅某面外墙，法线指向厅内；绝不在出生点旁
     var found = findDoorSpotAny(rng, map, [exit].concat(map.rooms.slice(1)));
     var spot = found ? found.spot : manualWallSpot(exit);
     addPOI(map, 'anomaly_wall', spot.tx, spot.ty, {
       dirx: Math.sign(spot.fx - spot.tx), dirz: Math.sign(spot.fy - spot.ty)
     });
-    // 红房间：另一处异常点
+    // 红房间：另一处异常点（厅中心；若中心恰被遮挡，取最近的地板格）
     var rr = pickRoom(rng, map, [map.rooms[0], exit]); rr.tag = 'red';
-    addPOI(map, 'red_room', Math.round(rr.cx), Math.round(rr.cy), {});
+    var rcx = Math.round(rr.cx), rcy = Math.round(rr.cy), rrt = [rcx, rcy];
+    if (map.tiles[T(rcx, rcy)] !== 1) {
+      for (var rad = 1; rad < 8 && map.tiles[T(rrt[0], rrt[1])] !== 1; rad++)
+        for (var rdy = -rad; rdy <= rad; rdy++)
+          for (var rdx = -rad; rdx <= rad; rdx++) {
+            if (Math.max(Math.abs(rdx), Math.abs(rdy)) !== rad) continue;
+            if (map.tiles[T(rcx + rdx, rcy + rdy)] === 1) { rrt = [rcx + rdx, rcy + rdy]; break; }
+          }
+    }
+    addPOI(map, 'red_room', rrt[0], rrt[1], {});
     // 少量笔记
     var n = 1 + rng.int(0, 1);
     for (var i = 0; i < n; i++) {
       var r = pickRoom(rng, map, [map.rooms[0]]), t = randTileInRoom(rng, map, r);
       addPOI(map, 'note', t[0], t[1], { noteId: 'L0_note' + i });
     }
-    // 马尼拉房间：Level 0 的安全屋（补给+休整），不在出生/出口房间
-    var mr = pickRoom(rng, map, [map.rooms[0], exit]); mr.tag = 'manila';
-    addPOI(map, 'manila_room', Math.round(mr.cx), Math.round(mr.cy), {});
-    // 薄墙：不稳定切出点
-    placeThinWalls(map, rng, 4);
+    // 马尼拉房间：carveOpenHall 已单独 carve 出封闭矩形房间 + 一扇门（map.doors，不上锁）；
+    // 这里只按契约登记 POI：POI 在门 tile 上，data 给内厅 tile 边界 + 门 tile 坐标
+    // （建造工人在 levels.js 按此 data 建内饰：暖光/地毯/桌子/柜子）
+    var mp = map._manila;
+    addPOI(map, 'manila_room', mp.doorTx, mp.doorTy, {
+      x0: mp.x0, y0: mp.y0, x1: mp.x1, y1: mp.y1,
+      doorTx: mp.doorTx, doorTy: mp.doorTy
+    });
+    // Systems A：FUN 涂鸦洞口（本游戏原创机制）——8% 概率出现墙上涂鸦 + 附近可爬洞口 → FUN
+    if (rng.next() < 0.08) {
+      var gr = pickRoom(rng, map, [map.rooms[0], exit]);
+      var gt = randTileInRoom(rng, map, gr);
+      addPOI(map, 'fun_graffiti', gt[0], gt[1], {});
+      var gdirs = [[1, 0], [-1, 0], [0, 1], [0, -1]], ghole = null;
+      for (var gi = 0; gi < 4 && !ghole; gi++) {
+        var gx = gt[0] + gdirs[gi][0], gy = gt[1] + gdirs[gi][1];
+        if (gx > 0 && gy > 0 && gx < map.w - 1 && gy < map.h - 1 && map.tiles[T(gx, gy)] === 1) ghole = [gx, gy];
+      }
+      if (ghole) addPOI(map, 'fun_hole2', ghole[0], ghole[1], {});
+    }
+    // 薄墙：不稳定切出点（L0 的不确定性来源之一：数量 6，位置随机且互相远离；
+    // 开阔地形专用放置：大厅边缘 / 半墙旁）
+    placeThinWallsOpen(map, rng, 6);
   }
 
   // L1 出口长走廊：从靠边的远房间向地图边缘打一条 10~14 格直走廊
@@ -509,6 +861,10 @@
     var boR = pickRoom(rng, map, [spawn, safeR]);
     var bt = [Math.round(boR.cx), Math.round(boR.cy)];
     addPOI(map, 'blackout', bt[0], bt[1], { cx: bt[0], cy: bt[1], r: 4 });
+    // 潜伏者 ×1：盘踞在闪烁区房间。平时蜷伏，灯灭/风暴期出来狩猎——
+    // L1 的"闪烁期判断"：听到风暴嗡鸣或灯灭时，别往黑的地方凑（entities.js 给 lurker 加了黑暗增益）
+    var lz1t = randTileInRoom(rng, map, boR);
+    addPOI(map, 'lurker_zone', lz1t[0], lz1t[1], { cx: lz1t[0], cy: lz1t[1], r: 5 });
     // 支线入口：异常天花板（破洞），藏在某个非出生房间
     var fhR = pickRoom(rng, map, [spawn, safeR, boR]);
     var fht = randTileInRoom(rng, map, fhR);
@@ -532,18 +888,32 @@
       var lr = pickRoom(rng, map, [spawn]);
       addPOI(map, 'landmark', Math.round(lr.cx), Math.round(lr.cy), { kind: 'settle' });
     }
-    placeThinWalls(map, rng, 4);
+    // 薄墙（不稳定切出点）：数量 4→6，优先放在走廊直线段中段（更显眼，而非角落）
+    placeThinWallsCorridor(map, rng, 6);
+    // 家具：桌子/柜子 ×3~6，靠墙（建造工人在 levels.js 按 kind/item 建内饰与补给）
+    placeFurnitureL1(map, rng);
+    placeBerryBush(map, rng); // 迁跃浆果灌木：极低概率 0~1 株（末尾调用，不影响已有布局）
   }
 
-  // 在已挖掘的走廊直线段上找一段放蒸汽
-  function findSteamSpot(map, rng) {
+  // 在已挖掘的走廊直线段上找一段放蒸汽；传 nearX/nearY 时优先选其附近的段
+  //（L2：蒸汽优先挡在出口房附近的走廊上，让"工业环境"有实际风险，而不是随机落在无关走廊）
+  function findSteamSpot(map, rng, nearX, nearY) {
     var good = [];
     for (var i = 0; i < map._segs.length; i++) {
       var s = map._segs[i];
       var len = Math.abs(s.x2 - s.x1) + Math.abs(s.y2 - s.y1);
       if (len >= 5) good.push(s);
     }
-    var s = rng.pick(good); // 走廊必存在，good 不会为空
+    var pool = good;
+    if (nearX !== undefined && good.length > 3) {
+      var sorted = good.slice().sort(function (a, b) {
+        var am = Math.hypot((a.x1 + a.x2) / 2 - nearX, (a.y1 + a.y2) / 2 - nearY);
+        var bm = Math.hypot((b.x1 + b.x2) / 2 - nearX, (b.y1 + b.y2) / 2 - nearY);
+        return am - bm;
+      });
+      pool = sorted.slice(0, 3); // 最近的 3 段里随机：偏向出口，但不完全 deterministic
+    }
+    var s = rng.pick(pool); // 走廊必存在，good 不会为空
     var dx = Math.sign(s.x2 - s.x1), dy = Math.sign(s.y2 - s.y1);
     var total = Math.abs(s.x2 - s.x1) + Math.abs(s.y2 - s.y1);
     var segLen = Math.min(total - 1, 4 + rng.int(0, 2));
@@ -580,8 +950,9 @@
       var vd = addDoor(map, vs.tx, vs.ty, vs.axis, false, '虚空之门', null);
       addPOI(map, 'void_door', vs.tx, vs.ty, { doorId: vd.id });
     }
-    // 蒸汽：一段走廊；阀门：在附近房间
-    var stm = findSteamSpot(map, rng);
+    // 蒸汽：优先选出口门附近的走廊段（玩家去出口大概率要处理它：阀门 60 秒窗口或硬闯）；
+    // 阀门：在附近房间
+    var stm = findSteamSpot(map, rng, spot.fx, spot.fy);
     addPOI(map, 'steam', stm.tx, stm.ty, { dirx: stm.dirx, dirz: stm.dirz, len: stm.len });
     var near = null, nd = Infinity;
     for (var q = 0; q < map.rooms.length; q++) {
@@ -591,7 +962,11 @@
     }
     var vt = randTileInRoom(rng, map, near);
     addPOI(map, 'valve', vt[0], vt[1], {});
-    // 潜伏者区域
+    // 潜伏者区域 ×2：一处在出口门所在房间（玩家开出口门前必须处理：蹲伏困惑/绕开/硬闯），
+    // 一处随机房间（探索时的遭遇）
+    var lzR1 = roomOf(map, spot.fx, spot.fy) || exit;
+    var lzt1 = randTileInRoom(rng, map, lzR1);
+    addPOI(map, 'lurker_zone', lzt1[0], lzt1[1], { cx: lzt1[0], cy: lzt1[1], r: 5 });
     var lzR = pickRoom(rng, map, [spawn, exit]);
     var lzt = randTileInRoom(rng, map, lzR);
     addPOI(map, 'lurker_zone', lzt[0], lzt[1], { cx: lzt[0], cy: lzt[1], r: 5 });
@@ -607,6 +982,7 @@
       addPOI(map, 'note', nt2[0], nt2[1], { noteId: 'L2_note' + n2 });
     }
     placeThinWalls(map, rng, 4);
+    placeBerryBush(map, rng); // 迁跃浆果灌木：极低概率 0~1 株（末尾调用，不影响已有布局）
   }
 
   function placeL3(map, rng) {
@@ -616,7 +992,7 @@
     // 电梯：出口房墙上，POI 在门前地板，dir 指向电梯门方向
     var lfound = findDoorSpotAny(rng, map, [exit].concat(map.rooms.slice(1)));
     var spot = lfound ? lfound.spot : manualWallSpot(exit);
-    addPOI(map, 'elevator', spot.fx, spot.fy, {
+    var elevPoi = addPOI(map, 'elevator', spot.fx, spot.fy, {
       dirx: Math.sign(spot.tx - spot.fx), dirz: Math.sign(spot.ty - spot.fy)
     });
     // 电力房
@@ -626,10 +1002,24 @@
     var fr = pickRoom(rng, map, [spawn, exit, pr]);
     var ft = randTileInRoom(rng, map, fr);
     addPOI(map, 'fence_zone', ft[0], ft[1], { cx: ft[0], cy: ft[1], r: 4 });
-    // 实体巡逻路线：沿走廊取 5~8 个散布点成环
+    // 实体巡逻路线：沿走廊取 5~8 个散布点成环；
+    // 其中 2 个钉在"电力房附近"和"电梯门口"——玩家做主线（开 3 台发电机→乘电梯）
+    // 必进猎犬活动区，实体位置真正影响路线（配合发电机噪音引怪与 1.5s 目视预警）
     var cands = corridorTiles(map);
     if (cands.length < 10) cands = allFloorTiles(map);
-    var pts = spreadPoints(rng, cands, 5 + rng.int(0, 3));
+    var pts = [];
+    var anchorA = nearestCorrTile(map, Math.round(pr.cx), Math.round(pr.cy));
+    var anchorB = nearestCorrTile(map, elevPoi.tx, elevPoi.ty);
+    if (anchorA) pts.push(anchorA);
+    if (anchorB && (!anchorA || Math.abs(anchorB[0] - anchorA[0]) + Math.abs(anchorB[1] - anchorA[1]) > 4)) pts.push(anchorB);
+    var rest = spreadPoints(rng, cands, (5 + rng.int(0, 3)) - pts.length);
+    for (var ri = 0; ri < rest.length; ri++) {
+      var rp = rest[ri], dup = false;
+      for (var pi = 0; pi < pts.length; pi++)
+        if (Math.abs(rp[0] - pts[pi][0]) + Math.abs(rp[1] - pts[pi][1]) < 3) { dup = true; break; }
+      if (!dup) pts.push(rp);
+    }
+    while (pts.length < 5) pts.push(rng.pick(cands)); // 去重后不足 5 个则补
     for (var i = 0; i < pts.length; i++)
       addPOI(map, 'patrol', pts[i][0], pts[i][1], { route: 0, order: i });
     // 物资与笔记
@@ -643,6 +1033,7 @@
       addPOI(map, 'note', nt[0], nt[1], { noteId: 'L3_note' + n2 });
     }
     placeThinWalls(map, rng, 3);
+    placeBerryBush(map, rng); // 迁跃浆果灌木：极低概率 0~1 株（末尾调用，不影响已有布局）
   }
 
   function placeFUN(map, rng) {
@@ -697,12 +1088,18 @@
     var cfg = LEVEL_CFG[level];
     var map = createMap(level, seed);
     map._segs = [];
-    placeRooms(rng, map, cfg);      // 14~22 个不重叠房间，首个为出生房
-    connectRooms(rng, map, cfg);    // L 形走廊连通 + 额外回环
+    if (cfg.openHall) carveOpenHall(rng, map); // L0：开阔大厅+柱子+半墙（不用房间+窄走廊）
+    else {
+      placeRooms(rng, map, cfg);      // 14~22 个不重叠房间，首个为出生房
+      connectRooms(rng, map, cfg);    // L 形走廊连通 + 额外回环
+      if (cfg.garagePillars) scatterGaragePillars(rng, map); // L1：走廊挖完后布混凝土柱阵（_segs 避让）
+    }
     computeFarRoom(map);            // 最远房间（出口 / 电梯 / 异常墙用）
     PLACERS[level](map, rng);       // 各关 POI / 门
     ensureConnected(map, rng);      // 兜底：关键 POI 全部可达
     delete map._segs;
+    delete map._slabs;   // L0 半墙列表（placer 已用完）
+    delete map._manila;  // L0 马尼拉房间数据（POI data 已登记）
     delete map.farRoom;
     for (var i = 0; i < map.rooms.length; i++) delete map.rooms[i]._d;
     map.meta.roomCount = map.rooms.length;
@@ -734,5 +1131,14 @@
     var h2 = 2166136261 >>> 0;
     for (var m = 0; m < s.length; m++) { h2 ^= s.charCodeAt(m); h2 = Math.imul(h2, 16777619); }
     return (h2 >>> 0).toString(16).padStart(8, '0');
+  };
+
+  // 扩建钩子：新关卡在独立文件里注册（避免多人同时改 gen.js 冲突）
+  // 用法：BR.Gen.registerLevel('L7', {rw:[4,9],rh:[4,9],corrW:[1,2],loops:[2,4],wallH:3.0}, placeL7, ['spawn','exit_x']);
+  // placerFn(map, rng)：只许用传入的 rng（禁用 Math.random/Date），用 addPOI/addDoor 工具函数
+  BR.Gen.registerLevel = function (id, cfg, placerFn, critical) {
+    LEVEL_CFG[id] = cfg;
+    PLACERS[id] = placerFn;
+    CRITICAL[id] = critical || [];
   };
 })();
