@@ -2,17 +2,28 @@
  * 原型：Fandom Backrooms Wiki 的 Level 188 "The Windows"（酒店版）：
  *   酒店式围合建筑，中央大中庭，四周墙上布满方形小窗；多数窗被窗帘遮挡（"闭窗"），
  *   少数"开窗"望向异地；"开窗"对应的房门会被未知力量锁死；中庭一端有楼梯间通往
- *   环绕的走廊（五层楼的感觉）。本关为游戏改编实现，与 Wikidot 的 Level 881 无关。
+ *   环绕的走廊。本关为游戏改编实现，与 Wikidot 的 Level 881 无关。
  *   （Entities: 0/5，无敌对实体——本关走纯氛围路线，不放怪物。）
  *
+ * v1.5 W7 重构：①中庭统一整体景观（草坪/交叉步道/左侧浅水池/中央圆形铺装/
+ *   地面蓝色小地灯，四面高墙 wallH=12，四层窗，夜间无自然光；参考用户提供的参考图4）；
+ *   ②真二层（二楼环廊+6 间客房+楼梯间上下连通，
+ *   楼梯走关内淡入淡出换层）；③窗户四态进 map.meta.l188wins（窗帘遮挡/普通房间/
+ *   异空间/事件窗+可穿越窗），确定性分配，卸载不重抽；④入口附近返回门（回来源层级）
+ *   + 位置随机的紧急出口（目的地=已完成层级池）；⑤异空间窗对应房门强制锁死。
+ *
  * 布局（56×56，确定性雕刻，rng 只决定内容/锁）：
- *   出生小房间(26..29,16..19) → 敞开门框(27,20) → 阳台(20..35,21)俯瞰中庭
- *   → 西/东/南走廊环绕 → 10 间客房 + 休息室 + 员工室（楼梯间）
- *   中庭(20..35,22..35)四周两层窗户；异常窗在南墙下（POI odd_window）
+ *   1F：出生小房间(26..29,16..19) → 敞开门框(27,20) → 阳台(20..35,21)俯瞰中庭
+ *       → 西/东/南走廊环绕 → 10 间客房 + 休息室 + 员工室 + 楼梯间大厅(36..38,38..40)
+ *   中庭(20..35,22..35)四周四层窗户（104 扇）；异常窗在南墙下（POI odd_window →L1）
+ *   2F（南区 46..54 行，关内楼梯换层到达）：环廊(12..42,50) + 6 间客房 + 楼梯间大厅
  *
  * POI 类型（lv_l188.js 消费，见该文件头部的清单）：
  *   spawn / balcony / hotel_room / room_door / lounge / staff_room /
- *   radio / odd_window / stairwell / note / crate
+ *   radio / odd_window / stairwell / stair_up / return_door / emergency_exit /
+ *   note / crate / thin_wall（走廊墙边 1~2 处，跨关切出）
+ *   （2F 内容不走 POI——通用可达性抽查要求全部 POI 从 spawn 可达；
+ *    2F 数据放 map.meta.l188.f2，lv_l188.js 按定坐标构建）
  * CRITICAL: spawn, odd_window, stairwell（均在连通的雕刻区内）
  */
 (function () {
@@ -59,7 +70,7 @@
   BR.Textures.registerTex('hotel_wall', function (w, h) {
     var R = lcg(18801);
     var c = mkCanvas(w, h), x = c.getContext('2d');
-    x.fillStyle = '#7d6b4f'; x.fillRect(0, 0, w, h);
+    x.fillStyle = '#4e4438'; x.fillRect(0, 0, w, h); // 深色楼体（参考图4：夜间深色住宅楼）
     for (var i = 0; i < w; i += 32) {
       x.fillStyle = (i / 32) % 2 ? 'rgba(0,0,0,0.075)' : 'rgba(255,244,214,0.05)';
       x.fillRect(i, 0, 16, h);
@@ -175,6 +186,21 @@
     dGrain(x, w, h, R, 150, 0.05);
     return c;
   });
+  // 异常色窗：明亮的蓝色亮窗（参考用户提供的参考图4，整院仅 1~2 扇）
+  BR.Textures.registerTex('win_blue', function (w, h) {
+    var R = lcg(188055);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    var g = x.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#9fd0ff'); g.addColorStop(0.5, '#4a86e8'); g.addColorStop(1, '#1c3f9e');
+    x.fillStyle = g; x.fillRect(0, 0, w, h);
+    x.fillStyle = 'rgba(255,255,255,0.85)'; x.fillRect(w * 0.44, 0, w * 0.12, h); // 中央竖向强光
+    winFrame(x, w, h);
+    x.fillStyle = g; x.fillRect(14, 14, w - 28, h - 28);
+    x.fillStyle = 'rgba(255,255,255,0.75)'; x.fillRect(14 + (w - 28) * 0.44, 14, (w - 28) * 0.12, h - 28);
+    winMullions(x, w, h);
+    dGrain(x, w, h, R, 150, 0.05);
+    return c;
+  });
   // 闭窗：百叶窗紧闭（原著：别去拉窗帘）
   BR.Textures.registerTex('blinds', function (w, h) {
     var R = lcg(18806);
@@ -242,6 +268,169 @@
 
   BR.Textures.registerWallTex('L188', 'hotel_wall');
 
+  /* ============ v1.5 W7：庭院 / 窗景立体小场景贴图（全部 lcg 确定性） ============ */
+  // 庭院夜草
+  BR.Textures.registerTex('court_grass', function (w, h) {
+    var R = lcg(18810);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#1d2b1a'; x.fillRect(0, 0, w, h);
+    for (var i = 0; i < 2600; i++) {
+      var g = 30 + ((R() * 40) | 0);
+      x.strokeStyle = 'rgba(' + (g * 0.7 | 0) + ',' + g + ',' + (g * 0.6 | 0) + ',0.5)';
+      var px = R() * w, py = R() * h;
+      x.beginPath(); x.moveTo(px, py); x.lineTo(px + (R() - 0.5) * 4, py - 2 - R() * 4); x.stroke();
+    }
+    dStains(x, w, h, R, 8, ['rgba(8,14,8,0.4)', 'rgba(30,44,26,0.3)'], 14, 46);
+    dGrain(x, w, h, R, 500, 0.08);
+    return c;
+  });
+  // 庭院石板路
+  BR.Textures.registerTex('court_path', function (w, h) {
+    var R = lcg(18811);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#3f3d38'; x.fillRect(0, 0, w, h);
+    var s = 64;
+    for (var ty = 0; ty < h; ty += s) for (var tx = 0; tx < w; tx += s) {
+      var v = 58 + ((R() * 22) | 0);
+      x.fillStyle = 'rgb(' + v + ',' + (v - 2) + ',' + (v - 6) + ')';
+      x.fillRect(tx + 3, ty + 3, s - 6, s - 6);
+      x.fillStyle = 'rgba(255,255,255,0.05)'; x.fillRect(tx + 3, ty + 3, s - 6, 4);
+    }
+    dStains(x, w, h, R, 10, ['rgba(16,20,14,0.35)', 'rgba(60,70,52,0.22)'], 10, 40);
+    dGrain(x, w, h, R, 700, 0.09);
+    return c;
+  });
+  // L37 式泳池瓷砖（窗景用）
+  BR.Textures.registerTex('pool_tile', function (w, h) {
+    var R = lcg(18812);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#cfe4e2'; x.fillRect(0, 0, w, h);
+    var s = 16;
+    for (var ty = 0; ty < h; ty += s) for (var tx = 0; tx < w; tx += s) {
+      var v = 200 + ((R() * 40) | 0);
+      x.fillStyle = 'rgb(' + (v - 30) + ',' + v + ',' + (v - 8) + ')';
+      x.fillRect(tx + 1, ty + 1, s - 2, s - 2);
+    }
+    x.fillStyle = 'rgba(40,120,130,0.25)'; x.fillRect(0, h * 0.72, w, h * 0.28); // 下部水渍
+    dGrain(x, w, h, R, 220, 0.05);
+    return c;
+  });
+  // 暖黄客房墙纸（窗景用）
+  BR.Textures.registerTex('room_warm', function (w, h) {
+    var R = lcg(18813);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#8a6f4a'; x.fillRect(0, 0, w, h);
+    for (var i = 0; i < w; i += 24) {
+      x.fillStyle = (i / 24) % 2 ? 'rgba(0,0,0,0.10)' : 'rgba(255,240,200,0.07)';
+      x.fillRect(i, 0, 12, h);
+    }
+    x.fillStyle = '#4a3a26'; x.fillRect(0, h - 26, w, 26);
+    dGrain(x, w, h, R, 260, 0.07);
+    return c;
+  });
+  // 夜城（L11 一角窗景用）
+  BR.Textures.registerTex('city_night', function (w, h) {
+    var R = lcg(18814);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    var g = x.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#060a16'); g.addColorStop(1, '#0d1626');
+    x.fillStyle = g; x.fillRect(0, 0, w, h);
+    for (var b = 0; b < 7; b++) { // 远楼剪影
+      var bw = 14 + R() * 22, bx = R() * w, bh = h * (0.4 + R() * 0.5);
+      x.fillStyle = '#04060c'; x.fillRect(bx, h - bh, bw, bh);
+      for (var wy = h - bh + 4; wy < h - 4; wy += 7)
+        for (var wx = bx + 3; wx < bx + bw - 3; wx += 6)
+          if (R() < 0.42) { x.fillStyle = R() < 0.7 ? '#ffd98a' : '#bcd4ff'; x.fillRect(wx, wy, 3, 4); }
+    }
+    return c;
+  });
+  // 深海渐变（L7 一角窗景用）
+  BR.Textures.registerTex('deep_blue', function (w, h) {
+    var R = lcg(18815);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    var g = x.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#0a2036'); g.addColorStop(0.6, '#061423'); g.addColorStop(1, '#020608');
+    x.fillStyle = g; x.fillRect(0, 0, w, h);
+    dGrain(x, w, h, R, 300, 0.06);
+    return c;
+  });
+  // 派对背景（Level Fun 窗景用）
+  BR.Textures.registerTex('party_back', function (w, h) {
+    var R = lcg(18816);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#241019'; x.fillRect(0, 0, w, h);
+    var cols = ['#ff5b5b', '#ffd75b', '#5bff8a', '#5bb8ff', '#c97bff'];
+    for (var i = 0; i < 90; i++) { // 五彩纸屑
+      x.fillStyle = cols[(R() * cols.length) | 0];
+      x.save(); x.translate(R() * w, R() * h); x.rotate(R() * 6.28);
+      x.fillRect(-3, -1.5, 6, 3); x.restore();
+    }
+    dGrain(x, w, h, R, 200, 0.06);
+    return c;
+  });
+  // 穿越窗走廊剪影（按目标层级）
+  function corridorTex(base, wallC, floorC, lightC) {
+    return function (w, h) {
+      var R = lcg(base);
+      var c = mkCanvas(w, h), x = c.getContext('2d');
+      x.fillStyle = wallC; x.fillRect(0, 0, w, h);
+      x.fillStyle = floorC; x.fillRect(0, h * 0.62, w, h * 0.38);
+      x.fillStyle = 'rgba(0,0,0,0.55)'; // 纵深灭点
+      x.beginPath(); x.moveTo(w * 0.42, 0); x.lineTo(w * 0.58, 0);
+      x.lineTo(w * 0.56, h); x.lineTo(w * 0.44, h); x.closePath(); x.fill();
+      x.fillStyle = lightC; // 尽头光
+      x.beginPath(); x.arc(w / 2, h * 0.46, 9, 0, 6.2832); x.fill();
+      var g = x.createRadialGradient(w / 2, h * 0.46, 2, w / 2, h * 0.46, 30);
+      g.addColorStop(0, lightC); g.addColorStop(1, 'rgba(0,0,0,0)');
+      x.fillStyle = g; x.fillRect(0, 0, w, h);
+      dGrain(x, w, h, R, 200, 0.07);
+      return c;
+    };
+  }
+  BR.Textures.registerTex('corridor_l0', corridorTex(18817, '#a3905e', '#7a6a44', '#ffe9b0'));
+  BR.Textures.registerTex('corridor_l1', corridorTex(18818, '#8d8d90', '#5a5a5e', '#dfe8ff'));
+  BR.Textures.registerTex('corridor_l11', corridorTex(18819, '#1c2a44', '#101828', '#9fc0ff'));
+  BR.Textures.registerTex('corridor_l37', corridorTex(18820, '#cfe4e2', '#7fb8bc', '#e8ffff'));
+  BR.Textures.registerTex('corridor_fun', corridorTex(18821, '#7a3a52', '#4a2433', '#ffd75b'));
+  // 窗帘（窗景通用）
+  BR.Textures.registerTex('win_curtain', function (w, h) {
+    var R = lcg(18822);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#4e1c20'; x.fillRect(0, 0, w, h);
+    for (var i = 0; i < w; i += 10) {
+      x.fillStyle = 'rgba(0,0,0,0.4)'; x.fillRect(i, 0, 4, h);
+      x.fillStyle = 'rgba(255,170,150,0.08)'; x.fillRect(i + 5, 0, 2, h);
+    }
+    x.fillStyle = 'rgba(0,0,0,0.5)'; x.fillRect(0, 0, w, 12);
+    dGrain(x, w, h, R, 160, 0.07);
+    return c;
+  });
+  // 微光条纹（穿越窗用）
+  BR.Textures.registerTex('shimmer', function (w, h) {
+    var R = lcg(18823);
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.clearRect(0, 0, w, h);
+    for (var i = 0; i < 26; i++) {
+      var sx = R() * w;
+      var g = x.createLinearGradient(sx - 8, 0, sx + 8, 0);
+      g.addColorStop(0, 'rgba(255,255,255,0)');
+      g.addColorStop(0.5, 'rgba(255,255,255,' + (0.25 + R() * 0.3).toFixed(2) + ')');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      x.fillStyle = g; x.fillRect(sx - 8, 0, 16, h);
+    }
+    return c;
+  });
+  // 紧急出口绿牌
+  BR.Textures.registerTex('exit_sign', function (w, h) {
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.fillStyle = '#0a3a1a'; x.fillRect(0, 0, w, h);
+    x.strokeStyle = '#2aff5a'; x.lineWidth = 5; x.strokeRect(5, 5, w - 10, h - 10);
+    x.fillStyle = '#7dff9a'; x.font = 'bold 40px sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText('EXIT', w / 2, h / 2 + 2);
+    return c;
+  });
+
   /* ============ 环境音：深夜酒店（配电嗡鸣 + 窗缝风声 + 窗户静电） ============ */
   BR.Audio.registerAmbient('L188', function () {
     var self = this;
@@ -258,6 +447,16 @@
       var n2 = R.noise(), bp = R.filter('bandpass', 1900, 1.1), sg = R.gain(0.0);
       n2.connect(bp); bp.connect(sg); sg.connect(R.group);
       self._l188static = sg;
+      // v1.5 W7：窗景近场声——每种异空间窗一路带通噪声，
+      // 增益由 tick 按"与最近同类窗户距离 + 遮挡"调制（仅靠近对应窗口轻微出现）
+      var n3 = R.noise(), voices = {};
+      [['pool', 700, 1.2], ['party', 1300, 0.9], ['city', 480, 0.7],
+       ['deep', 200, 0.8], ['event', 1900, 1.1], ['travel', 2700, 1.6]].forEach(function (vd) {
+        var fbp = R.filter('bandpass', vd[1], vd[2]), vg = R.gain(0.0);
+        n3.connect(fbp); fbp.connect(vg); vg.connect(R.group);
+        voices[vd[0]] = vg;
+      });
+      self._l188voices = voices;
     });
     rig.target = 0.40;
     return rig;
@@ -272,6 +471,15 @@
     function carve(x0, y0, x1, y1) {
       for (var y = y0; y <= y1; y++)
         for (var x = x0; x <= x1; x++) setT(x, y, 1);
+    }
+    // carve2：二层地板（tile=2）：渲染/碰撞与 1 相同，但 gen 侧 BFS/缝线检查只认 1，
+    // 因此二层天然"不可达"——只能经楼梯间换层到达，符合"楼梯真连楼层"。
+    function setT2(x, y, v) {
+      if (x > 0 && y > 0 && x < MW - 1 && y < MH - 1) map.tiles[y * MW + x] = v;
+    }
+    function carve2(x0, y0, x1, y1) {
+      for (var y = y0; y <= y1; y++)
+        for (var x = x0; x <= x1; x++) setT2(x, y, 2);
     }
     var poiN = 0, doorN = 0;
     function POI(type, tx, ty, data) {
@@ -298,6 +506,21 @@
         var a = axis === 'z' ? map.tiles[ty * MW + tx - 1] : map.tiles[(ty - 1) * MW + tx];
         var b = axis === 'z' ? map.tiles[ty * MW + tx + 1] : map.tiles[(ty + 1) * MW + tx];
         if (a === 1 && b === 1) return [tx, ty];
+      }
+      return [dx, dy];
+    }
+    // doorTile2：二层门位（两侧为 tile=2 的二层地板）
+    function doorTile2(dx, dy, axis) {
+      var cands = axis === 'z'
+        ? [[dx, dy], [dx, dy - 1], [dx, dy + 1]]
+        : [[dx, dy], [dx - 1, dy], [dx + 1, dy]];
+      for (var i2 = 0; i2 < cands.length; i2++) {
+        var tx2 = cands[i2][0], ty2 = cands[i2][1];
+        if (tx2 < 1 || ty2 < 1 || tx2 >= MW - 1 || ty2 >= MH - 1) continue;
+        if (map.tiles[ty2 * MW + tx2] !== 0) continue;
+        var a2 = axis === 'z' ? map.tiles[ty2 * MW + tx2 - 1] : map.tiles[(ty2 - 1) * MW + tx2];
+        var b2 = axis === 'z' ? map.tiles[ty2 * MW + tx2 + 1] : map.tiles[(ty2 + 1) * MW + tx2];
+        if (a2 === 2 && b2 === 2) return [tx2, ty2];
       }
       return [dx, dy];
     }
@@ -341,26 +564,81 @@
     carve(25, 39, 32, 44);
     carve(40, 39, 44, 43);
 
-    /* —— 门：约 70% 上锁（休息室/员工室常开，保证两条出口可达） —— */
+    /* —— 1F 楼梯间大厅（真连二层）：南走廊东侧 —— */
+    carve(36, 38, 38, 40);
+
+    /* —— 2F（南区；关内楼梯换层到达，不走 POI 以免可达性抽查失败） —— */
+    carve2(12, 50, 42, 50);   // 2F 环廊
+    var f2rooms = [
+      { x: 14, y: 46, w: 5, h: 3, num: '301', dx: 16, dy: 49, axis: 'x' },
+      { x: 21, y: 46, w: 5, h: 3, num: '302', dx: 23, dy: 49, axis: 'x' },
+      { x: 28, y: 46, w: 5, h: 3, num: '303', dx: 30, dy: 49, axis: 'x' },
+      { x: 14, y: 52, w: 5, h: 3, num: '304', dx: 16, dy: 51, axis: 'x' },
+      { x: 21, y: 52, w: 5, h: 3, num: '305', dx: 23, dy: 51, axis: 'x' },
+      { x: 28, y: 52, w: 5, h: 3, num: '306', dx: 30, dy: 51, axis: 'x' }
+    ];
+    for (var fi = 0; fi < f2rooms.length; fi++) {
+      var fr = f2rooms[fi];
+      carve2(fr.x, fr.y, fr.x + fr.w - 1, fr.y + fr.h - 1);
+    }
+    carve2(36, 52, 38, 53);   // 2F 楼梯间大厅
+
+    /* —— 门：约 70% 上锁（休息室/员工室/楼梯间常开，保证出口可达） —— */
     var shuffled = rng.shuffle(guests.slice());
     for (i = 0; i < guests.length; i++) guests[i].locked = true;
     shuffled[0].locked = false;
     shuffled[1].locked = false;
+    // 异空间窗/事件窗/可穿越窗对应的房门会被未知力量锁死（后算，先占位）
+    var coupledNums = {}; // room num -> true（窗户状态分配后回填）
     for (i = 0; i < guests.length; i++) {
       g = guests[i];
       var spot = doorTile(g.dx, g.dy, g.axis);
       g.doorId = DOOR(spot[0], spot[1], g.axis, g.locked, g.num + ' 房门');
       g.winKind = rng.pick(['warm', 'warm', 'warm', 'cold', 'cold', 'dark', 'blinds']);
       POI('hotel_room', Math.round(g.x + (g.w - 1) / 2), Math.round(g.y + (g.h - 1) / 2),
-        { num: g.num, winKind: g.winKind, locked: g.locked });
+        { num: g.num, winKind: g.winKind, locked: g.locked, w: g.w, h: g.h, x0: g.x, y0: g.y });
       POI('room_door', spot[0], spot[1], { doorId: g.doorId, num: g.num, locked: g.locked });
     }
     var loungeSpot = doorTile(28, 38, 'x');
     var staffSpot = doorTile(42, 38, 'x');
+    var stairSpot = doorTile(37, 38, 'x'); // 1F 楼梯间大厅门
     var loungeDoor = DOOR(loungeSpot[0], loungeSpot[1], 'x', false, '休息室');
     var staffDoor = DOOR(staffSpot[0], staffSpot[1], 'x', false, '员工室');
+    var stairDoor = DOOR(stairSpot[0], stairSpot[1], 'x', false, '楼梯间');
     POI('room_door', loungeSpot[0], loungeSpot[1], { doorId: loungeDoor, num: '休息室', locked: false });
     POI('room_door', staffSpot[0], staffSpot[1], { doorId: staffDoor, num: '员工室', locked: false });
+    POI('room_door', stairSpot[0], stairSpot[1], { doorId: stairDoor, num: '楼梯间', locked: false });
+    POI('stair_up', 37, 39, {});   // 1F 楼梯间大厅内：上楼交互点
+    POI('return_door', 27, 16, {}); // 出生房北墙：返回来时的门
+
+    /* —— 2F 门（进 meta，不走 map.doors/POI；lv 按定坐标构建） —— */
+    var f2doors = [];
+    var f2shuf = rng.shuffle(f2rooms.slice());
+    for (fi = 0; fi < f2rooms.length; fi++) f2rooms[fi].locked = true;
+    f2shuf[0].locked = false;
+    f2shuf[1].locked = false;
+    for (fi = 0; fi < f2rooms.length; fi++) {
+      fr = f2rooms[fi];
+      var fspot = doorTile2(fr.dx, fr.dy, fr.axis);
+      f2doors.push({ id: 'd2_' + fi, tx: fspot[0], ty: fspot[1], axis: fr.axis,
+        locked: fr.locked, label: fr.num + ' 房门', num: fr.num, room: fr });
+    }
+    var f2stairSpot = doorTile2(37, 51, 'x');
+    f2doors.push({ id: 'd2_stair', tx: f2stairSpot[0], ty: f2stairSpot[1], axis: 'x',
+      locked: false, label: '楼梯间', num: '楼梯间', room: null });
+
+    /* —— 紧急出口：5 个候选位 rng 选 1（位置不定；目的地=已完成层级池） —— */
+    var EMERG_CANDS = [
+      { tx: 44, ty: 37, dx: 1, dz: 0 },   // 南走廊东端头
+      { tx: 17, ty: 37, dx: -1, dz: 0 },  // 南走廊西端头
+      { tx: 20, ty: 21, dx: 0, dz: -1 },  // 阳台西端
+      { tx: 24, ty: 37, dx: 0, dz: 1 },   // 南走廊中段南墙
+      { tx: 30, ty: 37, dx: 0, dz: 1 }    // 南走廊中段南墙
+    ];
+    var EMERG_DESTS = ['L0', 'L1', 'L11', 'L37', 'bang', 'L7', 'L2', 'L3', 'FUN']; // 已完成层级池（v1.5 W6：94→! 替换）
+    var emerg = rng.pick(EMERG_CANDS);
+    POI('emergency_exit', emerg.tx, emerg.ty,
+      { dx: emerg.dx, dz: emerg.dz, dest: rng.pick(EMERG_DESTS) });
 
     /* —— 功能区 POI —— */
     POI('lounge', 28, 41, {});
@@ -376,10 +654,175 @@
     POI('crate', 31, 43, { item: 'almond' });
     POI('crate', 40, 40, { item: 'bandage' });
     POI('crate', 33, 21, { item: 'empty' });
+
+    /* —— 薄墙 1~2 处：走廊墙边（距出生≥6 格、两两≥8 格；贴墙挤压后跨关切出） —— */
+    (function () {
+      var cands = [];
+      for (var cy = 15; cy <= 45; cy++) {
+        for (var cx = 10; cx <= 45; cx++) {
+          if (map.tiles[cy * MW + cx] !== 1) continue;
+          var adj = map.tiles[cy * MW + cx - 1] === 0 || map.tiles[cy * MW + cx + 1] === 0 ||
+                    map.tiles[(cy - 1) * MW + cx] === 0 || map.tiles[(cy + 1) * MW + cx] === 0;
+          if (!adj) continue;
+          if (Math.hypot(cx - 27, cy - 17) < 6) continue; // 出生房 (27,17)
+          cands.push([cx, cy]);
+        }
+      }
+      var order = rng.shuffle(cands), picked = [];
+      for (var q = 0; q < order.length && picked.length < 2; q++) {
+        var c = order[q], ok = true;
+        for (var j = 0; j < picked.length; j++) {
+          if (Math.hypot(c[0] - picked[j][0], c[1] - picked[j][1]) < 8) { ok = false; break; }
+        }
+        if (ok) picked.push(c);
+      }
+      if (!picked.length && cands.length) picked.push(cands[0]); // 兜底：至少 1 处
+      var wdirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (var p2 = 0; p2 < picked.length; p2++) {
+        var t2 = picked[p2], w = wdirs[0];
+        for (var d2 = 0; d2 < 4; d2++) {
+          if (map.tiles[(t2[1] + wdirs[d2][1]) * MW + t2[0] + wdirs[d2][0]] === 0) { w = wdirs[d2]; break; }
+        }
+        POI('thin_wall', t2[0], t2[1], { dx: w[0], dz: w[1] });
+      }
+    })();
+    /* —— 窗户四态元数据（map.meta.l188wins；确定性分配，卸载不重抽） ——
+     * 共 104 扇（南/北各 28，西/东各 24，四层 tier，y=2.2/5.0/7.8/10.6）。
+     * state: 'plain'(普通亮/黑窗，sub: warm/cold/dark/blinds/blue，blue 仅 1~2 扇异常色亮窗)
+     *        'curtain'(①窗帘遮挡普通窗) / 'room'(②可观察普通房间)
+     *        'pool'/'party'/'city'/'deep'(③异空间：L37泳池/L Fun派对/L11一角/L7深海，均本游戏改编)
+     *        'event'(④事件窗) / 'travel'(可穿越窗，dest=目标层级)
+     * 209 房南墙首层窗固定为 travel→L1（即 POI odd_window，老逻辑保留）。
+     * 异空间/事件/穿越窗若带有房号，其房门强制锁死（回填 coupledNums）。
+     */
+    (function buildWindowMeta() {
+      var T3 = 3; // BR.TILE（gen 侧硬编码 3，与 config.js 一致）
+      var wrng = new BR.RNG(BR.hashSeed(map.seed + ':l188wins'));
+      var wins = [];
+      var TIERS = [2.2, 5.0, 7.8, 10.6]; // 四层窗高（wallH=12，参考图4 高大压迫感）
+      function pushWin(id, side, tier, x, z, ry, ctx, num) {
+        wins.push({ id: id, side: side, tier: tier, y: TIERS[tier], x: x, z: z, ry: ry,
+          tx: ctx[0], ty: ctx[1], num: num || null,
+          state: 'plain', sub: 'warm', dest: null, magic: false, variant: null });
+      }
+      var sx, wy, nx, k;
+      for (k = 0; k < 4; k++) {
+        for (sx = 22; sx <= 34; sx += 2) {
+          var numS = k === 0 ? (sx === 22 ? '208' : sx === 28 ? '209' : sx === 32 ? 'lounge' : null) : null;
+          pushWin('s' + k + '_' + sx, 'S', k, (sx + 0.5) * T3, 36 * T3 - 0.07, Math.PI, [sx, 36], numS);
+        }
+        for (nx = 22; nx <= 34; nx += 2) {
+          var numN = k === 0 ? (nx === 22 ? '210' : nx === 34 ? '211' : null) : null;
+          pushWin('n' + k + '_' + nx, 'N', k, (nx + 0.5) * T3, 22 * T3 + 0.07, 0, [nx, 21], numN);
+        }
+        for (wy = 24; wy <= 34; wy += 2) {
+          var numW = k === 0 ? (wy === 24 ? '201' : wy === 30 ? '202' : wy === 34 ? '203' : null) : null;
+          var numE = k === 0 ? (wy === 24 ? '205' : wy === 30 ? '206' : wy === 34 ? '207' : null) : null;
+          pushWin('w' + k + '_' + wy, 'W', k, 20 * T3 + 0.07, (wy + 0.5) * T3, Math.PI / 2, [19, wy], numW);
+          pushWin('e' + k + '_' + wy, 'E', k, 36 * T3 - 0.07, (wy + 0.5) * T3, -Math.PI / 2, [36, wy], numE);
+        }
+      }
+      // 209 房南墙首层窗 = 可穿越窗 →L1（老 odd_window 逻辑）
+      var w209 = null;
+      for (var q = 0; q < wins.length; q++)
+        if (wins[q].id === 's0_28') { w209 = wins[q]; break; }
+      w209.state = 'travel'; w209.dest = 'L1'; w209.variant = 'corridor_l1';
+      coupledNums['209'] = true;
+      // 再强制指定：1 扇可穿越窗（目标从已完成层级池随机）+ 2 扇事件窗 + 1 扇"消失"窗帘
+      function pickPlain(filter) {
+        var c = wins.filter(function (w) {
+          return w.state === 'plain' && (!filter || filter(w));
+        });
+        return c.length ? wrng.pick(c) : null;
+      }
+      var wt = pickPlain(function (w) { return w.id !== 's0_28' && w.tier === 0; });
+      if (wt) {
+        wt.state = 'travel';
+        wt.dest = wrng.pick(['L0', 'L11', 'L37', 'FUN']);
+        wt.variant = 'corridor_' + wt.dest.toLowerCase();
+        if (wt.num && /^\d+$/.test(wt.num)) coupledNums[wt.num] = true;
+      }
+      var evVariants = ['figure', 'flicker'];
+      for (var e = 0; e < 2; e++) {
+        var we = pickPlain(function (w) { return w.tier === 0; }); // 首层：够得着交互
+        if (we) {
+          we.state = 'event'; we.variant = evVariants[e];
+          if (we.num && /^\d+$/.test(we.num)) coupledNums[we.num] = true;
+        }
+      }
+      var wc = pickPlain(function (w) { return w.state === 'plain' && w.tier === 0; });
+      if (wc) { wc.state = 'curtain'; wc.magic = true; }
+      // 其余按权重分配；同侧相邻异空间不重复（避免"全通同一场景"）
+      var lastAnom = {};
+      var anomKinds = ['pool', 'party', 'city', 'deep'];
+      for (var v = 0; v < wins.length; v++) {
+        var w = wins[v];
+        if (w.state !== 'plain') continue;
+        var r = wrng.next();
+        var st;
+        if (r < 0.55) st = 'plain';
+        else if (r < 0.68) st = 'curtain';
+        else if (r < 0.80) st = 'room';
+        else {
+          st = wrng.pick(['pool', 'pool', 'party', 'party', 'city', 'deep']);
+          if (lastAnom[w.side] === st) st = 'room'; // 同侧相邻不重复
+        }
+        w.state = st;
+        if (anomKinds.indexOf(st) >= 0) lastAnom[w.side] = st;
+        else if (st === 'room' || st === 'curtain') lastAnom[w.side] = null;
+        if (st === 'plain') {
+          var r2 = wrng.next();
+          w.sub = r2 < 0.35 ? 'warm' : r2 < 0.55 ? 'cold' : r2 < 0.90 ? 'dark' : 'blinds';
+        }
+      }
+      // 异常色亮窗（参考图4：混入 1~2 扇蓝色亮窗）
+      var bluePicked = 0;
+      var guard = 0;
+      while (bluePicked < 2 && guard++ < 200) {
+        var wb = pickPlain();
+        if (wb && wb.sub !== 'blue') { wb.sub = 'blue'; bluePicked++; }
+      }
+      // 锁耦合回填：异空间/事件/穿越窗对应的房门强制锁死
+      for (var d2 = 0; d2 < map.doors.length; d2++) {
+        var dd = map.doors[d2];
+        var mnum = /^(\d+) 房门$/.exec(dd.label || '');
+        if (mnum && coupledNums[mnum[1]]) dd.locked = true;
+      }
+      for (var p2 = 0; p2 < map.pois.length; p2++) {
+        var pp = map.pois[p2];
+        if ((pp.type === 'hotel_room' || pp.type === 'room_door') && coupledNums[pp.data.num])
+          pp.data.locked = true;
+      }
+      // 兜底：耦合锁死后仍保证至少 2 间非耦合客房可进（不许只剩空走廊）
+      var openCount = 0;
+      for (var g2 = 0; g2 < guests.length; g2++) {
+        var gn = guests[g2];
+        if (!coupledNums[gn.num] && !map.doors.some(function (d) { return d.id === gn.doorId && d.locked; }))
+          openCount++;
+      }
+      if (openCount < 2) {
+        for (var g3 = 0; g3 < guests.length && openCount < 2; g3++) {
+          var gn3 = guests[g3];
+          if (coupledNums[gn3.num]) continue;
+          (function (gid) {
+            for (var d3 = 0; d3 < map.doors.length; d3++)
+              if (map.doors[d3].id === gid) map.doors[d3].locked = false;
+            for (var p3 = 0; p3 < map.pois.length; p3++) {
+              var ppp = map.pois[p3];
+              if ((ppp.type === 'hotel_room' || ppp.type === 'room_door') &&
+                  ppp.data.doorId === gid) ppp.data.locked = false;
+            }
+          })(gn3.doorId);
+          openCount++;
+        }
+      }
+      map.meta.l188wins = wins;
+      map.meta.l188f2 = { rooms: f2rooms, doors: f2doors, stairDown: { tx: 37, ty: 52 } };
+    })();
   }
 
   BR.Gen.registerLevel('L188',
-    { rw: [4, 10], rh: [4, 8], corrW: [1, 2], loops: [2, 4], wallH: 7.5 },
+    { rw: [4, 10], rh: [4, 8], corrW: [1, 2], loops: [2, 4], wallH: 12 }, // 高墙：抬头有高度压迫感（参考图4）
     placeL188,
     ['spawn', 'odd_window', 'stairwell']);
 })();

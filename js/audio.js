@@ -34,6 +34,8 @@
       }
       this._ok = true;
       var ctx = this._ctx;
+      // W10：玩家跳跃/落地 → 音频反馈（bus 订阅，一次性节点自动断开）
+      this._bindBus();
       // 三路总线：master -> destination；sfx / ambient / music -> master
       this._master = ctx.createGain();
       this._master.connect(ctx.destination);
@@ -244,6 +246,75 @@
           lfo.connect(lg); lg.connect(og.gain); // 发电机起伏
         });
         rig.target = 0.48;
+      } else if (level === 'L7') {
+        // W10：深海恐惧——风浪起伏 + 金属船体呻吟 + 深海低频
+        rig = this._loopRig(function (R) {
+          var n = R.noise(), bp = R.filter('bandpass', 520, 0.6), ng = R.gain(0.50);
+          n.connect(bp); bp.connect(ng); ng.connect(R.group);
+          var lfo = R.osc('sine', 0.11), lg = R.gain(0.30);
+          lfo.connect(lg); lg.connect(ng.gain); // 海浪起伏
+          var o = R.osc('sine', 38), og = R.gain(0.50);
+          o.connect(og); og.connect(R.group);   // 深海低频压迫
+          var m = R.osc('sawtooth', 82), mf = R.filter('lowpass', 200, 1), mg = R.gain(0.10);
+          m.connect(mf); mf.connect(mg); mg.connect(R.group); // 金属船体呻吟
+          var lfo2 = R.osc('sine', 0.05), lg2 = R.gain(40);
+          lfo2.connect(lg2); lg2.connect(m.frequency); // 呻吟音高缓慢漂移
+        });
+        rig.target = 0.50;
+      } else if (level === 'L7_uw') {
+        // W10：L7 水下变体（BR.Swim 头部入水时按 dry+'_uw' 约定切换）
+        rig = this._loopRig(function (R) {
+          var n = R.noise(), lp = R.filter('lowpass', 340, 0.7), ng = R.gain(0.55);
+          n.connect(lp); lp.connect(ng); ng.connect(R.group);
+          var o = R.osc('sine', 46), og = R.gain(0.55);
+          o.connect(og); og.connect(R.group); // 水下深海低频加重
+        });
+        rig.target = 0.55;
+        return rig;
+      } else if (level === 'L11') {
+        // W10：无垠城市——远风 + 建筑结构低鸣 + 偶发金属伸缩
+        rig = this._loopRig(function (R) {
+          var n = R.noise(), bp = R.filter('bandpass', 300, 0.5), ng = R.gain(0.35);
+          n.connect(bp); bp.connect(ng); ng.connect(R.group);
+          var lfo = R.osc('sine', 0.07), lg = R.gain(0.20);
+          lfo.connect(lg); lg.connect(ng.gain); // 穿楼风起伏
+          var o = R.osc('sine', 55), og = R.gain(0.30);
+          o.connect(og); og.connect(R.group);   // 结构低鸣
+          var n2 = R.noise(), hp = R.filter('highpass', 3000, 0.8), g2 = R.gain(0.03);
+          n2.connect(hp); hp.connect(g2); g2.connect(R.group); // 高空风哨
+        });
+        rig.target = 0.42;
+      } else if (level === 'L188') {
+        // W10：百窗庭——走廊空气流动 + 窗玻璃微振 + 远钟摆
+        rig = this._loopRig(function (R) {
+          var n = R.noise(), bp = R.filter('bandpass', 800, 0.9), ng = R.gain(0.16);
+          n.connect(bp); bp.connect(ng); ng.connect(R.group);
+          var lfo = R.osc('sine', 0.21), lg = R.gain(0.08);
+          lfo.connect(lg); lg.connect(ng.gain); // 走廊穿堂风
+          var g = R.osc('sine', 1180), gg = R.gain(0.012);
+          g.connect(gg); gg.connect(R.group);   // 窗玻璃微振
+          var lfo2 = R.osc('sine', 0.5), lg2 = R.gain(0.010);
+          lfo2.connect(lg2); lg2.connect(gg.gain);
+          var o = R.osc('sine', 65), og = R.gain(0.16);
+          o.connect(og); og.connect(R.group);   // 老建筑低鸣
+        });
+        rig.target = 0.36;
+      } else if (level === 'BANG') {
+        // W10：Level ! 警报追逐（Level ! 建造者接入后 setAmbient('BANG') 即用；
+        // 本关在当前版本尚未实装，环境音先行注册，见 cutout.js BANG_ID 说明）
+        rig = this._loopRig(function (R) {
+          var a = R.osc('square', 660), ag = R.gain(0.10);
+          a.connect(ag); ag.connect(R.group);
+          var lfo = R.osc('sine', 2.2), lg = R.gain(140);
+          lfo.connect(lg); lg.connect(a.frequency); // 警报双音摆动
+          var o = R.osc('sawtooth', 98), og = R.gain(0.22);
+          o.connect(og); og.connect(R.group);   // 追逐低频脉冲
+          var lfo2 = R.osc('sine', 3.1), lg2 = R.gain(0.14);
+          lfo2.connect(lg2); lg2.connect(og.gain);
+          var n = R.noise(), hp = R.filter('highpass', 2000, 0.7), ng = R.gain(0.05);
+          n.connect(hp); hp.connect(ng); ng.connect(R.group); // 紧张嘶嘶
+        });
+        rig.target = 0.5;
       } else {
         return null;
       }
@@ -343,8 +414,10 @@
     },
 
     // ---------- 一次性音效 ----------
-    // 脚步：按地面材质变滤波
-    footstep: function (surface) {
+    // 脚步：按地面材质变滤波；level 可选——走廊类关卡加一层短回声
+    // （L0 荧光灯脚步回声 / L37 水声瓷砖回响 / L188 走廊回声 / L11 城市短反射；
+    //  L7 开阔海面无反射；回声节点一次性、ended 断开，不累积）
+    footstep: function (surface, level) {
       if (!this._ok) return;
       var cfg = {
         carpet:   { f: 320,  ft: 'lowpass',  vol: 0.14 },
@@ -356,6 +429,43 @@
       var v = 0.9 + Math.random() * 0.2; // 每次脚步轻微随机，避免机械感
       this._nz({ f: cfg.f * v, ft: cfg.ft, q: 1.2, dur: 0.11, vol: cfg.vol });
       this._tone({ f: 68 * v, type: 'sine', dur: 0.08, vol: 0.10 });
+      var ec = this._echoFor(level);
+      if (ec) {
+        this._nz({ f: cfg.f * v, ft: cfg.ft, q: 1.2, dur: 0.11, vol: cfg.vol * ec.vol, at: ec.delay });
+        if (ec.delay2) this._nz({ f: cfg.f * v, ft: cfg.ft, q: 1.2, dur: 0.12, vol: cfg.vol * ec.vol2, at: ec.delay2 });
+      }
+    },
+    // 关卡脚步回声配置（null=无回声）
+    _echoFor: function (level) {
+      switch (level) {
+        case 'L0':   return { delay: 0.09, vol: 0.35 };                            // 荧光灯走廊回声
+        case 'L37':  return { delay: 0.14, vol: 0.40, delay2: 0.23, vol2: 0.20 };  // 瓷砖回响
+        case 'L188': return { delay: 0.12, vol: 0.30 };                            // 走廊回声
+        case 'L11':  return { delay: 0.06, vol: 0.22 };                            // 城市短促反射
+        default: return null;
+      }
+    },
+    jump: function () { // 起跳：轻微衣物摩擦 + 上升气流（W10：bus 'jump' 订阅）
+      if (!this._ok) return;
+      this._nz({ f: 700, f1: 1500, ft: 'bandpass', q: 1, dur: 0.14, vol: 0.09 });
+    },
+    swimStroke: function () { // 划水：柔和拨水（W10：游泳移动反馈）
+      if (!this._ok) return;
+      this._nz({ f: 950, f1: 320, ft: 'lowpass', dur: 0.35, vol: 0.15, a: 0.08 });
+    },
+    wadeStep: function () { // 涉水：踩水声（W10：浅水移动反馈）
+      if (!this._ok) return;
+      this._nz({ f: 1800, f1: 420, ft: 'lowpass', dur: 0.22, vol: 0.19, a: 0.02 });
+    },
+    mountStep: function () { // 坐骑移动反馈钩子（鸭子坐骑建造者调用）
+      if (!this._ok) return;
+      this._nz({ f: 520, ft: 'lowpass', dur: 0.12, vol: 0.13 });
+      this._tone({ f: 92, type: 'sine', dur: 0.10, vol: 0.07 });
+    },
+    mountSqueak: function () { // 鸭子坐骑叫声钩子（建造者调用）
+      if (!this._ok) return;
+      this._tone({ f: 620, f1: 880, type: 'triangle', dur: 0.12, vol: 0.15 });
+      this._tone({ f: 660, f1: 920, type: 'triangle', dur: 0.10, vol: 0.12, at: 0.14 });
     },
     doorOpen: function () {
       if (!this._ok) return;
@@ -465,6 +575,42 @@
       this._nz({ f: 1600, f1: 3200, ft: 'bandpass', q: 3, dur: 1.3, vol: 0.16, a: 0.3 });
       this._nz({ f: 2400, f1: 1400, ft: 'bandpass', q: 3, dur: 1.0, vol: 0.10, a: 0.4, at: 0.3 });
     },
+    whisperDeep: function () { // Systems C-A：低理智强化版——立体声飘忽（左→右漂移 + 右→左回漂 + 脑后贴耳低语层）
+      if (!this._ok) return;
+      this._nzPan({ f: 1400, f1: 2900, ft: 'bandpass', q: 3, dur: 1.6, vol: 0.14, a: 0.4, panFrom: -0.9, panTo: 0.9 });
+      this._nzPan({ f: 2200, f1: 1200, ft: 'bandpass', q: 3, dur: 1.2, vol: 0.09, a: 0.5, at: 0.35, panFrom: 0.8, panTo: -0.8 });
+      this._nz({ f: 500, f1: 900, ft: 'bandpass', q: 2, dur: 1.8, vol: 0.07, a: 0.6, at: 0.15 });
+    },
+    // 带声像漂移的一次性噪声：{..., panFrom, panTo}（无 StereoPanner 时退化为普通 _nz）
+    _nzPan: function (o) {
+      if (!this._ok) return;
+      var ctx = this._ctx;
+      if (!ctx.createStereoPanner) { this._nz(o); return; }
+      var t = this._t() + (o.at || 0), dur = o.dur || 0.3;
+      var src = ctx.createBufferSource();
+      src.buffer = this._noise(); src.loop = true;
+      var f = ctx.createBiquadFilter();
+      f.type = o.ft || 'bandpass';
+      f.frequency.setValueAtTime(Math.max(10, o.f || 1000), t);
+      f.Q.value = o.q || 1;
+      if (o.f1) f.frequency.exponentialRampToValueAtTime(Math.max(10, o.f1), t + dur);
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, o.vol || 0.3), t + (o.a || 0.01));
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      var pan = ctx.createStereoPanner();
+      pan.pan.setValueAtTime(o.panFrom != null ? o.panFrom : 0, t);
+      pan.pan.linearRampToValueAtTime(o.panTo != null ? o.panTo : 0, t + dur);
+      src.connect(f); f.connect(g); g.connect(pan); pan.connect(this._sfx);
+      try { src.start(t); src.stop(t + dur + 0.05); } catch (e) { /* 忽略 */ }
+      // 修：ended 后断开全链（含 panner），避免 audio graph 节点无界增长
+      src.onended = function () { try { src.disconnect(); f.disconnect(); g.disconnect(); pan.disconnect(); } catch (e) {} };
+    },
+    halluPoof: function () { // Systems C-A：幻觉消散——轻微的"噗" + 下滑音调（反向感）
+      if (!this._ok) return;
+      this._nz({ f: 3000, f1: 400, ft: 'highpass', dur: 0.4, vol: 0.12, a: 0.02 });
+      this._tone({ f: 180, f1: 90, type: 'sine', dur: 0.5, vol: 0.08, a: 0.05 });
+    },
     dropRumble: function (dur) { // 掉落转场：低频嗡鸣渐强后骤停（失重感）
       if (!this._ok) return;
       dur = dur || 1.9;
@@ -473,9 +619,24 @@
       this._nz({ f: 220, f1: 90, ft: 'lowpass', dur: dur, vol: 0.22, a: dur * 0.6 });
     },
     thud: function () { // 落地闷响
+      this.thudAt(1);
+    },
+    thudAt: function (k) { // W10：按强度缩放的落地闷响（bus 'land' 按 impact 订阅）
       if (!this._ok) return;
-      this._tone({ f: 64, f1: 30, type: 'sine', dur: 0.32, vol: 0.65, a: 0.008 });
-      this._nz({ f: 300, ft: 'lowpass', dur: 0.22, vol: 0.28, a: 0.008 });
+      k = Math.max(0.15, Math.min(1, k == null ? 0.6 : k));
+      this._tone({ f: 64, f1: 30, type: 'sine', dur: 0.32, vol: 0.65 * k, a: 0.008 });
+      this._nz({ f: 300, ft: 'lowpass', dur: 0.22, vol: 0.28 * k, a: 0.008 });
+    },
+    // W10：玩家事件 → 音频反馈（只绑一次；init 内调用）
+    _bindBus: function () {
+      if (this._busBound || !BR.bus) return;
+      this._busBound = true;
+      var self = this;
+      BR.bus.on('jump', function () { self.jump(); });
+      BR.bus.on('land', function (d) {
+        var k = (d && d.impact) ? Math.min(1, d.impact / 8) : 0.5;
+        self.thudAt(k);
+      });
     },
     uiClick: function () {
       if (!this._ok) return;
