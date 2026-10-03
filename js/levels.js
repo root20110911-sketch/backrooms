@@ -6,7 +6,11 @@
   const ITEM_NAME = {
     almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', berry: '迁跃浆果', food: '食物',
     cigarette: '香烟', gum: '口香糖', royal_ration: '皇家口粮', repellent: '笑魇驱散剂',
-    firesalt: '火盐', painliquid: '痛液', cashew: '腰果水', battery: '电池'
+    firesalt: '火盐', painliquid: '痛液', cashew: '腰果水', battery: '电池',
+    // W9 新增 9 种（显示名；数值与逻辑在 js/items.js 注册表）
+    energy_bar: '能量棒', medkit: '急救包', glowstick: '荧光棒',
+    chalk: '标记粉笔', oxygen_tank: '便携氧气瓶', dive_light: '水下照明灯',
+    life_vest: '救生衣', dry_bag: '防水物资袋', adrenaline: '肾上腺素'
   };
 
   /* ================= 主题 ================= */
@@ -84,7 +88,7 @@
       W.addInteractable({
         id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
         meshes: [m], pos: m.position.clone(), radius: 2.4,
-        prompt: () => '阅读字条',
+        prompt: () => BR.interactKeyLabel() + '阅读字条',
         canUse: () => true,
         use: () => {
           BR.Audio.paper();
@@ -103,6 +107,32 @@
       });
     });
   }
+
+  // 通用：环境涂鸦 decal（Systems D）——gen.js placeGraffiti 按种子登记的 'graffiti' POI。
+  // 贴墙：position = tile中心 - 法线*(T/2-0.04)（法线 n 为墙→房间方向），
+  // 正面朝房间：rotation.y = atan2(n.x, n.z)；rotation.z 做面内轻微倾斜（手绘感）。
+  // 材质按 (text|sub|color|arrow) 复用（BR.Textures.graffitiMaterial 缓存），每处涂鸦 1 个 draw call。
+  // 注意：旧贴花（海报/字条）用的 +n*(T/2-0.05) 会把贴花放到 tile 另一侧、离墙面约 3m 浮空；
+  // 涂鸦按"贴墙"语义用 -n 修正（旧贴花保持不动，避免影响其他已验证的视觉）。
+  function buildGraffitiDecals(map, W) {
+    const list = (map.pois || []).filter(p => p.type === 'graffiti');
+    for (const p of list) {
+      const d = p.data || {};
+      const n = { x: d.nx || 0, z: (d.nz == null ? 1 : d.nz) };
+      W.addChunkContent(p.tx, p.ty, (group) => {
+        const w = d.w || 2.0;
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(w, w * 0.5),
+          BR.Textures.graffitiMaterial(d.text || '?', d.sub || null, d.color || '#d8d2c0', d.arrow || null)
+        );
+        m.position.set(BR.tileCX(p.tx) - n.x * (T / 2 - 0.04), d.y || 1.5, BR.tileCZ(p.ty) - n.z * (T / 2 - 0.04));
+        m.rotation.y = Math.atan2(n.x, n.z);
+        m.rotation.z = d.rot || 0;
+        W.reg(group, m);
+      });
+    }
+  }
+  BR.buildGraffitiDecals = buildGraffitiDecals;
 
   /* ================= 马尼拉房间 1:1 还原件 ================= */
   // 依据 research/manila.md（Wikidot 主 Wiki "The Manila Room"、Fandom Level 0 页面）。
@@ -176,7 +206,11 @@
     'survive. Once you enter those flickering walls, the expedition ahead\n' +
     'will not be easy."';
   // 告示墙贴：马尼拉纸底 + 英文原文（小字），中文译文走阅读浮层
+  // H 路：CanvasTexture 缓存。原先每次区块构建都 new 一张 1024x640 贴图并上传 GPU，
+  // 而 unload 时材质没有 _ownMat 标记、从不 dispose → GPU 贴图越建越多。内容固定，缓存一张复用。
+  let _manilaPosterTex = null;
   function manilaPosterTexture() {
+    if (_manilaPosterTex) return _manilaPosterTex;
     const cv = document.createElement('canvas');
     cv.width = 1024; cv.height = 640;
     const c = cv.getContext('2d');
@@ -200,18 +234,19 @@
     c.textAlign = 'center'; c.font = 'bold 26px sans-serif';
     const kl = (BR.interactKeyLabel ? BR.interactKeyLabel() : '【E】');
     c.fillText('—— 按 ' + kl + ' 阅读中文译文 ——', 512, 600);
-    return new THREE.CanvasTexture(cv);
+    _manilaPosterTex = new THREE.CanvasTexture(cv);
+    return _manilaPosterTex;
   }
   // 简易木椅
   function buildChairMesh() {
     const g = new THREE.Group();
     const wood = new THREE.MeshLambertMaterial({ color: 0x6f5233 });
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.07, 0.5), wood);
+    const seat = new THREE.Mesh(boxGeo(0.5, 0.07, 0.5), wood);
     seat.position.y = 0.45; g.add(seat);
-    const back = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.07), wood);
+    const back = new THREE.Mesh(boxGeo(0.5, 0.55, 0.07), wood);
     back.position.set(0, 0.75, -0.25); g.add(back);
     [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]].forEach(pt => {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.45, 0.06), wood);
+      const leg = new THREE.Mesh(boxGeo(0.06, 0.45, 0.06), wood);
       leg.position.set(pt[0], 0.225, pt[1]); g.add(leg);
     });
     return g;
@@ -249,135 +284,218 @@
   function itemMesh(item) {
     const g = new THREE.Group();
     if (item === 'almond') {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.26, 0.13),
+      const b = new THREE.Mesh(boxGeo(0.2, 0.26, 0.13),
         new THREE.MeshLambertMaterial({ color: 0xe8e0d0 }));
       b.position.y = 0.13; g.add(b);
-      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.08),
+      const cap = new THREE.Mesh(boxGeo(0.08, 0.05, 0.08),
         new THREE.MeshLambertMaterial({ color: 0x8a2a2a }));
       cap.position.y = 0.28; g.add(cap);
     } else if (item === 'bandage') {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, 0.17),
+      const b = new THREE.Mesh(boxGeo(0.24, 0.1, 0.17),
         new THREE.MeshLambertMaterial({ color: 0xf0ece2 }));
       b.position.y = 0.05; g.add(b);
-      const s = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.02, 0.05),
+      const s = new THREE.Mesh(boxGeo(0.24, 0.02, 0.05),
         new THREE.MeshLambertMaterial({ color: 0xc03030 }));
       s.position.y = 0.1; g.add(s);
     } else if (item === 'flashlight') {
-      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.22, 10),
+      const b = new THREE.Mesh(cylGeo(0.05, 0.05, 0.22, 10),
         new THREE.MeshLambertMaterial({ color: 0x3a3f45 }));
       b.rotation.z = Math.PI / 2; b.position.y = 0.08; g.add(b);
-      const h = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.09, 10),
+      const h = new THREE.Mesh(cylGeo(0.07, 0.06, 0.09, 10),
         new THREE.MeshLambertMaterial({ color: 0x555b62 }));
       h.rotation.z = Math.PI / 2; h.position.set(0.14, 0.08, 0); g.add(h);
     } else if (item === 'berry') {
       // 迁跃浆果：微光浆果簇
       const bm = new THREE.MeshLambertMaterial({ color: 0x7a3fd0 });
       [[-0.07, 0.07], [0.07, 0.07], [0, 0.16]].forEach(([x, y]) => {
-        const s = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 6), bm);
+        const s = new THREE.Mesh(sphGeo(0.075, 8, 6), bm);
         s.position.set(x, y, 0); g.add(s);
       });
-      const stem = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.03),
+      const stem = new THREE.Mesh(boxGeo(0.03, 0.16, 0.03),
         new THREE.MeshLambertMaterial({ color: 0x3f7a3a }));
       stem.position.y = 0.28; g.add(stem);
     } else if (item === 'food') {
       // 食物：罐头
-      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.16, 12),
+      const c = new THREE.Mesh(cylGeo(0.09, 0.09, 0.16, 12),
         new THREE.MeshLambertMaterial({ color: 0xb0a080 }));
       c.position.y = 0.08; g.add(c);
-      const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.095, 0.025, 12),
+      const lid = new THREE.Mesh(cylGeo(0.095, 0.095, 0.025, 12),
         new THREE.MeshLambertMaterial({ color: 0x7a6a50 }));
       lid.position.y = 0.165; g.add(lid);
     } else if (item === 'cigarette') {
       // 香烟：细长白色烟卷 + 棕色滤嘴段
-      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.20, 8),
+      const c = new THREE.Mesh(cylGeo(0.018, 0.018, 0.20, 8),
         new THREE.MeshLambertMaterial({ color: 0xf2efe8 }));
       c.rotation.z = Math.PI / 2; c.position.y = 0.05; g.add(c);
-      const f = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.06, 8),
+      const f = new THREE.Mesh(cylGeo(0.02, 0.02, 0.06, 8),
         new THREE.MeshLambertMaterial({ color: 0x8a5a2a }));
       f.rotation.z = Math.PI / 2; f.position.set(0.12, 0.05, 0); g.add(f);
     } else if (item === 'gum') {
       // 口香糖：粉色小方条 + 两端糖纸小锥体
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.07),
+      const bar = new THREE.Mesh(boxGeo(0.16, 0.035, 0.07),
         new THREE.MeshLambertMaterial({ color: 0xf0a0c0 }));
       bar.position.y = 0.04; g.add(bar);
       const wrapM = new THREE.MeshLambertMaterial({ color: 0xc0c8d0 });
       [-1, 1].forEach(s => {
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.07, 6), wrapM);
+        const cone = new THREE.Mesh(coneGeo(0.035, 0.07, 6), wrapM);
         cone.rotation.z = s * Math.PI / 2; cone.position.set(s * 0.115, 0.04, 0); g.add(cone);
       });
     } else if (item === 'royal_ration') {
       // 皇家口粮：军绿方罐头 + 顶部金色小皇冠（锥体+圆球）
-      const can = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.16, 12),
+      const can = new THREE.Mesh(cylGeo(0.09, 0.09, 0.16, 12),
         new THREE.MeshLambertMaterial({ color: 0x4a5a30 }));
       can.position.y = 0.08; g.add(can);
       const gold = new THREE.MeshLambertMaterial({ color: 0xd8a820 });
-      const crown = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.07, 8), gold);
+      const crown = new THREE.Mesh(coneGeo(0.05, 0.07, 8), gold);
       crown.position.y = 0.195; g.add(crown);
-      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), gold);
+      const orb = new THREE.Mesh(sphGeo(0.022, 8, 6), gold);
       orb.position.y = 0.24; g.add(orb);
     } else if (item === 'repellent') {
       // 笑魇驱散剂：白色喷雾瓶（瓶身+按压喷头）+ 半透明雾锥
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.065, 0.20, 10),
+      const body = new THREE.Mesh(cylGeo(0.06, 0.065, 0.20, 10),
         new THREE.MeshLambertMaterial({ color: 0xf0f0f0 }));
       body.position.y = 0.10; g.add(body);
-      const head = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.05),
+      const head = new THREE.Mesh(boxGeo(0.05, 0.05, 0.05),
         new THREE.MeshLambertMaterial({ color: 0x30343a }));
       head.position.y = 0.225; g.add(head);
-      const mist = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.22, 10),
+      const mist = new THREE.Mesh(coneGeo(0.09, 0.22, 10),
         new THREE.MeshLambertMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.35 }));
       mist.rotation.x = -Math.PI / 2.4; mist.position.set(0, 0.26, 0.12); g.add(mist);
     } else if (item === 'firesalt') {
       // 火盐：粗布束口小袋（压扁球体+束口）+ 袋口红色小火苗
-      const sack = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8),
+      const sack = new THREE.Mesh(sphGeo(0.11, 10, 8),
         new THREE.MeshLambertMaterial({ color: 0x9a7a52 }));
       sack.scale.set(1, 0.75, 1); sack.position.y = 0.085; g.add(sack);
-      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.06, 8),
+      const neck = new THREE.Mesh(cylGeo(0.035, 0.05, 0.06, 8),
         new THREE.MeshLambertMaterial({ color: 0x7a5c3a }));
       neck.position.y = 0.18; g.add(neck);
-      const flame = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 8),
+      const flame = new THREE.Mesh(coneGeo(0.03, 0.09, 8),
         new THREE.MeshBasicMaterial({ color: 0xff4a1a }));
       flame.position.y = 0.25; g.add(flame);
     } else if (item === 'painliquid') {
       // 痛液：深绿细颈小瓶 + 瓶身深色斑点
       const dark = new THREE.MeshLambertMaterial({ color: 0x1e5a2a });
-      const vb = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.16, 10), dark);
+      const vb = new THREE.Mesh(cylGeo(0.055, 0.06, 0.16, 10), dark);
       vb.position.y = 0.08; g.add(vb);
-      const vn = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.035, 0.09, 8), dark);
+      const vn = new THREE.Mesh(cylGeo(0.02, 0.035, 0.09, 8), dark);
       vn.position.y = 0.20; g.add(vn);
       const spotM = new THREE.MeshLambertMaterial({ color: 0x0d2a12 });
       [[0.03, 0.06, 0.045], [-0.035, 0.10, 0.04], [0.01, 0.13, -0.05]].forEach(sp => {
-        const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 6, 5), spotM);
+        const s = new THREE.Mesh(sphGeo(0.018, 6, 5), spotM);
         s.position.set(sp[0], sp[1], sp[2]); g.add(s);
       });
     } else if (item === 'cashew') {
       // 腰果水：与杏仁水几乎一样的瓶子（陷阱）——液体略黄、多一道高光，视觉差细微
-      const b = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.26, 0.13),
+      const b = new THREE.Mesh(boxGeo(0.2, 0.26, 0.13),
         new THREE.MeshLambertMaterial({ color: 0xe9dcb4 }));
       b.position.y = 0.13; g.add(b);
-      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.08),
+      const cap = new THREE.Mesh(boxGeo(0.08, 0.05, 0.08),
         new THREE.MeshLambertMaterial({ color: 0x8a2a2a }));
       cap.position.y = 0.28; g.add(cap);
       const hl = new THREE.MeshBasicMaterial({ color: 0xffffff });
-      const h1 = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.18, 0.004), hl);
+      const h1 = new THREE.Mesh(boxGeo(0.025, 0.18, 0.004), hl);
       h1.position.set(-0.05, 0.14, 0.067); g.add(h1);
-      const h2 = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.10, 0.004), hl);
+      const h2 = new THREE.Mesh(boxGeo(0.014, 0.10, 0.004), hl);
       h2.position.set(0.055, 0.12, 0.067); g.add(h2); // 第二道高光：唯一的视觉区别
     } else if (item === 'battery') {
       // 5 号电池：黑身 + 铜顶 + 黄色闪电标志（小方块拼）
-      const bb = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.11, 10),
+      const bb = new THREE.Mesh(cylGeo(0.035, 0.035, 0.11, 10),
         new THREE.MeshLambertMaterial({ color: 0x1a1a1c }));
       bb.position.y = 0.055; g.add(bb);
-      const cu = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.03, 10),
+      const cu = new THREE.Mesh(cylGeo(0.035, 0.035, 0.03, 10),
         new THREE.MeshLambertMaterial({ color: 0xb87333 }));
       cu.position.y = 0.125; g.add(cu);
       const boltM = new THREE.MeshBasicMaterial({ color: 0xffd820 });
-      const b1 = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.05, 0.005), boltM);
+      const b1 = new THREE.Mesh(boxGeo(0.018, 0.05, 0.005), boltM);
       b1.position.set(0.005, 0.06, 0.036); b1.rotation.z = 0.35; g.add(b1);
-      const b2 = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.05, 0.005), boltM);
+      const b2 = new THREE.Mesh(boxGeo(0.018, 0.05, 0.005), boltM);
       b2.position.set(-0.005, 0.03, 0.036); b2.rotation.z = 0.35; g.add(b2);
+    } else if (item === 'energy_bar') {
+      // 能量棒：棕色扁条 + 金色锯齿包装边
+      const bar = new THREE.Mesh(boxGeo(0.22, 0.05, 0.1),
+        new THREE.MeshLambertMaterial({ color: 0x6a3f1a }));
+      bar.position.y = 0.035; g.add(bar);
+      const wrapM = new THREE.MeshLambertMaterial({ color: 0xd8a820 });
+      [-1, 1].forEach(s => {
+        const e = new THREE.Mesh(boxGeo(0.03, 0.055, 0.1), wrapM);
+        e.position.set(s * 0.125, 0.035, 0); g.add(e);
+      });
+    } else if (item === 'medkit') {
+      // 急救包：白箱 + 红十字
+      const bx = new THREE.Mesh(boxGeo(0.26, 0.14, 0.18),
+        new THREE.MeshLambertMaterial({ color: 0xf0ece2 }));
+      bx.position.y = 0.07; g.add(bx);
+      const crossM = new THREE.MeshBasicMaterial({ color: 0xc03030 });
+      const c1 = new THREE.Mesh(boxGeo(0.1, 0.03, 0.005), crossM);
+      c1.position.set(0, 0.08, 0.095); g.add(c1);
+      const c2 = new THREE.Mesh(boxGeo(0.03, 0.1, 0.005), crossM);
+      c2.position.set(0, 0.08, 0.095); g.add(c2);
+      const hd = new THREE.Mesh(boxGeo(0.12, 0.03, 0.04),
+        new THREE.MeshLambertMaterial({ color: 0x8a8578 }));
+      hd.position.y = 0.155; g.add(hd);
+    } else if (item === 'glowstick') {
+      // 荧光棒：微光绿细管（MeshBasic 自发光观感）
+      const st = new THREE.Mesh(cylGeo(0.028, 0.028, 0.26, 8),
+        new THREE.MeshBasicMaterial({ color: 0x9dffb0 }));
+      st.rotation.z = Math.PI / 2; st.position.y = 0.05; g.add(st);
+    } else if (item === 'chalk') {
+      // 标记粉笔：白色短棍 + 旁边一个小箭头标记
+      const ch = new THREE.Mesh(cylGeo(0.025, 0.025, 0.14, 8),
+        new THREE.MeshLambertMaterial({ color: 0xf2ecd8 }));
+      ch.rotation.z = Math.PI / 2; ch.position.set(-0.05, 0.03, 0); g.add(ch);
+      const arw = new THREE.Mesh(coneGeo(0.05, 0.1, 4),
+        new THREE.MeshBasicMaterial({ color: 0xf2ecd8 }));
+      arw.rotation.x = -Math.PI / 2; arw.rotation.y = Math.PI / 4;
+      arw.position.set(0.12, 0.03, 0); g.add(arw);
+    } else if (item === 'oxygen_tank') {
+      // 便携氧气瓶：蓝色小气瓶 + 阀门
+      const tk = new THREE.Mesh(cylGeo(0.07, 0.07, 0.24, 10),
+        new THREE.MeshLambertMaterial({ color: 0x2a6a9a }));
+      tk.position.y = 0.12; g.add(tk);
+      const vv = new THREE.Mesh(boxGeo(0.05, 0.05, 0.05),
+        new THREE.MeshLambertMaterial({ color: 0x8a8578 }));
+      vv.position.y = 0.265; g.add(vv);
+    } else if (item === 'dive_light') {
+      // 水下照明灯：黄黑防水手电 + 大灯头
+      const bd = new THREE.Mesh(cylGeo(0.05, 0.05, 0.2, 10),
+        new THREE.MeshLambertMaterial({ color: 0xd8a820 }));
+      bd.rotation.z = Math.PI / 2; bd.position.y = 0.07; g.add(bd);
+      const hd = new THREE.Mesh(cylGeo(0.08, 0.06, 0.1, 10),
+        new THREE.MeshLambertMaterial({ color: 0x2a2a2e }));
+      hd.rotation.z = Math.PI / 2; hd.position.set(0.14, 0.07, 0); g.add(hd);
+      const lens = new THREE.Mesh(cylGeo(0.06, 0.06, 0.02, 10),
+        new THREE.MeshBasicMaterial({ color: 0xbfe8ff }));
+      lens.rotation.z = Math.PI / 2; lens.position.set(0.19, 0.07, 0); g.add(lens);
+    } else if (item === 'life_vest') {
+      // 救生衣：橙色马甲（压扁盒体 + 反光条）
+      const vs = new THREE.Mesh(boxGeo(0.3, 0.22, 0.12),
+        new THREE.MeshLambertMaterial({ color: 0xd8622a }));
+      vs.position.y = 0.11; g.add(vs);
+      const rp = new THREE.Mesh(boxGeo(0.3, 0.04, 0.125),
+        new THREE.MeshBasicMaterial({ color: 0xf2e9c8 }));
+      rp.position.y = 0.13; g.add(rp);
+    } else if (item === 'dry_bag') {
+      // 防水物资袋：深蓝卷口袋 + 卷口
+      const bg = new THREE.Mesh(cylGeo(0.11, 0.12, 0.24, 10),
+        new THREE.MeshLambertMaterial({ color: 0x1e3a5a }));
+      bg.position.y = 0.12; g.add(bg);
+      const roll = new THREE.Mesh(cylGeo(0.115, 0.115, 0.05, 10),
+        new THREE.MeshLambertMaterial({ color: 0x2a4a72 }));
+      roll.position.y = 0.26; g.add(roll);
+    } else if (item === 'adrenaline') {
+      // 肾上腺素：注射器（透明管 + 针头 + 推杆）
+      const tb = new THREE.Mesh(cylGeo(0.03, 0.03, 0.16, 8),
+        new THREE.MeshLambertMaterial({ color: 0xd8e8f0, transparent: true, opacity: 0.7 }));
+      tb.rotation.z = Math.PI / 2; tb.position.y = 0.05; g.add(tb);
+      const nd = new THREE.Mesh(cylGeo(0.006, 0.006, 0.08, 6),
+        new THREE.MeshBasicMaterial({ color: 0xb0b8c0 }));
+      nd.rotation.z = Math.PI / 2; nd.position.set(0.12, 0.05, 0); g.add(nd);
+      const pl = new THREE.Mesh(boxGeo(0.03, 0.05, 0.05),
+        new THREE.MeshLambertMaterial({ color: 0xc03030 }));
+      pl.position.set(-0.09, 0.05, 0); g.add(pl);
     } else {
       // 未知道具兜底：通用小盒子，避免返回空 group
-      const u = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2),
+      const u = new THREE.Mesh(boxGeo(0.2, 0.2, 0.2),
         new THREE.MeshLambertMaterial({ color: 0x8a8a8a }));
       u.position.y = 0.1; g.add(u);
     }
@@ -398,11 +516,22 @@
         prompt: () => '拾取' + ITEM_NAME[item] + (n > 1 ? ' ×' + n : ''),
         canUse: () => true,
         use: () => {
+          // W9：背包满/堆叠满时拒绝拾取，物品留在世界（不记 picked、不移除 mesh）
+          if (item !== 'flashlight' && BR.Items && !BR.Items.canAdd(item, n)) {
+            BR.UI.toast(BR.Items.fullReason(item, n));
+            if (BR.Audio.doorLocked) BR.Audio.doorLocked();
+            return;
+          }
           if (item === 'flashlight') {
             BR.Player.hasFlashlight = true;
             BR.UI.toast('拾取了手电筒（按 F / 🔦 开关）');
+          } else if (item === 'dive_light') {
+            // W9：水下照明灯唯一，不占 inv 数量
+            BR.Items.add('dive_light', 1);
+            BR.UI.toast('拾取了水下照明灯（背包中使用开关）');
           } else {
             BR.Game.inv[item] = (BR.Game.inv[item] || 0) + n;
+            if (BR.Items && item === 'oxygen_tank') BR.Items._chargesOf(item); // 补齐独立电量
             BR.UI.toast('拾取了' + ITEM_NAME[item] + (n > 1 ? ' ×' + n : ''));
           }
           BR.Audio.pickup();
@@ -423,6 +552,7 @@
     return '【' + ((BR.Input && BR.Input.bindingLabel) ? BR.Input.bindingLabel('interact') : 'E') + '】';
   }
   BR.interactKeyLabel = interactKeyLabel;
+  BR.itemMesh = itemMesh; // Systems C-A：低理智假补给复用真杏仁水 mesh
 
   // 本 session 内开过的容器 id（箱/柜，运行时态，不进存档）：
   // 区分"老存档已开（openedCrates 有 id 即视为已处理完，区块重建/读档不重建箱内拾取，避免已拿物资复活）"
@@ -454,6 +584,17 @@
   // 柜门开启动画（pivot 为 buildCabinetMesh 留在 userData.doorPivot 上的铰链组）
   const CAB_DOOR_OPEN = -1.85;
   function setCabinetDoorOpen(pivot) { pivot.rotation.y = CAB_DOOR_OPEN; }
+  // W9：柜门关闭姿态（瞬时）与关门动画（开门动画的逆过程，约 350ms）
+  function setCabinetDoorClosed(pivot) { pivot.rotation.y = 0; }
+  function animCabinetDoorClose(pivot) {
+    const t0 = performance.now(), dur = 350;
+    const from = pivot.rotation.y;
+    const iv = setInterval(() => {
+      const k = Math.min(1, (performance.now() - t0) / dur);
+      pivot.rotation.y = from * (1 - (1 - Math.pow(1 - k, 2)));
+      if (k >= 1) { pivot.rotation.y = 0; clearInterval(iv); }
+    }, 16);
+  }
   function animCabinetDoor(pivot) {
     const t0 = performance.now(), dur = 350;
     const iv = setInterval(() => {
@@ -463,6 +604,43 @@
     }, 16);
   }
 
+  // H 路：几何体复用缓存（性能）。
+  // 根因：旧代码里箱/柜/桌/椅/灌木/拾取每次构建都 new 一批几何体，
+  // 而 world.js unloadChunkMeshes 只 dispose 顶层 disposable 自身的 geometry
+  // （Group 子件的不管），导致 renderer.info.memory.geometries 随切关/区块重载无界增长
+  // （实测每切关 +12，几次切关后 swiftshader 渲染器直接崩掉 "Target closed"）。
+  // 这些部件尺寸固定，改成按尺寸缓存、永久共享（与 world.js sharedGeo 同策略，永不 dispose），
+  // 从根上消灭泄漏。注意：只用于 Group 子件；直接 W.reg 的单个 Mesh 不用（unload 会 dispose
+  // 掉它的 geometry——共享几何被 dispose 只是多一次重传，不致命，但没必要）。
+  const _geoCache = {};
+  function boxGeo(w, h, d) {
+    const k = 'b' + w.toFixed(3) + ',' + h.toFixed(3) + ',' + d.toFixed(3);
+    return _geoCache[k] || (_geoCache[k] = new THREE.BoxGeometry(w, h, d));
+  }
+  function sphGeo(r, a, b) {
+    const k = 's' + r.toFixed(3) + ',' + (a || 8) + ',' + (b || 6);
+    return _geoCache[k] || (_geoCache[k] = new THREE.SphereGeometry(r, a || 8, b || 6));
+  }
+  function cylGeo(rt, rb, h, s) {
+    const k = 'c' + rt.toFixed(3) + ',' + rb.toFixed(3) + ',' + h.toFixed(3) + ',' + (s || 8);
+    return _geoCache[k] || (_geoCache[k] = new THREE.CylinderGeometry(rt, rb, h, s || 8));
+  }
+  function coneGeo(r, h, s) {
+    const k = 'k' + r.toFixed(3) + ',' + h.toFixed(3) + ',' + (s || 8);
+    return _geoCache[k] || (_geoCache[k] = new THREE.ConeGeometry(r, h, s || 8));
+  }
+
+  // H 路：容器/家具/灌木底部的接触阴影（blob）。
+  // group 为 addChunkContent 的 chunk group，走 W.reg 登记 → 随区块卸载自动 dispose 几何体；
+  // 材质是 textures.js 里的共享单例，不释放。画质档 blobShadow=0 时 makeBlobShadow 返回 null。
+  function addPropShadow(W, group, x, z, r) {
+    if (!BR.Textures || !BR.Textures.makeBlobShadow) return;
+    const sh = BR.Textures.makeBlobShadow(r);
+    if (!sh) return;
+    sh.position.set(x, 0.02, z);
+    W.reg(group, sh);
+  }
+
   // 敞口板条箱 mesh：四壁 + 底（能看见里面）+ 盖子。返回 {group, lid, parts}
   function buildCrateMesh(W) {
     const g = new THREE.Group();
@@ -470,7 +648,7 @@
     const parts = [];
     const t = 0.06, wd = 1.05, ht = 0.8;
     const wall = (w, h, d, x, y, z) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wood);
+      const m = new THREE.Mesh(boxGeo(w, h, d), wood);
       m.position.set(x, y, z); g.add(m); parts.push(m);
     };
     wall(wd, ht, t, 0, ht / 2, wd / 2 - t / 2);
@@ -478,7 +656,7 @@
     wall(t, ht, wd - 2 * t, wd / 2 - t / 2, ht / 2, 0);
     wall(t, ht, wd - 2 * t, -(wd / 2 - t / 2), ht / 2, 0);
     wall(wd, t, wd, 0, t / 2, 0); // 底
-    const lid = new THREE.Mesh(new THREE.BoxGeometry(wd, 0.12, wd), wood);
+    const lid = new THREE.Mesh(boxGeo(wd, 0.12, wd), wood);
     lid.position.y = ht + 0.06; g.add(lid); parts.push(lid);
     return { group: g, lid, parts };
   }
@@ -492,7 +670,7 @@
     ig.position.copy(pos);
     // 命中代理：隐形大盒子（colorWrite 关，只参与射线不参与渲染），保证小 mesh 也能被射线稳定打中
     const proxy = new THREE.Mesh(
-      new THREE.BoxGeometry(0.7, 0.8, 0.7),
+      boxGeo(0.7, 0.8, 0.7),
       new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false })
     );
     proxy.position.set(0, 0.25, 0);
@@ -505,11 +683,21 @@
       prompt: () => BR.interactKeyLabel() + '拿起' + (ITEM_NAME[item] || item),
       canUse: () => true,
       use: () => {
+        // W9：背包满/堆叠满时拒绝，物品留在容器内（不记 picked）
+        if (item !== 'flashlight' && BR.Items && !BR.Items.canAdd(item, 1)) {
+          BR.UI.toast(BR.Items.fullReason(item, 1));
+          if (BR.Audio.doorLocked) BR.Audio.doorLocked();
+          return;
+        }
         if (item === 'flashlight') {
           BR.Player.hasFlashlight = true;
           BR.UI.toast('拾取了手电筒（按 F / 🔦 开关）');
+        } else if (item === 'dive_light') {
+          BR.Items.add('dive_light', 1);
+          BR.UI.toast('拿起了水下照明灯（背包中使用开关）');
         } else {
           BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
+          if (BR.Items && item === 'oxygen_tank') BR.Items._chargesOf(item);
           BR.UI.toast('拿起了' + (ITEM_NAME[item] || item));
         }
         BR.Audio.pickup();
@@ -520,7 +708,7 @@
         BR.UI.updateInv();
       }
     });
-    return pickId;
+    return { pickId: pickId, group: ig };
   }
 
   // 板条箱两段式接线（L0/L1/L2/L3 共用）：
@@ -535,7 +723,7 @@
     const pickId = 'cratepick_' + id;
     const opened = W.state.openedCrates.includes(id);
     if (opened) setLidOpenPose(cm.lid);
-    const innerPos = new THREE.Vector3(cm.group.position.x, 0.07, cm.group.position.z);
+    const innerPos = new THREE.Vector3(cm.group.position.x, 0.10, cm.group.position.z);
     if (opened && wasLiveOpened(W, id) && item !== 'empty' && !W.state.picked.includes(pickId)) {
       // 本 session 开过、还没拿：重建箱内拾取；箱体不再注册交互，避免挡住箱内物资的射线
       spawnInnerPickup(W, chunkGroup, innerPos, pickId, item, o.tx, o.ty);
@@ -574,6 +762,7 @@
       const cm = BR.buildCrateMesh(W);
       cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
       W.reg(group, cm.group);
+      addPropShadow(W, group, cm.group.position.x, cm.group.position.z, 0.8); // H 路：接触阴影
       // 迁跃浆果来源之一：每只箱子 2% 概率（按箱子 id 确定性派生，保证复现；build 时即确定，重建一致）
       const item0 = (poi.data && poi.data.item) || 'empty';
       const item = (item0 !== 'flashlight' &&
@@ -594,7 +783,9 @@
       const rng = new BR.RNG(BR.hashSeed(id)); // 布局确定性，不随加载变化
       const leaf = new THREE.MeshLambertMaterial({ color: 0x2e5a2e });
       for (let i = 0; i < 5; i++) { // 暗绿叶团
-        const b = new THREE.Mesh(new THREE.SphereGeometry(0.35 + rng.next() * 0.25, 8, 6), leaf);
+        // H 路：用单位球共享几何体 + 缩放（原先每团 new 一个随机半径球体，无法缓存）
+        const b = new THREE.Mesh(sphGeo(1, 8, 6), leaf);
+        b.scale.setScalar(0.35 + rng.next() * 0.25);
         const a = rng.next() * 6.2832, r = 0.3 + rng.next() * 0.4;
         b.position.set(Math.cos(a) * r, 0.35 + rng.next() * 0.4, Math.sin(a) * r);
         g.add(b);
@@ -602,12 +793,13 @@
       const bm = new THREE.MeshLambertMaterial({ color: 0x7a3fd0, emissive: 0x3a1060 });
       const berries = [];
       for (let i = 0; i < 6; i++) { // 微光浆果
-        const s = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), bm);
+        const s = new THREE.Mesh(sphGeo(0.07, 8, 6), bm);
         const a = rng.next() * 6.2832;
         s.position.set(Math.cos(a) * 0.45, 0.5 + rng.next() * 0.5, Math.sin(a) * 0.45);
         g.add(s); berries.push(s);
       }
       W.reg(group, g);
+      addPropShadow(W, group, g.position.x, g.position.z, 0.7); // H 路：接触阴影
       W.addInteractable({
         id, kind: 'berry_bush', chunkKey: W.chunkKeyOf(tx, ty),
         meshes: g.children.slice(), pos: g.position.clone().add(new THREE.Vector3(0, 0.8, 0)), radius: 2.6,
@@ -628,11 +820,15 @@
   }
 
   // 薄墙（不稳定切出点）：注册位置，tick 里检测贴墙挤压
-  function buildThinWalls(map, W) {
+  // opts.cross：目的地池（数组）—— 充满后走 BR.Cutout.travel(kind 'rift') 跨关切出；
+  //   不传则保持旧行为：同层野生切出（noclipRandom）。L0/L1/L2/L3/FUN 均不传。
+  function buildThinWalls(map, W, opts) {
+    opts = opts || {};
     W._thinWalls = (map.pois || []).filter(p => p.type === 'thin_wall').map(p => ({
       x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty),
       dx: p.data.dx || 0, dz: p.data.dz || 1,
-      charge: 0, cool: 0, hintTold: false
+      charge: 0, cool: 0, hintTold: false,
+      cross: (opts.cross && opts.cross.length) ? opts.cross.slice() : null
     }));
   }
   function thinWallTick(dt) {
@@ -646,9 +842,25 @@
       if (push > 0.8) {
         tw.charge += dt;
         if (tw.charge > 0.3 && !tw.hintTold) { tw.hintTold = true; BR.UI.toast('这面墙……好像有点薄'); }
-        if (tw.charge > 1.4) { tw.cool = 10; tw.charge = 0; noclipRandom(W, P); }
+        if (tw.charge > 1.4) { tw.cool = 10; tw.charge = 0; wildCutout(W, P, tw); }
       } else tw.charge = Math.max(0, tw.charge - dt * 2);
     }
+  }
+  // 野生切出：tw.cross 有目的地池 → 走统一切出状态机跨关（kind 'rift'）；
+  //   否则回退到同层随机传送（noclipRandom，旧行为）。
+  function wildCutout(W, P, tw) {
+    const pool = (tw.cross || []).filter(lv => lv !== BR.Game.level && BR.Levels[lv]);
+    if (pool.length && BR.Cutout && typeof BR.Cutout.travel === 'function' &&
+        !BR.Cutout.busy && !BR.Trans.active) {
+      const to = pool[(Math.random() * pool.length) | 0];
+      P.drainSanity(12);
+      BR.Audio.stinger();
+      BR.bus.emit('noclip:wild');
+      BR.UI.toast('墙面像水一样漾开——你掉了进去……', 2600);
+      BR.Cutout.travel(to, { kind: 'rift' });
+      return;
+    }
+    noclipRandom(W, P); // 兜底：切出系统未就绪 / 无可用目的地时同层传送
   }
   function noclipRandom(W, P) {
     // 野生切出：随机传送到同层较远的房间（带掉落转场，掩盖区块加载）
@@ -674,38 +886,48 @@
     const g = new THREE.Group();
     const wood = new THREE.MeshLambertMaterial({ color: 0x8a6238 });
     const woodDark = new THREE.MeshLambertMaterial({ color: 0x64461f });
-    const top = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.09, 0.8), wood);
+    const top = new THREE.Mesh(boxGeo(1.3, 0.09, 0.8), wood);
     top.position.y = 0.72; g.add(top);
-    const legG = new THREE.BoxGeometry(0.09, 0.72, 0.09);
+    const legG = boxGeo(0.09, 0.72, 0.09);
     [[-0.56, -0.31], [0.56, -0.31], [-0.56, 0.31], [0.56, 0.31]].forEach(([x, z]) => {
       const leg = new THREE.Mesh(legG, woodDark);
       leg.position.set(x, 0.36, z); g.add(leg);
     });
     return g;
   }
-  // 柜子：柜体 + 可转动的左扇柜门（铰链在左边缘，门板相对铰链右偏；打开时整扇向左转出）
-  // 铰链组挂在 g.userData.doorPivot，供 addFurniturePickup（container:'cabinet'）做开门动画
+  // 柜子：敞口柜体（背板/侧板/顶/底/隔板，前面敞开）+ 可转动的左扇柜门
+  // （H 路：旧版是实心盒子，柜门打开后"里面"看不见，物资只能浮在柜前；
+  //  改成真敞口，柜内拾取放在隔板上，位置/视觉才合理）
+  // 铰链组挂在 g.userData.doorPivot，供 addCabinetTwoStage 做开门动画
   function buildCabinetMesh() {
     const g = new THREE.Group();
     const wood = new THREE.MeshLambertMaterial({ color: 0x77552e });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.5, 0.55), wood);
-    body.position.y = 0.75; g.add(body);
     const trim = new THREE.MeshLambertMaterial({ color: 0x4a3013 });
-    const lip = new THREE.Mesh(new THREE.BoxGeometry(1.09, 0.06, 0.59), trim);
-    lip.position.y = 1.47; g.add(lip); // 顶部压条
+    const inner = new THREE.MeshLambertMaterial({ color: 0x241a0e }); // 柜内暗色
+    const Wd = 1.05, Ht = 1.5, Dp = 0.55, th = 0.05;
+    const panel = (w, h, d, x, y, z, m) => {
+      const p = new THREE.Mesh(boxGeo(w, h, d), m || wood);
+      p.position.set(x, y, z); g.add(p); return p;
+    };
+    panel(Wd, Ht, th, 0, Ht / 2, -Dp / 2 + th / 2, inner); // 背板
+    panel(th, Ht, Dp, -Wd / 2 + th / 2, Ht / 2, 0);        // 左侧板
+    panel(th, Ht, Dp, Wd / 2 - th / 2, Ht / 2, 0);         // 右侧板
+    panel(Wd, th, Dp, 0, Ht - th / 2, 0);                  // 顶板
+    panel(Wd, th, Dp, 0, th / 2, 0);                       // 底板
+    panel(Wd - 2 * th, th, Dp - th, 0, Ht * 0.55, 0);      // 中层隔板（物资放这层）
+    const lip = new THREE.Mesh(boxGeo(Wd + 0.04, 0.06, Dp + 0.04), trim);
+    lip.position.y = Ht + 0.03; g.add(lip); // 顶部压条
     const doorPivot = new THREE.Group();
-    doorPivot.position.set(-0.5, 0.75, 0.30);
-    const door = new THREE.Mesh(new THREE.BoxGeometry(0.98, 1.34, 0.04), wood);
-    door.position.set(0.49, 0, 0);
+    doorPivot.position.set(-Wd / 2 + 0.02, Ht / 2, Dp / 2 + 0.01);
+    const door = new THREE.Mesh(boxGeo(Wd - 0.07, Ht - 0.16, 0.04), wood);
+    door.position.set((Wd - 0.07) / 2, 0, 0);
     doorPivot.add(door);
     const hm = new THREE.MeshLambertMaterial({ color: 0x222222 });
-    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.06), hm);
-    handle.position.set(0.88, 0.05, 0.05); // 跟门一起转
+    const handle = new THREE.Mesh(boxGeo(0.05, 0.2, 0.06), hm);
+    handle.position.set(Wd - 0.16, 0.05, 0.05); // 跟门一起转
     doorPivot.add(handle);
     g.add(doorPivot);
     g.userData.doorPivot = doorPivot;
-    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.03, 1.34, 0.045), trim);
-    seam.position.set(0.5, 0.75, 0.29); g.add(seam); // 右边缘门缝线（装饰）
     return g;
   }
   function buildFurnitureMesh(kind) {
@@ -729,6 +951,8 @@
     if (!item) return null;
     const id = 'fpick_' + item + '_' + opts.tx + '_' + opts.ty + '_' + (opts.suffix || 'furn');
     if (opts.container === 'cabinet') return addCabinetTwoStage(W, opts, id, item);
+    // H 路：家具底部接触阴影（桌/柜调用方已把 furniture mesh 摆好，位置取 fx/fz）
+    addPropShadow(W, opts.group, opts.fx, opts.fz, opts.container === 'cabinet' ? 0.75 : 1.0);
     // —— table / 默认：一步拾取（原逻辑） ——
     if (W.state.picked.includes(id)) return null; // 已拾取：存档/区块重建时不重建
     const ig = itemMesh(item);
@@ -738,7 +962,7 @@
     // 命中代理：隐形大盒子（colorWrite 关，只参与射线不参与渲染），
     // 保证小瓶子/绷带卷这类小 mesh 也能被屏幕中心射线稳定打中
     const proxy = new THREE.Mesh(
-      new THREE.BoxGeometry(0.7, 0.8, 0.7),
+      boxGeo(0.7, 0.8, 0.7),
       new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false })
     );
     proxy.position.set(0, 0.25, 0);
@@ -751,7 +975,18 @@
       prompt: () => BR.interactKeyLabel() + '拿起' + (ITEM_NAME[item] || item),
       canUse: () => true,
       use: () => {
-        BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
+        // W9：背包满/堆叠满时拒绝，物品留在桌上
+        if (BR.Items && !BR.Items.canAdd(item, 1)) {
+          BR.UI.toast(BR.Items.fullReason(item, 1));
+          if (BR.Audio.doorLocked) BR.Audio.doorLocked();
+          return;
+        }
+        if (item === 'dive_light' && BR.Items) {
+          BR.Items.add('dive_light', 1);
+        } else {
+          BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
+          if (BR.Items && item === 'oxygen_tank') BR.Items._chargesOf(item);
+        }
         BR.Audio.pickup();
         BR.UI.toast('拿起了' + (ITEM_NAME[item] || item));
         W.state.picked.push(id);
@@ -768,59 +1003,139 @@
   // 柜子两段式（addFurniturePickup container:'cabinet' 时调用）：
   //  第一段"打开柜门" → 柜门转动动画 + 音效 + openedCrates 记录 + toast，柜内刷出可见物资拾取；
   //  第二段准星对准柜内物资 → 拾取进物品栏。区块重建/读档规则同 wireCrateTwoStage。
+  // 柜子两段式 + W9 开合（addFurniturePickup container:'cabinet' 时调用）：
+  //  第一段"打开柜门" → 柜门转动动画 + 音效 + openedCrates 记录 + toast，柜内刷出可见物资拾取；
+  //  第二段准星对准柜内物资 → 拾取进物品栏。开门后柜门可再"关上"（关门动画），
+  //  关闭态柜内拾取移出射线检测（不许隔门拿）；再打开恢复。
+  //  状态：openedCrates=曾经开过（旧语义）；W.state.cabinetOpen[cabId]=当前开合（新，入存档）。
+  //  区块重建/读档按 cabinetOpen 恢复姿态与拾取；老存档无 cabinetOpen 时 opened 即视为开着走旧规则。
   function addCabinetTwoStage(W, opts, id, item) {
     const cabId = 'cab_' + opts.tx + '_' + opts.ty + '_' + (opts.suffix || 'furn');
     const pickId = 'cabpick_' + id;
+    const closeId = cabId + '_close';
+    // H 路：柜体底部接触阴影
+    addPropShadow(W, opts.group, opts.fx, opts.fz, 0.75);
     const pivot = opts.furniture ? opts.furniture.userData.doorPivot : null;
-    const opened = W.state.openedCrates.includes(cabId);
-    if (opened && pivot) setCabinetDoorOpen(pivot); // 读档/重建：保持开门状态
-    // 柜内拾取位置：柜门正前方敞口处，用柜子本地坐标换算（适配柜子朝向）
+    W.state.cabinetOpen = W.state.cabinetOpen || {};
     const innerPos = (() => {
       const f = opts.furniture;
       if (f) {
         f.updateMatrixWorld(true);
-        return f.localToWorld(new THREE.Vector3(0, 0.7, 0.44));
+        return f.localToWorld(new THREE.Vector3(0, 0.95, 0.05));
       }
-      return new THREE.Vector3(opts.fx, 0.7, opts.fz);
+      return new THREE.Vector3(opts.fx, 0.95, opts.fz);
     })();
-    // 含老存档一步拾取（picked 里记的是原 id）：视为已拾取，不重建
-    const picked = W.state.picked.includes(pickId) || W.state.picked.includes(id);
-    if (opened && wasLiveOpened(W, cabId) && !picked) {
-      // 本 session 内开过、还没拿：重建柜内拾取；柜体不再注册交互，避免挡住柜内物资的射线
-      spawnInnerPickup(W, opts.group, innerPos, pickId, item, opts.tx, opts.ty);
-      return cabId;
-    }
-    if (opened) return cabId; // 老存档已开 / 已拾取：纯装饰
     // 展平一层 children（含铰链组里的门板/把手），保证门板也能被射线打中
     const cabMeshes = [];
     if (opts.furniture) opts.furniture.children.forEach(c => {
       cabMeshes.push(c);
       if (c.children) c.children.forEach(cc => cabMeshes.push(cc));
     });
-    W.addInteractable({
-      id: cabId, kind: 'cabinet', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
-      meshes: cabMeshes,
-      pos: new THREE.Vector3(opts.fx, 1.0, opts.fz), radius: 2.6,
-      prompt: () => BR.interactKeyLabel() + '打开柜门',
-      canUse: () => !W.state.openedCrates.includes(cabId),
-      use: () => {
-        if (W.state.openedCrates.includes(cabId)) return;
-        if (pivot) animCabinetDoor(pivot);
-        BR.Audio.doorCreak();
-        W.state.openedCrates.push(cabId);
-        markLiveOpened(W, cabId);
-        // main.js 的自动存档只监听 'crate:opened'，柜子开门同样触发一次，保证开门状态落盘
-        BR.bus.emit('crate:opened', { id: cabId });
-        W.removeInteractable(cabId); // 开门后柜体移出射线检测，避免挡住柜内物资
-        if (W.state.picked.includes(id)) {
-          // 老存档：旧一步流程已拾取过（picked 里记的是原 id），不再刷出，避免物资复活
-          BR.UI.toast('柜门打开了，里面是空的。');
-        } else {
-          BR.UI.toast('柜门打开了，看看里面有什么');
-          spawnInnerPickup(W, opts.group, innerPos, pickId, item, opts.tx, opts.ty);
-        }
+    const doorMeshes = [];
+    if (pivot) pivot.children.forEach(c => doorMeshes.push(c));
+    // 含老存档一步拾取（picked 里记的是原 id）：视为已拾取，不重建
+    const picked = () => W.state.picked.includes(pickId) || W.state.picked.includes(id);
+    const isOpenNow = () => W.state.cabinetOpen[cabId] === true;
+
+    function registerOpen() {
+      W.removeInteractable(cabId);
+      W.addInteractable({
+        id: cabId, kind: 'cabinet', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
+        meshes: cabMeshes.length ? cabMeshes : [],
+        pos: new THREE.Vector3(opts.fx, 1.0, opts.fz), radius: 2.6,
+        prompt: () => BR.interactKeyLabel() + '打开柜门',
+        canUse: () => !isOpenNow(),
+        use: () => { openCabinet(); }
+      });
+    }
+    function registerClose() {
+      W.removeInteractable(closeId);
+      W.addInteractable({
+        id: closeId, kind: 'cabinet', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
+        meshes: doorMeshes.length ? doorMeshes : cabMeshes,
+        pos: new THREE.Vector3(opts.fx, 1.2, opts.fz), radius: 2.6,
+        prompt: () => BR.interactKeyLabel() + '关上柜门',
+        canUse: () => isOpenNow(),
+        use: () => { closeCabinet(); }
+      });
+    }
+    function spawnInner() {
+      // 柜内拾取（两段式第二段）；返回 {pickId, group}，供关门时移除
+      if (picked()) return null;
+      const r = spawnInnerPickup(W, opts.group, innerPos, pickId, item, opts.tx, opts.ty);
+      return r && r.group ? r : null;
+    }
+    // 本 cabinet 的柜内 mesh 引用（关门时移除；重开时重建）
+    function setInnerRef(ref) {
+      W._cabInner = W._cabInner || {};
+      if (ref) W._cabInner[cabId] = ref;
+      else delete W._cabInner[cabId];
+    }
+    function openCabinet() {
+      if (isOpenNow()) return;
+      if (pivot) animCabinetDoor(pivot);
+      BR.Audio.doorCreak();
+      if (!W.state.openedCrates.includes(cabId)) W.state.openedCrates.push(cabId);
+      markLiveOpened(W, cabId);
+      W.state.cabinetOpen[cabId] = true;
+      // main.js 的自动存档只监听 'crate:opened'，柜子开门同样触发一次，保证开门状态落盘
+      BR.bus.emit('crate:opened', { id: cabId });
+      W.removeInteractable(cabId);
+      if (W.state.picked.includes(id)) {
+        // 老存档：旧一步流程已拾取过（picked 里记的是原 id），不再刷出，避免物资复活
+        BR.UI.toast('柜门打开了，里面是空的。');
+      } else {
+        BR.UI.toast('柜门打开了，看看里面有什么');
+        const r = spawnInner();
+        setInnerRef(r);
       }
-    });
+      registerClose();
+      if (BR.Game.autosave) BR.Game.autosave();
+    }
+    function closeCabinet() {
+      if (!isOpenNow()) return;
+      if (pivot) animCabinetDoorClose(pivot);
+      BR.Audio.doorCreak();
+      W.state.cabinetOpen[cabId] = false;
+      // 关闭态：柜内拾取移出射线检测 + 移除 mesh（不许隔门拿；重开时重建）
+      W.removeInteractable(pickId);
+      const ref = W._cabInner && W._cabInner[cabId];
+      if (ref && ref.group && ref.group.parent) ref.group.parent.remove(ref.group);
+      setInnerRef(null);
+      W.removeInteractable(closeId);
+      registerOpen();
+      BR.UI.toast('柜门关上了');
+      if (BR.Game.autosave) BR.Game.autosave();
+    }
+    // 对外（测试/其它调用方）挂载；区块重建时旧 inner 引用失效，先清
+    W._cabCtl = W._cabCtl || {};
+    W._cabCtl[cabId] = { open: openCabinet, close: closeCabinet };
+    if (W._cabInner) delete W._cabInner[cabId];
+
+    // —— 初始装配（区块构建 / 重建 / 读档） ——
+    const opened = W.state.openedCrates.includes(cabId);
+    if (!opened) {
+      if (pivot) setCabinetDoorClosed(pivot);
+      registerOpen();
+      return cabId;
+    }
+    if (picked()) {
+      // 已拾取：按开合姿态纯装饰
+      if (pivot) { if (isOpenNow()) setCabinetDoorOpen(pivot); else setCabinetDoorClosed(pivot); }
+      if (isOpenNow()) registerClose(); else registerOpen();
+      return cabId;
+    }
+    // 开过但未拾取：按 cabinetOpen 恢复（老存档无该字段 → 默认开着，走旧规则重建拾取）
+    const shouldOpen = W.state.cabinetOpen[cabId] !== false;
+    W.state.cabinetOpen[cabId] = shouldOpen;
+    if (pivot) { if (shouldOpen) setCabinetDoorOpen(pivot); else setCabinetDoorClosed(pivot); }
+    if (shouldOpen) {
+      const r = spawnInner();
+      setInnerRef(r);
+      registerClose();
+    } else {
+      registerOpen();
+    }
     return cabId;
   }
 
@@ -876,7 +1191,365 @@
   }
 
   /* ================= L0 ================= */
+
+  /* ---------- v1.5 W2：L0 分区式空间重做（生成重做） ----------
+   * gen.js 只给毛坯（4 个重叠大厅 + 半墙 + 柱阵 + 马尼拉房间），真正的空间结构在这里重写。
+   * 旧版 wiki Level 0："randomly segmented rooms, hallways"、"no two rooms are identical"；
+   * 连续地毯 + 吊顶 + 荧光灯由主题提供。做法（v1.5 W2 分区式）：
+   *  1) 外轮廓咬边：把大厅矩形外轮廓啃出不规则缺口（只挖墙→地）；
+   *  2) 4×4 分区定性：开阔区 / 连续隔断区 / 柱密区 / 短暂狭窄区
+   *     （保底：开阔≥2、隔断≥2、柱密≥1、狭窄≥1）；
+   *  3) 分区施工：不同长度（3~9）墙段、半隔断（不贴区边）、1~2 个宽窄不一（1~4）的开口，
+   *     双段同线相邻段开口强制错位；段端偶发转角延伸（转角遮挡 + 偶发局部死路）；
+   *     柱密区为偏心柱群（抖动网格 + 随机整体偏移，8 邻域不相连）；狭窄区为平行双墙夹 2 tile 短窄道；
+   *  4) 分区间连接：相邻分区边界开 1~2 个 3~5 tile 宽开口（只拆自己砌的墙），
+   *     偶发渐窄过渡（阶梯短墙漏斗）；大空间之间用宽开口/墙体缺口连接，不全靠细隧道；
+   *  5) 单向修改（只地→墙；马尼拉整块 + 门 + 全部 POI + 房间中心受保护），
+   *     收尾全地板 BFS、只拆自己砌的墙，保证出生点能走到每一块地板
+   *     （不许整区块封闭；允许少量局部死路）。
+   * 回环：分区边界多开口天然形成回环；分支：隔断段 + 柱群形成多方向分支。
+   * 确定性：独立 RNG 流 new BR.RNG(seed ^ 0x51F7A9)，禁用 Math.random/Date。
+   * 时机：W.build 中 buildContent 先于区块几何构建执行，改 map.tiles 对几何/碰撞/灯具同时生效。
+   */
+  BR.Levels.L0.recarveMap = function (map) {
+    if (!map || map.level !== 'L0') return;
+    var MW = map.w, MH = map.h;
+    var rng = new BR.RNG((map.seed ^ 0x51F7A9) >>> 0);
+    var TI = function (x, y) { return y * MW + x; };
+    var inB = function (x, y) { return x >= 2 && y >= 2 && x <= MW - 3 && y <= MH - 3; };
+
+    // ---- 保护区：马尼拉整块（含门与外圈）、全部 POI tile、房间中心点 ----
+    var prot = {};
+    var protect = function (x, y) { if (x >= 0 && y >= 0 && x < MW && y < MH) prot[TI(x, y)] = 1; };
+    map.pois.forEach(function (p) {
+      protect(p.tx, p.ty);
+      if (p.type === 'manila_room' && p.data) {
+        for (var yy = p.data.y0 - 1; yy <= p.data.y1 + 1; yy++)
+          for (var xx = p.data.x0 - 1; xx <= p.data.x1 + 1; xx++) protect(xx, yy);
+      }
+      if (p.type === 'thin_wall' && p.data) protect(p.tx + (p.data.dx || 0), p.ty + (p.data.dz || 0));
+      if (p.type === 'anomaly_wall' && p.data) protect(p.tx + (p.data.dirx || 0), p.ty + (p.data.dirz || 0));
+    });
+    map.doors.forEach(function (d) { protect(d.tx, d.ty); });
+    (map.rooms || []).forEach(function (r) { protect(Math.round(r.cx), Math.round(r.cy)); });
+
+    var doorSet = {};
+    map.doors.forEach(function (d) { doorSet[TI(d.tx, d.ty)] = 1; });
+    var passable = function (x, y) {
+      if (x < 0 || y < 0 || x >= MW || y >= MH) return false;
+      var i = TI(x, y);
+      return map.tiles[i] === 1 || !!doorSet[i];
+    };
+
+    // ---- 1) 外轮廓咬边：两遍，啃掉贴边墙 ----
+    var carved = 0, ps, ex, ey;
+    for (ps = 0; ps < 2; ps++) {
+      for (ey = 2; ey <= MH - 3; ey++) for (ex = 2; ex <= MW - 3; ex++) {
+        var ei = TI(ex, ey);
+        if (map.tiles[ei] !== 0 || prot[ei]) continue;
+        var f4 = 0, f8 = 0;
+        for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++) {
+          if (!ox && !oy) continue;
+          if (map.tiles[TI(ex + ox, ey + oy)] === 1) { f8++; if (!ox || !oy) f4++; }
+        }
+        if (f4 >= 1 && f8 <= 4 && rng.chance(0.30)) { map.tiles[ei] = 1; carved++; }
+      }
+    }
+
+    // ---- 2) 分区定性：4×4 分区（每区 14×14 tiles），保底每种性格 ≥ 指定数 ----
+    // 只有有地板的分区才参与定性（大厅只覆盖上部约 2/3，底部行为空洞 void）
+    var ZN = 4, ZW = 14, zkind = [], zi;
+    var zrect = function (i) {
+      return [Math.max(2, (i % ZN) * ZW), Math.max(2, ((i / ZN) | 0) * ZW)];
+    };
+    var zfloor = [], zactive = [];
+    for (zi = 0; zi < ZN * ZN; zi++) {
+      var zr = zrect(zi), zx0 = zr[0], zy0 = zr[1];
+      var zx1 = Math.min(MW - 3, zx0 + ZW - 1), zy1 = Math.min(MH - 3, zy0 + ZW - 1), fl = 0;
+      for (var zy = zy0; zy <= zy1; zy++)
+        for (var zx = zx0; zx <= zx1; zx++) if (map.tiles[TI(zx, zy)] === 1) fl++;
+      zfloor.push(fl);
+      zactive.push(fl >= 30);
+    }
+    var wpick = function (pairs) {
+      var r = rng.next(), acc = 0;
+      for (var i = 0; i < pairs.length; i++) { acc += pairs[i][1]; if (r < acc) return pairs[i][0]; }
+      return pairs[pairs.length - 1][0];
+    };
+    for (zi = 0; zi < ZN * ZN; zi++)
+      zkind.push(zactive[zi] ? wpick([['open', 0.30], ['part', 0.30], ['pilar', 0.25], ['narrow', 0.15]]) : 'void');
+    var zneed = { open: 2, part: 2, pilar: 1, narrow: 1 }, zg = 0, zkk;
+    while (zg++ < 80) { // 保底循环：每次补一个缺额，必收敛（活跃区远多于需求 6）
+      var zok = true;
+      for (zkk in zneed) {
+        var zc = 0;
+        for (zi = 0; zi < zkind.length; zi++) if (zkind[zi] === zkk) zc++;
+        if (zc < zneed[zkk]) {
+          zok = false;
+          var ri2;
+          do { ri2 = rng.int(0, zkind.length - 1); } while (!zactive[ri2]);
+          zkind[ri2] = zkk; break;
+        }
+      }
+      if (zok) break;
+    }
+    var zcount = { open: 0, part: 0, pilar: 0, narrow: 0, void: 0 };
+    for (zi = 0; zi < zkind.length; zi++) zcount[zkind[zi]]++;
+
+    // ---- 3) 分区施工 ----
+    var myWalls = {}, nSeg = 0, nDbl = 0, nCorner = 0, nPillar = 0, nGate = 0, nFunnel = 0;
+    var buildWall = function (x, y) {
+      if (!inB(x, y)) return;
+      var i = TI(x, y);
+      if (prot[i] || map.tiles[i] !== 1) return;
+      map.tiles[i] = 0; myWalls[i] = 1;
+    };
+    var clearMyWall = function (x, y) {
+      if (x < 0 || y < 0 || x >= MW || y >= MH) return;
+      var i = TI(x, y);
+      if (myWalls[i]) { map.tiles[i] = 1; delete myWalls[i]; }
+    };
+    // 一段隔墙：起点 (sx,sy)，沿 (dx,dy) 走 len 格；prevGap 为同线上一段开口中心（错位用）
+    var drawSeg = function (sx, sy, dx, dy, len, prevGap) {
+      var gw = Math.min(rng.int(1, 4), len); // 开口宽窄不一
+      var ng = 1 + (rng.chance(0.5) ? 1 : 0);
+      var gaps = [], g;
+      for (g = 0; g < ng; g++) {
+        var gs = rng.int(0, Math.max(0, len - gw));
+        var gc = gs + (gw - 1) / 2;
+        if (prevGap != null && Math.abs(gc - prevGap) < 3) { // 错位开口
+          gs += (gc < prevGap ? -1 : 1) * (2 + rng.int(0, 2));
+          gs = Math.max(0, Math.min(Math.max(0, len - gw), gs));
+          gc = gs + (gw - 1) / 2;
+        }
+        gaps.push([gs, gs + gw - 1]);
+        prevGap = gc;
+      }
+      var inGap = function (k, gl) {
+        for (var q = 0; q < gl.length; q++)
+          if (k >= gl[q][0] && k <= gl[q][1]) return true;
+        return false;
+      };
+      for (var k = 0; k < len; k++) if (!inGap(k, gaps)) buildWall(sx + dx * k, sy + dy * k);
+      nSeg++;
+      var exx = sx + dx * (len - 1), eyy = sy + dy * (len - 1);
+      for (var e = 0; e < 2; e++) { // 段端转角延伸：转角遮挡，偶发形成局部死路
+        if (!rng.chance(0.20)) continue;
+        var bx = e ? exx : sx, by = e ? eyy : sy;
+        var sd = rng.chance(0.5) ? 1 : -1;
+        var px = -dy * sd, py = dx * sd, ext = 2 + rng.int(0, 2);
+        for (var k3 = 1; k3 <= ext; k3++) buildWall(bx + px * k3, by + py * k3);
+        nCorner++;
+      }
+      return prevGap;
+    };
+    // 独立柱：8 邻域全空才立柱（偏心由调用方给抖动坐标）
+    var putPillar = function (x, y) {
+      if (!inB(x, y)) return false;
+      var pi = TI(x, y);
+      if (prot[pi] || map.tiles[pi] !== 1) return false;
+      for (var ay = -1; ay <= 1; ay++) for (var ax = -1; ax <= 1; ax++) {
+        if (!ax && !ay) continue;
+        var ni = TI(x + ax, y + ay);
+        if (map.tiles[ni] !== 1 || prot[ni]) return false;
+      }
+      map.tiles[pi] = 0; myWalls[pi] = 1; nPillar++;
+      return true;
+    };
+    var scatterPillars = function (x0, y0, x1, y1, count) {
+      var gd = 0, done = 0;
+      while (done < count && gd++ < 60) {
+        if (x0 > x1 || y0 > y1) break;
+        if (putPillar(rng.int(x0, x1), rng.int(y0, y1))) done++;
+      }
+    };
+    for (zi = 0; zi < zkind.length; zi++) {
+      var qx0 = Math.max(2, (zi % ZN) * ZW), qy0 = Math.max(2, ((zi / ZN) | 0) * ZW);
+      var qx1 = Math.min(MW - 3, qx0 + ZW - 1), qy1 = Math.min(MH - 3, qy0 + ZW - 1);
+      var qk = zkind[zi], sgi, hz, ln, wx, wy;
+      if (qk === 'void') continue; // 空洞分区不施工
+      if (qk === 'open') {
+        // 开阔区：偶发半隔断 + 偏心散柱，保持开阔
+        if (rng.chance(0.35)) {
+          hz = rng.chance(0.5); ln = rng.int(3, 6);
+          wx = rng.int(qx0 + 2, Math.max(qx0 + 2, qx1 - (hz ? ln : 1) - 2));
+          wy = rng.int(qy0 + 2, Math.max(qy0 + 2, qy1 - (hz ? 1 : ln) - 2));
+          drawSeg(wx, wy, hz ? 1 : 0, hz ? 0 : 1, ln, null);
+        }
+        scatterPillars(qx0 + 1, qy0 + 1, qx1 - 1, qy1 - 1, rng.int(3, 6));
+      } else if (qk === 'part') {
+        // 连续隔断区：1~2 组"双段同线"（两段之间留 2~4 格缺口，同线相邻段开口强制错位）
+        // ＋偶发单段；全部半隔断（不贴区边）
+        var nd = 1 + rng.int(0, 1), di;
+        for (di = 0; di < nd; di++) {
+          hz = rng.chance(0.5);
+          var l1 = rng.int(3, 6), l2 = rng.int(3, 6), gb = rng.int(2, 4);
+          var tl = l1 + gb + l2, dx = hz ? 1 : 0, dy = hz ? 0 : 1;
+          wx = rng.int(qx0 + 2, Math.max(qx0 + 2, qx1 - (hz ? tl : 1) - 2));
+          wy = rng.int(qy0 + 2, Math.max(qy0 + 2, qy1 - (hz ? 1 : tl) - 2));
+          var r1 = drawSeg(wx, wy, dx, dy, l1, null);
+          drawSeg(wx + dx * (l1 + gb), wy + dy * (l1 + gb), dx, dy, l2, r1); // 错位开口
+        }
+        if (rng.chance(0.5)) {
+          hz = rng.chance(0.5); ln = rng.int(4, 9);
+          wx = rng.int(qx0 + 2, Math.max(qx0 + 2, qx1 - (hz ? ln : 1) - 2));
+          wy = rng.int(qy0 + 2, Math.max(qy0 + 2, qy1 - (hz ? 1 : ln) - 2));
+          drawSeg(wx, wy, hz ? 1 : 0, hz ? 0 : 1, ln, null);
+        }
+        if (rng.chance(0.5)) scatterPillars(qx0 + 1, qy0 + 1, qx1 - 1, qy1 - 1, rng.int(2, 4));
+      } else if (qk === 'pilar') {
+        // 柱密区：偏心柱群（间距 3 网格 + 随机整体偏移 + 22% 随机缺柱；
+        // 每根 30% 概率再抖动 ±1，抖位放不下则回落到网格位；8 邻域不相连，不可能围死人）
+        var ox = rng.int(0, 2), oy = rng.int(0, 2), cy2, cx2;
+        for (cy2 = qy0 + 1 + oy; cy2 <= qy1 - 1; cy2 += 3)
+          for (cx2 = qx0 + 1 + ox; cx2 <= qx1 - 1; cx2 += 3) {
+            if (rng.chance(0.22)) continue;
+            var jx = cx2, jy = cy2;
+            if (rng.chance(0.3)) { jx += rng.int(-1, 1); jy += rng.int(-1, 1); }
+            if (!putPillar(jx, jy)) putPillar(cx2, cy2);
+          }
+      } else {
+        // 短暂狭窄区：平行双墙夹 2 tile 窄道（6~10 长），两端清出宽开口
+        hz = rng.chance(0.5); ln = rng.int(6, 10);
+        wx = rng.int(qx0 + 3, Math.max(qx0 + 3, qx1 - (hz ? ln : 4) - 3));
+        wy = rng.int(qy0 + 3, Math.max(qy0 + 3, qy1 - (hz ? 4 : ln) - 3));
+        var kk3, exx2, eoo;
+        if (hz) {
+          for (kk3 = 0; kk3 < ln; kk3++) { buildWall(wx + kk3, wy); buildWall(wx + kk3, wy + 3); }
+          for (exx2 = -1; exx2 <= 1; exx2++)
+            for (eoo = 1; eoo <= 2; eoo++) {
+              clearMyWall(wx - eoo, wy + 1 + exx2); clearMyWall(wx + ln - 1 + eoo, wy + 1 + exx2);
+            }
+        } else {
+          for (kk3 = 0; kk3 < ln; kk3++) { buildWall(wx, wy + kk3); buildWall(wx + 3, wy + kk3); }
+          for (exx2 = -1; exx2 <= 1; exx2++)
+            for (eoo = 1; eoo <= 2; eoo++) {
+              clearMyWall(wx + 1 + exx2, wy - eoo); clearMyWall(wx + 1 + exx2, wy + ln - 1 + eoo);
+            }
+        }
+        nDbl++;
+      }
+    }
+
+    // ---- 4) 分区间连接：相邻分区边界开 1~2 个 3~5 tile 宽开口（只拆自己砌的墙） ----
+    // 大空间之间用宽开口/墙体缺口连接，不全靠细隧道；25% 概率做渐窄过渡（阶梯短墙漏斗）
+    var zoneGate = function (bx0, by0, bx1, by1) {
+      var len = Math.max(bx1 - bx0, by1 - by0) + 1;
+      var ng = 1 + (rng.chance(0.5) ? 1 : 0), gi;
+      for (gi = 0; gi < ng; gi++) {
+        var gw = rng.int(3, 5);
+        var gs = rng.int(0, Math.max(0, len - gw)), ge = gs + gw - 1, kk;
+        var vert = (bx0 === bx1);
+        for (kk = gs; kk <= ge; kk++) {
+          var gx = vert ? bx0 : bx0 + kk, gy = vert ? by0 + kk : by0;
+          for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++)
+            clearMyWall(gx + ox, gy + oy);
+        }
+        nGate++;
+        if (rng.chance(0.25)) { // 渐窄过渡：门洞两端各加一段 2 格阶梯短墙，形成漏斗
+          for (var e = 0; e < 2; e++) {
+            var ee = (e === 0 ? gs - 1 : ge + 1), s2;
+            for (s2 = 1; s2 <= 2; s2++) {
+              if (vert) { buildWall(bx0 - s2, by0 + ee); buildWall(bx0 + s2, by0 + ee); }
+              else { buildWall(bx0 + ee, by0 - s2); buildWall(bx0 + ee, by0 + s2); }
+            }
+          }
+          nFunnel++;
+        }
+      }
+    };
+    var gzx, gzy;
+    for (gzy = 0; gzy < ZN; gzy++) for (gzx = 0; gzx < ZN; gzx++) {
+      var bxx = (gzx + 1) * ZW, byy = (gzy + 1) * ZW;
+      var ziA = gzy * ZN + gzx;
+      if (gzx + 1 < ZN && bxx >= 2 && bxx <= MW - 3 &&
+          zactive[ziA] && zactive[ziA + 1]) // 只在两个活跃分区之间开门
+        zoneGate(bxx, Math.max(2, gzy * ZW), bxx, Math.min(MH - 3, (gzy + 1) * ZW - 1));
+      if (gzy + 1 < ZN && byy >= 2 && byy <= MH - 3 &&
+          zactive[ziA] && zactive[ziA + ZN])
+        zoneGate(Math.max(2, gzx * ZW), byy, Math.min(MW - 3, (gzx + 1) * ZW - 1), byy);
+    }
+
+    // ---- 5) 连通修复：只拆自己砌的墙 ----
+    // 0-1 BFS：从所有不可达地板出发，穿地板 cost 0、穿 myWall cost 1、原墙不可穿；
+    // 每轮拆除"贴着可达区且离不可达区最近"的 myWall（bridge 即 cost==1 的特例，
+    // 拐角连拆的"帽子"情形也能逐轮啃开）。原图全连通，故必收敛。
+    var spawn = null;
+    map.pois.forEach(function (p) { if (p.type === 'spawn') spawn = p; });
+    function bfsReach() {
+      var dist = new Int32Array(MW * MH).fill(-1);
+      var qx = [spawn.tx], qy = [spawn.ty], head = 0;
+      if (!passable(spawn.tx, spawn.ty)) return dist;
+      dist[TI(spawn.tx, spawn.ty)] = 0;
+      while (head < qx.length) {
+        var x = qx[head], y = qy[head]; head++;
+        var d0 = dist[TI(x, y)];
+        var nb = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var k = 0; k < 4; k++) {
+          var nx = x + nb[k][0], ny = y + nb[k][1];
+          if (!passable(nx, ny)) continue;
+          var ni = TI(nx, ny);
+          if (dist[ni] !== -1) continue;
+          dist[ni] = d0 + 1; qx.push(nx); qy.push(ny);
+        }
+      }
+      return dist;
+    }
+    function bfsCost(dist) {
+      var INF = 1e9, c2 = new Int32Array(MW * MH).fill(INF), dq = [];
+      for (var y = 0; y < MH; y++) for (var x = 0; x < MW; x++) {
+        var i = TI(x, y);
+        if ((map.tiles[i] === 1 || doorSet[i]) && dist[i] < 0) { c2[i] = 0; dq.unshift(i); }
+      }
+      while (dq.length) {
+        var cur = dq.shift(), cx = cur % MW, cy = ((cur / MW) | 0);
+        var nb = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var k = 0; k < 4; k++) {
+          var nx = cx + nb[k][0], ny = cy + nb[k][1];
+          if (nx < 0 || ny < 0 || nx >= MW || ny >= MH) continue;
+          var ni = TI(nx, ny), mine = !!myWalls[ni];
+          if (map.tiles[ni] !== 1 && !doorSet[ni] && !mine) continue; // 原墙不可穿
+          var nc = c2[cur] + (mine ? 1 : 0);
+          if (nc < c2[ni]) { c2[ni] = nc; if (mine) dq.push(ni); else dq.unshift(ni); }
+        }
+      }
+      return c2;
+    }
+    var repaired = 0;
+    for (var it = 0; it < 500; it++) {
+      var dist = bfsReach(), bad = false, sx2, sy2;
+      for (sy2 = 1; sy2 < MH - 1 && !bad; sy2++) for (sx2 = 1; sx2 < MW - 1; sx2++) {
+        if (passable(sx2, sy2) && dist[TI(sx2, sy2)] < 0) { bad = true; break; }
+      }
+      if (!bad) break;
+      var c2 = bfsCost(dist), best = Infinity, cand = [], key;
+      for (key in myWalls) {
+        var ki = +key, wx = ki % MW, wy = ((ki / MW) | 0), touchR = false;
+        var nb2 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var b = 0; b < 4; b++) {
+          var ax = wx + nb2[b][0], ay = wy + nb2[b][1];
+          if (passable(ax, ay) && dist[TI(ax, ay)] >= 0) { touchR = true; break; }
+        }
+        if (!touchR) continue;
+        var d2 = c2[ki];
+        if (d2 < best) { best = d2; cand = [ki]; }
+        else if (d2 === best) cand.push(ki);
+      }
+      if (!cand.length) break; // 理论上到不了：原图全连通
+      for (var r2 = 0; r2 < cand.length; r2++) {
+        map.tiles[cand[r2]] = 1; delete myWalls[cand[r2]]; repaired++;
+      }
+    }
+
+    map.meta.l0recarve = {
+      carved: carved, segs: nSeg, dbl: nDbl, corner: nCorner,
+      pillars: nPillar, repaired: repaired, walls: Object.keys(myWalls).length,
+      zones: zcount, zoneKinds: zkind, gates: nGate, funnels: nFunnel
+    };
+  };
+
   BR.Levels.L0.buildContent = function (map, W) {
+    BR.Levels.L0.recarveMap(map); // v1.5 W2：分区式空间重写（马尼拉/门/POI 受保护）
     buildDoors(map, W);
     // 异常墙：污渍 + 可触碰
     poiList(map, 'anomaly_wall').forEach(p => {
@@ -915,7 +1588,8 @@
     // 笔记
     const L0_NOTES = [
       ['前人的字条', '如果你看到这张字条，说明你也切出来了。\n\n别慌。跟着荧光灯走，找墙纸颜色不对的那面墙。\n\n——M.'],
-      ['皱巴巴的字条', '第 47 天。地毯还是潮的。\n\n我发现这些房间没有两间是一样的，但出口……出口一直在"最不对劲"的地方。\n\n相信你的直觉。']
+      ['皱巴巴的字条', '第 47 天。地毯还是潮的。\n\n我发现这些房间没有两间是一样的，但出口……出口一直在"最不对劲"的地方。\n\n相信你的直觉。'],
+      ['发黄的字条', '第 61 天。\n\n隔墙的位置好像和昨天不一样了。走过的路，回头就不一样。\n\n别相信记忆。跟着灯走。\n\n——M.']
     ];
     poiList(map, 'note').forEach((p, i) => {
       const n = L0_NOTES[i % L0_NOTES.length];
@@ -1081,31 +1755,99 @@
         W.reg(group, m);
       });
     });
+    // v1.5 W2：洞口改为真实空间开口——坑 tile 翻为墙体（碰撞：玩家无法穿过坑体，
+    // 只能走到坑沿）+ skipWall 跳过墙面渲染；内容钩子建造深坑几何（坑壁/坑底微光/碎裂边缘），
+    // 不再是地板贴图黑圆 + 按键交互。玩家靠近坑沿即失足坠入（进入触发，见 L0.tick）。
+    // 翻墙前做切面检查：若翻墙会断开连通，回退为可行走坑口
+    // （setOpenFloor 跳过地板实例 + 踩入坑口中心触发）。
     poiList(map, 'fun_hole2').forEach(p => {
+      const TI = (tx, ty) => ty * map.w + tx;
+      const hx = BR.tileCX(p.tx), hz = BR.tileCZ(p.ty);
+      const pitRng = new BR.RNG(BR.hashSeed('funpit_' + map.seed + '_' + p.tx + '_' + p.ty));
+      const sp0 = map.pois.find(q => q.type === 'spawn');
+      const doorSet = {};
+      map.doors.forEach(d => { doorSet[TI(d.tx, d.ty)] = 1; });
+      const pass0 = (x, y) => {
+        if (x < 0 || y < 0 || x >= map.w || y >= map.h) return false;
+        const i = TI(x, y);
+        return map.tiles[i] === 1 || !!doorSet[i];
+      };
+      // 切面检查：假设坑 tile 不可走，出生点仍须能走到其余全部地板
+      const seen = new Uint8Array(map.w * map.h);
+      const qx = [sp0.tx], qy = [sp0.ty];
+      let solid = true, qh = 0;
+      if (pass0(sp0.tx, sp0.ty)) seen[TI(sp0.tx, sp0.ty)] = 1;
+      const nb4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      while (qh < qx.length) {
+        const x = qx[qh], y = qy[qh]; qh++;
+        for (let k = 0; k < 4; k++) {
+          const nx = x + nb4[k][0], ny = y + nb4[k][1];
+          if (!pass0(nx, ny) || (nx === p.tx && ny === p.ty)) continue;
+          const ni = TI(nx, ny);
+          if (seen[ni]) continue;
+          seen[ni] = 1; qx.push(nx); qy.push(ny);
+        }
+      }
+      outer: for (let yy = 1; yy < map.h - 1; yy++)
+        for (let xx = 1; xx < map.w - 1; xx++) {
+          if (!pass0(xx, yy) || (xx === p.tx && yy === p.ty)) continue;
+          if (!seen[TI(xx, yy)]) { solid = false; break outer; }
+        }
+      if (solid) {
+        map.tiles[TI(p.tx, p.ty)] = 0; // 翻为墙：碰撞（坑沿挡住玩家）
+        W.skipWall(p.tx, p.ty);        // 跳过墙面渲染，由钩子建深坑
+      } else {
+        W.setOpenFloor(p.tx, p.ty);    // 回退：可行走坑口（极少发生）
+      }
       W.addChunkContent(p.tx, p.ty, (group) => {
-        const x = BR.tileCX(p.tx), z = BR.tileCZ(p.ty);
-        // 地板上的黑洞 + 碎裂边缘
-        const hole = new THREE.Mesh(new THREE.CircleGeometry(0.8, 18),
-          new THREE.MeshBasicMaterial({ color: 0x000000 }));
-        hole.rotation.x = -Math.PI / 2;
-        hole.position.set(x, 0.025, z);
-        W.reg(group, hole);
-        const rim = new THREE.Mesh(new THREE.RingGeometry(0.8, 1.0, 18),
-          W.mat('concrete'));
-        rim.rotation.x = -Math.PI / 2;
-        rim.position.set(x, 0.03, z);
-        W.reg(group, rim);
+        const mouth = solid ? T * 0.96 : T * 0.55; // 实心坑整 tile 开口；可行走坑口中央小口
+        const hw = mouth / 2, depth = 2.6;
+        const dark = new THREE.MeshLambertMaterial({ color: 0x0a0908 });
+        const mkShaftWall = (w, px, pz, ry) => {
+          const m = new THREE.Mesh(new THREE.PlaneGeometry(w, depth), dark);
+          m.position.set(px, -depth / 2 + 0.02, pz); m.rotation.y = ry;
+          W.reg(group, m);
+        };
+        mkShaftWall(mouth, hx, hz - hw, 0);
+        mkShaftWall(mouth, hx, hz + hw, Math.PI);
+        mkShaftWall(mouth, hx - hw, hz, Math.PI / 2);
+        mkShaftWall(mouth, hx + hw, hz, -Math.PI / 2);
+        // 坑底：黑暗 + 隐约的品红微光（派对声光从下面透上来）
+        const bot = new THREE.Mesh(new THREE.PlaneGeometry(mouth, mouth),
+          new THREE.MeshBasicMaterial({ color: 0x050304 }));
+        bot.rotation.x = -Math.PI / 2; bot.position.set(hx, -depth, hz);
+        W.reg(group, bot);
+        const glow = new THREE.PointLight(0xff4fd8, 0.85, 7, 2);
+        glow.position.set(hx, -depth + 0.7, hz);
+        W.reg(group, glow);
+        if (!solid) {
+          // 可行走坑口：在原地板位置铺带方洞的地板环（地板实例已被 setOpenFloor 跳过）
+          const shape = new THREE.Shape();
+          shape.moveTo(-T / 2, -T / 2); shape.lineTo(T / 2, -T / 2);
+          shape.lineTo(T / 2, T / 2); shape.lineTo(-T / 2, T / 2); shape.closePath();
+          const holePath = new THREE.Path();
+          holePath.moveTo(-hw, -hw); holePath.lineTo(hw, -hw);
+          holePath.lineTo(hw, hw); holePath.lineTo(-hw, hw); holePath.closePath();
+          shape.holes.push(holePath);
+          const fg = new THREE.Mesh(new THREE.ShapeGeometry(shape), W.mat(W.theme.floor || 'carpet'));
+          fg.rotation.x = -Math.PI / 2; fg.position.set(hx, 0.001, hz);
+          W.reg(group, fg);
+        }
+        // 碎裂边缘：确定性碎石块围住坑口
+        const rubble = new THREE.MeshLambertMaterial({ color: 0x8a8578 });
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * Math.PI * 2 + pitRng.next() * 0.5;
+          const rr = hw + 0.12 + pitRng.next() * 0.25;
+          const s = 0.16 + pitRng.next() * 0.22;
+          const rock = new THREE.Mesh(new THREE.BoxGeometry(s, s * 0.7, s * 0.9), rubble);
+          rock.position.set(hx + Math.cos(a) * rr, s * 0.28, hz + Math.sin(a) * rr);
+          rock.rotation.set(pitRng.next() * 0.6, pitRng.next() * Math.PI, pitRng.next() * 0.6);
+          W.reg(group, rock);
+        }
         // 隐约的派对音乐
-        BR.Audio.addLoop('funhole2_' + p.tx + '_' + p.ty, 'flicker', x, z, 0.12);
-        W.addInteractable({
-          id: 'fun_hole2_' + p.tx + '_' + p.ty, kind: 'fun_hole',
-          chunkKey: W.chunkKeyOf(p.tx, p.ty),
-          meshes: [hole], pos: new THREE.Vector3(x, 1.2, z), radius: 2.6,
-          prompt: () => '爬进地板上的洞口（隐约有音乐声……）',
-          canUse: () => !BR.Cutout.busy,
-          use: () => { BR.Cutout.travel('FUN', { kind: 'hole' }); }
-        });
+        BR.Audio.addLoop('funhole2_' + p.tx + '_' + p.ty, 'flicker', hx, hz, 0.12);
       });
+      W._funPit = { x: hx, z: hz, solid: solid };
     });
     buildThinWalls(map, W);
     W.objective = '探索 Level 0，找到那面"不太对劲"的墙';
@@ -1192,6 +1934,17 @@
         }
       }
     }
+    // FUN 深坑（v1.5 W2）：真实空间开口 + 碰撞（坑沿挡住）+ 进入触发。
+    // 靠近坑沿即失足坠入 → FUN，不再是按键交互。
+    if (W._funPit && !BR.Cutout.busy) {
+      const fp = W._funPit;
+      const dp = Math.hypot(P.pos.x - fp.x, P.pos.z - fp.z);
+      if (dp < (fp.solid ? 2.0 : 0.95)) {
+        W._funPit = null; // 防止重复触发
+        BR.UI.toast('你脚下一滑，掉了进去……', 2200);
+        BR.Cutout.travel('FUN', { kind: 'hole' });
+      }
+    }
     // 随机氛围事件：L0 无实体，孤独感里的不确定性（纯氛围 + 轻微理智压力，无实际伤害）
     W._l0ambT = (W._l0ambT == null ? 45 + Math.random() * 30 : W._l0ambT) - dt;
     if (W._l0ambT <= 0) {
@@ -1203,950 +1956,6 @@
     }
   };
 
-  /* ================= L1 ================= */
-  BR.Levels.L1.buildContent = function (map, W) {
-    buildDoors(map, W);
-    // 出口长走廊起点：标识 + 提示
-    poiList(map, 'exit_corridor').forEach(p => {
-      W.addChunkContent(p.tx, p.ty, (group) => {
-        const s = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.5),
-          new THREE.MeshBasicMaterial({ map: BR.Textures.get('exitSign') }));
-        const dx = p.data.dirx != null ? p.data.dirx : 0, dz = p.data.dirz != null ? p.data.dirz : 1;
-        s.position.set(BR.tileCX(p.tx) + dx * 2, 2.3, BR.tileCZ(p.ty) + dz * 2);
-        s.rotation.y = Math.atan2(dx, dz);
-        W.reg(group, s);
-      });
-      W._exitCorr = { x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty) };
-    });
-    // 安全屋：暖光
-    poiList(map, 'safe_room').forEach(p => {
-      W.addChunkContent(p.tx, p.ty, (group) => {
-        const L = new THREE.PointLight(0xffd9a0, 1.1, 16, 2);
-        L.position.set(BR.tileCX(p.tx), 2.4, BR.tileCZ(p.ty));
-        W.reg(group, L);
-        // 帐篷
-        const tent = new THREE.Group();
-        const c1 = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.8),
-          new THREE.MeshLambertMaterial({ color: 0x4a5a3a, side: THREE.DoubleSide }));
-        c1.position.set(0, 0.8, -0.55); c1.rotation.x = 0.6; tent.add(c1);
-        const c2 = c1.clone(); c2.position.z = 0.55; c2.rotation.x = -0.6; tent.add(c2);
-        tent.position.set(BR.tileCX(p.tx) + 1, 0, BR.tileCZ(p.ty));
-        W.reg(group, tent);
-      });
-      (W._safeRooms = W._safeRooms || []).push({ x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty), told: false });
-    });
-    // 闪烁区
-    poiList(map, 'blackout').forEach(p => {
-      (W._blackouts = W._blackouts || []).push({
-        x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty), r: (p.data.r || 4) * T, cd: 0
-      });
-    });
-    // 天花板破洞 → FUN 支线
-    poiList(map, 'fun_hole').forEach(p => {
-      W.setOpenCeil(p.tx, p.ty);
-      W.addChunkContent(p.tx, p.ty, (group) => {
-        const x = BR.tileCX(p.tx), z = BR.tileCZ(p.ty), wallH = W.theme.wallH;
-        // 光柱
-        const shaft = new THREE.Mesh(
-          new THREE.CylinderGeometry(1.25, 1.5, wallH, 14, 1, true),
-          new THREE.MeshBasicMaterial({ color: 0xffd9ec, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false })
-        );
-        shaft.position.set(x, wallH / 2, z);
-        W.reg(group, shaft);
-        // 碎裂边缘
-        const rim = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.18, 8, 14),
-          W.mat('concrete'));
-        rim.rotation.x = Math.PI / 2;
-        rim.position.set(x, wallH - 0.05, z);
-        W.reg(group, rim);
-        // 上方暖光
-        const L = new THREE.PointLight(0xffc0d8, 1.3, 14, 2);
-        L.position.set(x, wallH - 0.6, z);
-        W.reg(group, L);
-        // 隐约的派对音乐（用 tick 周期性触发）
-        W._funHole = { x, z };
-        W.addInteractable({
-          id: 'fun_hole', kind: 'hole', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-          meshes: [shaft], pos: new THREE.Vector3(x, 1.6, z), radius: 2.6,
-          prompt: () => '爬进天花板上的破洞（上面有音乐声……）',
-          canUse: () => true,
-          use: () => { BR.Trans.play('ceiling'); }
-        });
-      });
-    });
-    // 板条箱 / 笔记 / 地标
-    poiList(map, 'crate').forEach(p => addCrate(W, p));
-    // 迁跃浆果灌木（gen.js 极低概率放置）
-    poiList(map, 'berry_bush').forEach(p => BR.addBerryBush(W, p));
-    const L1_NOTES = [
-      ['定居者的字条', '小径上有标记，跟着走能到安全屋。\n\n记住：最长的那条走廊不是幻觉，走到底就是出口。\n\n——M.'],
-      ['潦草的字条', '灯开始闪的时候，千万别跑。\n蹲下来，贴着墙，等它过去。'],
-      ['褪色的告示', 'M.E.G. 提醒：杏仁水是硬通货。\n不要相信天花板上的音乐。']
-    ];
-    poiList(map, 'note').forEach((p, i) => {
-      const n = L1_NOTES[i % L1_NOTES.length];
-      addNote(W, p.tx, p.ty, n[0], n[1]);
-    });
-    poiList(map, 'landmark').forEach(p => {
-      W.addChunkContent(p.tx, p.ty, (group) => {
-        // 补给堆：几个箱子
-        for (let i = 0; i < 3; i++) {
-          const b = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), W.mat('crate'));
-          b.position.set(BR.tileCX(p.tx) + (i - 1) * 1.1, 0.45, BR.tileCZ(p.ty) + (i % 2) * 0.9);
-          b.rotation.y = i * 0.4;
-          W.reg(group, b);
-        }
-      });
-    });
-    // 家具 POI（gen.js L1 放置）：p.data = {kind:'table'|'cabinet', item:'almond'|'bandage'|'food'|null}
-    // 程序化桌子/柜子 mesh + 家具拾取；item 为 null 时只做装饰。
-    // 柜子（kind:'cabinet'）走两段式（先开门再拿），桌子保持一步拾取。
-    poiList(map, 'furniture').forEach((p, i) => {
-      const d = p.data || {};
-      const kind = (d.kind === 'cabinet') ? 'cabinet' : 'table';
-      const item = d.item || null;
-      W.addChunkContent(p.tx, p.ty, (group) => {
-        const fx = BR.tileCX(p.tx), fz = BR.tileCZ(p.ty);
-        const f = BR.buildFurnitureMesh(kind);
-        f.position.set(fx, 0, fz);
-        const rng = new BR.RNG(BR.hashSeed('furn_' + p.tx + '_' + p.ty));
-        f.rotation.y = Math.floor(rng.next() * 4) * Math.PI / 2; // 确定性朝向
-        W.reg(group, f);
-        if (item) {
-          BR.addFurniturePickup(W, {
-            tx: p.tx, ty: p.ty, item, suffix: 'furn' + i,
-            group, fx, fz, topY: kind === 'cabinet' ? 1.54 : 0.78,
-            container: kind, furniture: f
-          });
-        }
-      });
-    });
-    buildThinWalls(map, W);
-    W.objective = '穿过那条异常长的走廊前往 Level 2（注意天花板上的动静）';
-  };
-
-  BR.Levels.L1.onEnter = function () {
-    BR.UI.setObjective(BR.World.objective);
-    BR.Audio.setAmbient('L1');
-  };
-
-  BR.Levels.L1.tick = function (dt) {
-    const W = BR.World, P = BR.Player;
-    if (!P || BR.Game.state !== 'playing') return;
-    thinWallTick(dt);
-    // 随机闪烁风暴：保证玩家一定能看到灯闪
-    W._stormT = (W._stormT == null ? 18 + Math.random() * 22 : W._stormT) - dt;
-    if (W._stormT <= 0) {
-      W._stormT = 32 + Math.random() * 30;
-      W.flickerStorm = { x: P.pos.x, z: P.pos.z, r: 15, t: 4.5 };
-      BR.Audio.flickerBuzz();
-      P.drainSanity(4);
-      if (!W._stormTold) { W._stormTold = true; BR.UI.toast('头顶的灯开始疯狂闪烁——'); }
-    }
-    // 安全屋提示
-    (W._safeRooms || []).forEach(s => {
-      if (!s.told && Math.hypot(P.pos.x - s.x, P.pos.z - s.z) < 6) {
-        s.told = true;
-        BR.UI.toast('这里有前人留下的痕迹，感觉安全一些');
-        BR.Audio.checkpoint();
-      }
-    });
-    // 出口走廊提示
-    if (W._exitCorr && !W._exitCorrTold && Math.hypot(P.pos.x - W._exitCorr.x, P.pos.z - W._exitCorr.z) < 7) {
-      W._exitCorrTold = true;
-      BR.UI.toast('这条走廊……看起来比别的更长');
-    }
-    // 闪烁事件
-    (W._blackouts || []).forEach(b => {
-      b.cd = Math.max(0, b.cd - dt);
-      const inside = Math.hypot(P.pos.x - b.x, P.pos.z - b.z) < b.r;
-      if (inside && b.cd <= 0 && !W.blackout) {
-        b.cd = 40;
-        W.setBlackout(true);
-        BR.Audio.blackoutStart();
-        BR.UI.toast('灯光开始剧烈闪烁——蹲下，贴墙，不要跑！');
-        BR.bus.emit('blackout:start');
-        setTimeout(() => {
-          W.setBlackout(false);
-          BR.Audio.blackoutEnd();
-        }, 9000);
-      }
-    });
-    // 天花板破洞的音乐
-    if (W._funHole) {
-      W._partyT = (W._partyT || 0) - dt;
-      const d = Math.hypot(P.pos.x - W._funHole.x, P.pos.z - W._funHole.z);
-      if (d < 14 && W._partyT <= 0) {
-        W._partyT = 18;
-        BR.Audio.partyStart();
-      }
-    }
-  };
+  /* v1.5: levels.js 拆分，共享 helpers 给 levels2.js */
+  BR._lvShare = { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList };
 })();
-
-  /* ================= L2 ================= */
-  (function () {
-    const BR = window.BR, T = BR.TILE;
-    function poiList(map, type) { return (map.pois || []).filter(p => p.type === type); }
-    function wallNormal(W, tx, ty) {
-      const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      for (const [dx, dy] of dirs) if (W.isWall(tx + dx, ty + dy)) return { x: -dx, z: -dy };
-      return { x: 0, z: 1 };
-    }
-
-    BR.Levels.L2.buildContent = function (map, W) {
-      // 门（含上锁/虚空/出口）
-      for (const d of map.doors) {
-        const def = { id: d.id, tx: d.tx, ty: d.ty, axis: d.axis, locked: d.locked, label: d.label };
-        if (d.label === '虚空之门') {
-          def.solidWhenOpen = true;
-          def.prompt = () => W.doors[d.id].open ? '关上虚空之门' : '推开虚空之门';
-          def.use = (dd) => {
-            W.setDoor(d.id, !dd.open);
-            if (dd.open) { BR.UI.toast('门后只有翻涌的黑暗。你决定还是关上它。'); BR.Audio.glitch(); }
-          };
-        } else if (d.exitTo === 'L3') {
-          def.prompt = () => '推开这扇没上锁的门';
-          def.use = () => {
-            W.setDoor(d.id, true);
-            // 门缝下透出微光 + 刻痕
-            setTimeout(() => { if (BR.Game.state === 'playing') BR.Trans.play('gate'); }, 800);
-          };
-        }
-        W.addDoor(def);
-      }
-      // 出口门加刻痕标记
-      poiList(map, 'exit_door').forEach(p => {
-        W.addChunkContent(p.tx, p.ty, (group) => {
-          const m = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9),
-            new THREE.MeshBasicMaterial({ map: BR.Textures.get('stain'), transparent: true, opacity: 0.8, color: 0xcccccc }));
-          const fx = BR.tileCX(p.data.fx != null ? p.data.fx : p.tx), fz = BR.tileCZ(p.data.fy != null ? p.data.fy : p.ty);
-          m.position.set(fx, 1.5, fz);
-          m.rotation.y = Math.atan2(BR.tileCX(p.tx) - fx, BR.tileCZ(p.ty) - fz);
-          W.reg(group, m);
-          const L = new THREE.PointLight(0xfff2cc, 0.8, 8, 2);
-          L.position.set(fx, 0.25, fz);
-          W.reg(group, L);
-        });
-      });
-      // 蒸汽
-      poiList(map, 'steam').forEach((p, si) => {
-        const dx = p.data.dirx != null ? p.data.dirx : 0, dz = p.data.dirz != null ? p.data.dirz : 1, len = p.data.len || 4;
-        for (let k = 0; k < len; k += 2) {
-          W.addSteamVent('s' + si + '_' + k, p.tx + dx * k, p.ty + dz * k, dx, dz, 2);
-        }
-      });
-      // 阀门
-      poiList(map, 'valve').forEach(p => {
-        W.addChunkContent(p.tx, p.ty, (group) => {
-          const n = wallNormal(W, p.tx, p.ty);
-          const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.07, 8, 18), W.mat('metal'));
-          wheel.position.set(BR.tileCX(p.tx) + n.x * 1.25, 1.4, BR.tileCZ(p.ty) + n.z * 1.25);
-          W.reg(group, wheel);
-          const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.4, 8), W.mat('metal'));
-          stem.rotation.x = Math.PI / 2; stem.rotation.z = Math.PI / 2;
-          stem.position.copy(wheel.position); stem.position.y -= 0.1;
-          W.reg(group, stem);
-          const id = 'valve_' + p.tx + '_' + p.ty;
-          W.addInteractable({
-            id, kind: 'valve', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-            meshes: [wheel], pos: wheel.position.clone(), radius: 2.4,
-            prompt: () => '拧紧阀门（关闭附近蒸汽）',
-            canUse: () => true,
-            use: () => {
-              BR.Audio.valve();
-              wheel.rotation.z += 2.2;
-              let n2 = 0;
-              W._steamTimers = W._steamTimers || {};
-              for (const v of W.steamVents) {
-                if (Math.hypot(v.x - wheel.position.x, v.z - wheel.position.z) < 16) {
-                  W.setSteam(v.id, false);
-                  W._steamTimers[v.id] = 60;
-                  n2++;
-                }
-              }
-              BR.UI.toast(n2 ? '蒸汽暂时停了（约 60 秒），快过去！' : '附近没有蒸汽泄漏');
-            }
-          });
-        });
-      });
-      // 管线装饰：沿墙随机管道
-      W.addChunkContent(map.rooms[0].cx | 0, map.rooms[0].cy | 0, () => {});
-      // 板条箱 / 笔记
-      // 板条箱：两段式（先开盖，再瞄准箱内物资拾取），与 L0/L1 的 addCrate 共用接线
-      const crate = (pp) => {
-        const id = 'crate_' + pp.tx + '_' + pp.ty;
-        W.addChunkContent(pp.tx, pp.ty, (group) => {
-          const cm = BR.buildCrateMesh(W);
-          cm.group.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
-          W.reg(group, cm.group);
-          BR.wireCrateTwoStage(W, group, cm, {
-            id, tx: pp.tx, ty: pp.ty, item: (pp.data && pp.data.item) || 'empty'
-          });
-        });
-      };
-      poiList(map, 'crate').forEach(crate);
-      // 迁跃浆果灌木（gen.js 极低概率放置）
-      poiList(map, 'berry_bush').forEach(p => BR.addBerryBush(W, p));
-      const L2_NOTES = [
-        ['油污的字条', '阀门只能关住蒸汽一会儿。想过去就快跑，或者贴着边蹭过去。\n\n别在里面待着，会烫伤。'],
-        ['刻在墙上的字', '门缝下有光的那扇是真的。\n其他上锁的别白费力气。\n\n——前人']
-      ];
-      poiList(map, 'note').forEach((p, i) => {
-        const nn = L2_NOTES[i % L2_NOTES.length];
-        addNoteShared(W, p.tx, p.ty, nn[0], nn[1]);
-      });
-      W.objective = '找到那扇没上锁的门，前往 Level 3（小心蒸汽和管道阴影）';
-      BR.buildThinWalls(map, W);
-    };
-
-    function addNoteShared(W, tx, ty, title, body) {
-      const id = 'note_' + W.map.level + '_' + tx + '_' + ty;
-      W.addChunkContent(tx, ty, (group) => {
-        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        let n = { x: 0, z: 1 };
-        for (const [dx, dy] of dirs) if (W.isWall(tx + dx, ty + dy)) { n = { x: -dx, z: -dy }; break; }
-        const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
-          new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-        m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-        m.rotation.y = Math.atan2(n.x, n.z);
-        W.reg(group, m);
-        W.addInteractable({
-          id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
-          meshes: [m], pos: m.position.clone(), radius: 2.4,
-          prompt: () => '阅读字条', canUse: () => true,
-          use: () => {
-            BR.Audio.paper(); BR.UI.showNote(title, body);
-            if (!W.state.picked.includes(id)) { W.state.picked.push(id); BR.bus.emit('picked', { id }); }
-          }
-        });
-      });
-    }
-
-    BR.Levels.L2.onEnter = function () {
-      BR.UI.setObjective(BR.World.objective);
-      BR.Audio.setAmbient('L2');
-      BR.UI.toast('空气里有铁锈和热气的味道');
-    };
-    BR.Levels.L2.tick = function (dt) {
-      const W = BR.World;
-      BR.thinWallTick(dt);
-      if (W._steamTimers) {
-        for (const id in W._steamTimers) {
-          W._steamTimers[id] -= dt;
-          if (W._steamTimers[id] <= 0) {
-            delete W._steamTimers[id];
-            for (const v of W.steamVents) if (v.id === id && !v.on) {
-              v.on = true; v.points.visible = true;
-              BR.Audio.addLoop('steam_' + id, 'steam', v.x, v.z, 0.5);
-              BR.UI.toast('远处传来阀门松开的声音，蒸汽又冒出来了');
-            }
-          }
-        }
-      }
-    };
-  })();
-
-  /* ================= L3 ================= */
-  (function () {
-    const BR = window.BR, T = BR.TILE;
-    function poiList(map, type) { return (map.pois || []).filter(p => p.type === type); }
-    function addNoteShared(W, tx, ty, title, body) {
-      const id = 'note_' + W.map.level + '_' + tx + '_' + ty;
-      W.addChunkContent(tx, ty, (group) => {
-        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        let n = { x: 0, z: 1 };
-        for (const [dx, dy] of dirs) if (W.isWall(tx + dx, ty + dy)) { n = { x: -dx, z: -dy }; break; }
-        const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
-          new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-        m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-        m.rotation.y = Math.atan2(n.x, n.z);
-        W.reg(group, m);
-        W.addInteractable({
-          id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
-          meshes: [m], pos: m.position.clone(), radius: 2.4,
-          prompt: () => '阅读字条', canUse: () => true,
-          use: () => {
-            BR.Audio.paper(); BR.UI.showNote(title, body);
-            if (!W.state.picked.includes(id)) { W.state.picked.push(id); BR.bus.emit('picked', { id }); }
-          }
-        });
-      });
-    }
-
-    BR.Levels.L3.buildContent = function (map, W) {
-      // 电梯
-      poiList(map, 'elevator').forEach(p => {
-        const dx = p.data.dirx != null ? p.data.dirx : 0, dz = p.data.dirz != null ? p.data.dirz : 1;
-        const wx = p.tx + dx, wz = p.ty + dz;
-        W.skipWall(wx, wz);
-        W.addChunkContent(p.tx, p.ty, (group) => {
-          const wallH = W.theme.wallH;
-          const cx = BR.tileCX(wx), cz = BR.tileCZ(wz);
-          const frame = new THREE.Group();
-          frame.position.set(cx, 0, cz);
-          frame.rotation.y = Math.atan2(-dx, -dz);
-          const metal = W.mat('doorMetal');
-          const p1 = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.6, 0.14), metal);
-          p1.position.set(-0.56, 1.3, 0); frame.add(p1);
-          const p2 = p1.clone(); p2.position.x = 0.56; frame.add(p2);
-          const top = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.35, 0.5), metal);
-          top.position.set(0, 2.78, 0); frame.add(top);
-          const side1 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 2.95, 0.5), metal);
-          side1.position.set(-1.28, 1.47, 0); frame.add(side1);
-          const side2 = side1.clone(); side2.position.x = 1.28; frame.add(side2);
-          // 楼层指示灯
-          const ind = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.3),
-            new THREE.MeshBasicMaterial({ color: 0x402010 }));
-          ind.position.set(0, 3.05, 0.26); frame.add(ind);
-          W.reg(group, frame);
-          W.elevator = { panels: [p1, p2], ind };
-          // 按钮（电梯左侧墙上）
-          const bx = BR.tileCX(p.tx) + dx * 0.6 - dz * 1.6;
-          const bz = BR.tileCZ(p.ty) + dz * 0.6 + dx * 1.6;
-          const btn = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.12),
-            new THREE.MeshLambertMaterial({ color: 0x8a8f96 }));
-          btn.position.set(bx, 1.45, bz);
-          const dot = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.06, 10),
-            new THREE.MeshBasicMaterial({ color: 0xff4030 }));
-          dot.rotation.x = Math.PI / 2;
-          dot.position.set(bx, 1.45, bz + (dz !== 0 ? 0.07 : 0));
-          dot.position.x = bx + (dx !== 0 ? 0.07 : 0);
-          W.reg(group, btn); W.reg(group, dot);
-          W.addInteractable({
-            id: 'elevator_btn', kind: 'elevator', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-            meshes: [btn, dot], pos: btn.position.clone(), radius: 2.6,
-            prompt: () => '按下电梯按钮',
-            canUse: () => true,
-            use: () => {
-              const g = BR.Game.flags.gens;
-              if (g >= 3) { BR.Audio.elevatorDing(); BR.Trans.play('elevator'); }
-              else {
-                BR.Audio.doorLocked();
-                BR.UI.toast('电梯没有电。先启动全部 3 台发电机（' + g + '/3）');
-              }
-            }
-          });
-        });
-      });
-      // 发电机（电力房及周边 3 台）
-      // 放置修复：候选位若不是地板则向外环形搜索补足，保证 3 台必能放出（之前部分种子只放出 2 台导致无解）
-      poiList(map, 'power_room').forEach(p => {
-        const spots = [];
-        const seenK = {};
-        const tryAdd = (sx, sy) => {
-          const k = sx + ',' + sy;
-          if (seenK[k]) return;
-          seenK[k] = 1;
-          if (W.tile(sx, sy) !== 1) return;
-          for (const s of spots) if (Math.abs(s[0] - sx) + Math.abs(s[1] - sy) < 2) return;
-          spots.push([sx, sy]);
-        };
-        [[p.tx, p.ty], [p.tx + 2, p.ty], [p.tx - 2, p.ty], [p.tx, p.ty + 2]].forEach(([sx, sy]) => tryAdd(sx, sy));
-        for (let rad = 1; rad <= 6 && spots.length < 3; rad++)
-          for (let dx = -rad; dx <= rad && spots.length < 3; dx++)
-            for (let dy = -rad; dy <= rad && spots.length < 3; dy++) {
-              if (Math.abs(dx) + Math.abs(dy) !== rad) continue;
-              tryAdd(p.tx + dx, p.ty + dy);
-            }
-        let n = 0;
-        for (const [sx, sy] of spots.slice(0, 3)) {
-          const i = n++;
-          const id = 'gen_' + i;
-          W.addChunkContent(sx, sy, (group) => {
-            const g = new THREE.Group();
-            g.position.set(BR.tileCX(sx), 0, BR.tileCZ(sy));
-            g.rotation.y = i * 1.05;
-            const body = new THREE.Mesh(new THREE.BoxGeometry(1.35, 1.7, 0.75), W.mat('metal'));
-            body.position.y = 0.85; g.add(body);
-            const on = W.state.events.includes('gen_' + id);
-            const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.42),
-              new THREE.MeshBasicMaterial({ color: on ? 0x20ff40 : 0xff3020 }));
-            screen.position.set(0, 1.32, 0.39); g.add(screen);
-            const hum = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 0.5), W.mat('pipe'));
-            hum.position.y = 0.25; g.add(hum);
-            W.reg(group, g);
-            BR.Audio.addLoop('gen_' + id, 'machine', g.position.x, g.position.z, on ? 0.5 : 0.12);
-            W.addInteractable({
-              id: 'genbtn_' + id, kind: 'generator', chunkKey: W.chunkKeyOf(sx, sy),
-              meshes: [body], pos: g.position.clone().add(new THREE.Vector3(0, 1.3, 0)), radius: 2.8,
-              prompt: () => W.state.events.includes('gen_' + id) ? '发电机（运行中）' : '启动发电机',
-              canUse: () => !W.state.events.includes('gen_' + id),
-              use: () => {
-                W.state.events.push('gen_' + id);
-                BR.Game.flags.gens++;
-                screen.material.color.setHex(0x20ff40);
-                BR.Audio.checkpoint();
-                BR.Audio.removeLoop('gen_' + id);
-                BR.Audio.addLoop('gen_' + id, 'machine', g.position.x, g.position.z, 0.5);
-                BR.bus.emit('event', { id: 'gen_' + id });
-                if (BR.Game.flags.gens >= 3) {
-                  BR.UI.toast('电力恢复了！电梯应该能用了');
-                  BR.Audio.elevatorDing();
-                } else BR.UI.toast('发电机启动（' + BR.Game.flags.gens + '/3）');
-              }
-            });
-          });
-        }
-      });
-      // 栅栏区
-      poiList(map, 'fence_zone').forEach(p => {
-        W.addChunkContent(p.tx, p.ty, (group) => {
-          for (let a = 0; a < 8; a++) {
-            const ang = a / 8 * Math.PI * 2;
-            const f = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 2.3),
-              new THREE.MeshBasicMaterial({ map: BR.Textures.get('rustFence'), transparent: true, side: THREE.DoubleSide }));
-            f.position.set(BR.tileCX(p.tx) + Math.cos(ang) * 4.2, 1.15, BR.tileCZ(p.ty) + Math.sin(ang) * 4.2);
-            f.rotation.y = -ang + Math.PI / 2;
-            W.reg(group, f);
-          }
-        });
-      });
-      // 板条箱：两段式（先开盖，再瞄准箱内物资拾取），与 L0/L1 的 addCrate 共用接线
-      poiList(map, 'crate').forEach(pp => {
-        const id = 'crate_' + pp.tx + '_' + pp.ty;
-        W.addChunkContent(pp.tx, pp.ty, (group) => {
-          const cm = BR.buildCrateMesh(W);
-          cm.group.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
-          W.reg(group, cm.group);
-          BR.wireCrateTwoStage(W, group, cm, {
-            id, tx: pp.tx, ty: pp.ty, item: (pp.data && pp.data.item) || 'empty'
-          });
-        });
-      });
-      // 迁跃浆果灌木（gen.js 极低概率放置）
-      poiList(map, 'berry_bush').forEach(p => BR.addBerryBush(W, p));
-      const L3_NOTES = [
-        ['工程师日志', '三台发电机必须全开，电梯才有电。\n\n别一台一台试——全开。\n\n还有：跑起来之前，先想好往哪儿跑。'],
-        ['血字', '它听得见。\n\n别出声。']
-      ];
-      poiList(map, 'note').forEach((p, i) => {
-        const nn = L3_NOTES[i % L3_NOTES.length];
-        addNoteShared(W, p.tx, p.ty, nn[0], nn[1]);
-      });
-      W.objective = '启动 3 台发电机，然后乘坐电梯离开';
-      BR.buildThinWalls(map, W);
-    };
-
-    BR.Levels.L3.onEnter = function () {
-      BR.UI.setObjective(BR.World.objective);
-      BR.Audio.setAmbient('L3');
-      BR.UI.toast('远处传来发电机的轰鸣，还有……别的声音');
-    };
-    BR.Levels.L3.tick = function (dt) {
-      BR.thinWallTick(dt);
-    };
-  })();
-
-  /* ================= FUN ================= */
-  (function () {
-    const BR = window.BR, T = BR.TILE;
-    function poiList(map, type) { return (map.pois || []).filter(p => p.type === type); }
-
-    BR.Levels.FUN.buildContent = function (map, W) {
-      // 员工通道门
-      for (const d of map.doors) {
-        const def = { id: d.id, tx: d.tx, ty: d.ty, axis: d.axis, locked: false, label: d.label };
-        def.prompt = () => BR.Game.flags.clues >= 2 ? '推开员工通道的门' : '🔒 员工通道（锁住了）';
-        def.use = () => {
-          const c = BR.Game.flags.clues;
-          if (c >= 2) {
-            W.setDoor(d.id, true);
-            setTimeout(() => { if (BR.Game.state === 'playing') BR.Trans.play('fun_escape'); }, 800);
-          } else {
-            BR.Audio.doorLocked();
-            BR.UI.toast('门纹丝不动。派对里一定藏着离开的线索……（' + c + '/2）');
-          }
-        };
-        W.addDoor(def);
-      }
-      // 线索字条
-      const CLUES = [
-        ['藏在气球里的字条', '他们说这里没有出口。=)\n\n但清洁工说：员工通道的锁，认得"清醒"的人。\n再找一条线索，门就会认你。'],
-        ['蛋糕底下的字条', '数过了吗？气球有 13 个。\n\n派对永远不会结束……除非你还记得自己是谁。\n\n带着两条线索，去找那扇不起眼的门。'],
-        ['镜子上的口红字', '笑一个 =)\n\n你已经很接近了。']
-      ];
-      poiList(map, 'clue').forEach((p, i) => {
-        const cc = CLUES[i % CLUES.length];
-        const id = 'clue_' + W.map.level + '_' + p.data.clueId;
-        W.addChunkContent(p.tx, p.ty, (group) => {
-          const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
-            new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-          const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-          let n = { x: 0, z: 1 };
-          for (const [dx, dy] of dirs) if (W.isWall(p.tx + dx, p.ty + dy)) { n = { x: -dx, z: -dy }; break; }
-          m.position.set(BR.tileCX(p.tx) + n.x * 1.1, 1.5, BR.tileCZ(p.ty) + n.z * 1.1);
-          m.rotation.y = Math.atan2(n.x, n.z);
-          W.reg(group, m);
-          W.addInteractable({
-            id, kind: 'clue', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-            meshes: [m], pos: m.position.clone(), radius: 2.4,
-            prompt: () => '阅读字条',
-            canUse: () => true,
-            use: () => {
-              BR.Audio.paper();
-              BR.UI.showNote(cc[0], cc[1]);
-              if (!W.state.events.includes('clue_' + id)) {
-                W.state.events.push('clue_' + id);
-                BR.Game.flags.clues++;
-                BR.UI.toast('你记下了一条离开的线索（' + BR.Game.flags.clues + '/2）');
-                BR.bus.emit('event', { id: 'clue_' + id });
-              }
-            }
-          });
-        });
-      });
-      // 改编声明字条（出生点）
-      poiList(map, 'spawn').forEach(p => {
-        const id = 'note_fun_meta';
-        W.addChunkContent(p.tx + 1, p.ty, (group) => {
-          if (W.tile(p.tx + 1, p.ty) !== 1) return;
-          const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
-            new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-          m.position.set(BR.tileCX(p.tx + 1), 1.5, BR.tileCZ(p.ty));
-          m.rotation.y = Math.PI;
-          W.reg(group, m);
-          W.addInteractable({
-            id, kind: 'note', chunkKey: W.chunkKeyOf(p.tx + 1, p.ty),
-            meshes: [m], pos: m.position.clone(), radius: 2.4,
-            prompt: () => '阅读褪色的入场券', canUse: () => true,
-            use: () => {
-              BR.Audio.paper();
-              BR.UI.showNote('褪色的入场券',
-                '（游戏改编说明）\n\n按后室原作设定，Level Fun 没有可靠的出口。\n本作中可凭两条线索离开的"员工通道"，为游戏性改编，并非原作事实。\n\n——开发组');
-              if (!W.state.picked.includes(id)) { W.state.picked.push(id); BR.bus.emit('picked', { id }); }
-            }
-          });
-        });
-      });
-      // 蛋糕桌
-      poiList(map, 'cake_table').forEach(p => {
-        W.addChunkContent(p.tx, p.ty, (group) => {
-          const g = new THREE.Group();
-          const x = BR.tileCX(p.tx), z = BR.tileCZ(p.ty);
-          g.position.set(x, 0, z);
-          const top = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 1.1),
-            new THREE.MeshLambertMaterial({ color: 0xf0e8f0 }));
-          top.position.y = 0.78; g.add(top);
-          [[-0.8, -0.45], [0.8, -0.45], [-0.8, 0.45], [0.8, 0.45]].forEach(([lx, lz]) => {
-            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.78, 0.09),
-              new THREE.MeshLambertMaterial({ color: 0x8a7a8a }));
-            leg.position.set(lx, 0.39, lz); g.add(leg);
-          });
-          const cake = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.34, 0.26, 16),
-            new THREE.MeshLambertMaterial({ color: 0xfff0f5 }));
-          cake.position.y = 0.96; g.add(cake);
-          const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.2, 8),
-            new THREE.MeshBasicMaterial({ color: 0xffd0e0 }));
-          candle.position.y = 1.15; g.add(candle);
-          W.reg(group, g);
-          // 气球
-          const rng = new BR.RNG(BR.hashSeed('balloon' + p.tx + p.ty));
-          const cols = [0xff5060, 0x50a0ff, 0xffd050, 0x60e080, 0xc080ff];
-          for (let i = 0; i < 6; i++) {
-            const b = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10),
-              new THREE.MeshLambertMaterial({ color: cols[i % cols.length] }));
-            const a = rng.next() * 6.28, r = 1.6 + rng.next() * 1.6;
-            b.position.set(x + Math.cos(a) * r, 2.2 + rng.next() * 0.8, z + Math.sin(a) * r);
-            W.reg(group, b);
-            const str = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 1.4, 4),
-              new THREE.MeshBasicMaterial({ color: 0x888888 }));
-            str.position.set(b.position.x, b.position.y - 0.9, b.position.z);
-            W.reg(group, str);
-          }
-        });
-      });
-      // 派对海报（随机贴几张）
-      (function () {
-        const rng = new BR.RNG(BR.hashSeed('posters' + map.seed));
-        const rooms = (map.rooms || []).slice(1, 6);
-        rooms.forEach(r => {
-          for (let i = 0; i < 2; i++) {
-            const tx = Math.round(r.cx) + rng.int(-2, 2), ty = Math.round(r.cy) + rng.int(-2, 2);
-            if (W.tile(tx, ty) !== 1) return;
-            const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-            let n = null;
-            for (const [dx, dy] of dirs) if (W.isWall(tx + dx, ty + dy)) { n = { x: -dx, z: -dy }; break; }
-            if (!n) return;
-            W.addChunkContent(tx, ty, (group) => {
-              const m = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.4),
-                new THREE.MeshBasicMaterial({ map: BR.Textures.get('posterFun') }));
-              m.position.set(BR.tileCX(tx) + n.x * (T / 2 - 0.04), 1.7, BR.tileCZ(ty) + n.z * (T / 2 - 0.04));
-              m.rotation.y = Math.atan2(n.x, n.z);
-              W.reg(group, m);
-            });
-          }
-        });
-      })();
-      // ===== Systems A：七色滑梯区（本游戏原创机制，追加）=====
-      // LORE：后室原作中 Level Fun 没有滑梯出口；七色滑梯为本游戏原创的固定映射出口机制。
-      // 映射（写死常量，见 BR.Cutout.SLIDE_MAP）：红→L0 / 橙→L37 / 黄→L11 / 绿→L1 /
-      //   青→L7 / 蓝→L94(夜间抵达，危险) / 紫→L188。游戏内用海报/字条/痕迹留线索。
-      (function buildSlideRoom() {
-        const spawnR = map.rooms[0];
-        const dist = r => Math.hypot(r.cx - spawnR.cx, r.cy - spawnR.cy);
-        // 派对区深处：离出生点最远的 3 个房间里取最大的
-        const cands = map.rooms.slice(1).sort((a, b) => dist(b) - dist(a)).slice(0, 3)
-          .sort((a, b) => (b.w * b.h) - (a.w * a.h));
-        const room = cands[0] || map.rooms[1] || map.rooms[0];
-        const rx0 = room.x * T, rz0 = room.y * T, wM = room.w * T, hM = room.h * T;
-        const ctx = Math.round(room.cx), cty = Math.round(room.cy);
-
-        const defs = [
-          { color: 'red',    c: 0xd8342c, shape: 'straight', hTop: 2.0, len: 5.2, w: 1.1 },
-          { color: 'orange', c: 0xe8862a, shape: 'wavy',     hTop: 1.6, len: 5.2, w: 1.1 },
-          { color: 'yellow', c: 0xe8c52a, shape: 'curved',   hTop: 1.8, len: 5.6, w: 1.0 },
-          { color: 'green',  c: 0x3aa655, shape: 'wide',     hTop: 1.5, len: 5.0, w: 1.7 },
-          { color: 'cyan',   c: 0x2aa8b8, shape: 'tube',     hTop: 1.9, len: 5.4, w: 1.2 },
-          { color: 'blue',   c: 0x2a5ad8, shape: 'tall',     hTop: 2.6, len: 6.5, w: 1.0 },
-          { color: 'purple', c: 0x8a3ad8, shape: 'bumpy',    hTop: 1.8, len: 5.2, w: 0.9 }
-        ];
-        // 每条滑梯不同的进入音效
-        const SLIDE_SND = {
-          red: () => BR.Audio.dropRumble(1.0),
-          orange: () => BR.Audio.splash(),
-          yellow: () => BR.Audio.paper(),
-          green: () => BR.Audio.checkpoint(),
-          cyan: () => BR.Audio.splash(),
-          blue: () => BR.Audio.flickerBuzz(),
-          purple: () => BR.Audio.glitch()
-        };
-        const perRow = (wM >= 19) ? 7 : 4;
-        const rows = Math.ceil(defs.length / perRow);
-        const spacing = Math.min(2.6, (wM - 3) / perRow);
-        const rowDepth = (hM - 4.5) / rows;
-
-        function textTex(lines, fg, bg) {
-          const cv = document.createElement('canvas');
-          cv.width = 256; cv.height = 160;
-          const c2 = cv.getContext('2d');
-          c2.fillStyle = bg || '#20242a'; c2.fillRect(0, 0, 256, 160);
-          c2.fillStyle = fg || '#e8e2d2';
-          c2.textAlign = 'center'; c2.textBaseline = 'middle';
-          lines.forEach((ln, i) => {
-            c2.font = (ln.big ? 'bold 44px' : '24px') + ' sans-serif';
-            c2.fillText(ln.t, 128, 50 + i * 52);
-          });
-          return new THREE.CanvasTexture(cv);
-        }
-        // 滑道段：从 (z0,y0) 到 (z1,y1) 的斜面板
-        function chuteSeg(parent, sx, z0, y0, z1, y1, w, mat, yaw) {
-          const dz = z1 - z0, len = Math.hypot(dz, y1 - y0);
-          const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.14, len + 0.15), mat);
-          m.position.set(sx, (y0 + y1) / 2, (z0 + z1) / 2);
-          m.rotation.x = Math.atan2(y0 - y1, dz);
-          if (yaw) m.rotation.y = yaw;
-          parent.add(m);
-          return m;
-        }
-        function rails(parent, sx, z0, y0, z1, y1, w, mat, h, tilt) {
-          [-1, 1].forEach(s => {
-            const dz = z1 - z0, len = Math.hypot(dz, y1 - y0);
-            const m = new THREE.Mesh(new THREE.BoxGeometry(0.08, h || 0.35, len), mat);
-            m.position.set(sx + s * (w / 2), (y0 + y1) / 2 + (h || 0.35) / 2, (z0 + z1) / 2);
-            m.rotation.x = Math.atan2(y0 - y1, dz);
-            if (tilt) m.rotation.z = -s * tilt;
-            parent.add(m);
-          });
-        }
-
-        W.addChunkContent(ctx, cty, (group) => {
-          const g = new THREE.Group();
-          W.reg(group, g);
-          const built = []; // 供交互射线用
-          defs.forEach((def, idx) => {
-            const row = Math.floor(idx / perRow), col = idx % perRow;
-            const n = Math.min(perRow, defs.length - row * perRow);
-            const sx = rx0 + (wM - (n - 1) * spacing) / 2 + col * spacing;
-            const zTop = rz0 + 2.2 + row * rowDepth;
-            const len = Math.min(def.len, rowDepth - 2.2);
-            const zBot = zTop + len;
-            const mat = new THREE.MeshLambertMaterial({ color: def.c });
-            const dark = new THREE.MeshLambertMaterial({ color: 0x2a2d33 });
-            // 入口平台
-            const plat = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.25, 1.5), dark);
-            plat.position.set(sx, def.hTop - 0.12, zTop - 0.9);
-            g.add(plat); built.push(plat);
-            // 滑道（按形状）
-            const yB = 0.35;
-            if (def.shape === 'straight' || def.shape === 'wide' || def.shape === 'tall') {
-              chuteSeg(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
-              rails(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
-            } else if (def.shape === 'wavy') {
-              const segs = 3;
-              for (let i = 0; i < segs; i++) {
-                const zz0 = zTop + len * i / segs, zz1 = zTop + len * (i + 1) / segs;
-                const yy0 = def.hTop + (yB - def.hTop) * i / segs, yy1 = def.hTop + (yB - def.hTop) * (i + 1) / segs;
-                const xo = Math.sin(i * 1.2) * 0.35;
-                chuteSeg(g, sx + xo, zz0, yy0, zz1, yy1, def.w, mat, (i % 2 ? -1 : 1) * 0.22);
-              }
-            } else if (def.shape === 'curved') {
-              const segs = 4;
-              let px = sx, pz = zTop, py = def.hTop, yaw = 0;
-              for (let i = 0; i < segs; i++) {
-                yaw += 0.24;
-                const sl = len / segs;
-                const nx = px + Math.sin(yaw) * sl, nz = pz + Math.cos(yaw) * sl;
-                const ny = def.hTop + (yB - def.hTop) * (i + 1) / segs;
-                const m = chuteSeg(g, (px + nx) / 2, pz, py, nz, ny, def.w, mat);
-                m.rotation.y = yaw * 0.5;
-                px = nx; pz = nz; py = ny;
-              }
-            } else if (def.shape === 'tube') {
-              // U 形槽：底板 + 外张侧壁，近似管道滑梯
-              chuteSeg(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
-              rails(g, sx, zTop, def.hTop, zBot, yB, def.w, mat, 0.55, 0.35);
-            } else { // bumpy
-              const segs = 4;
-              for (let i = 0; i < segs; i++) {
-                const zz0 = zTop + len * i / segs, zz1 = zTop + len * (i + 1) / segs;
-                let yy0 = def.hTop + (yB - def.hTop) * i / segs, yy1 = def.hTop + (yB - def.hTop) * (i + 1) / segs;
-                if (i % 2 === 1) { yy0 += 0.1; yy1 += 0.1; }
-                chuteSeg(g, sx, zz0, yy0, zz1, yy1, def.w, mat);
-              }
-              rails(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
-            }
-            // 入口彩色光带（黑暗中辨认颜色）
-            const strip = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.1),
-              new THREE.MeshBasicMaterial({ color: def.c }));
-            strip.position.set(sx, def.hTop + 0.9, zTop - 0.9);
-            g.add(strip);
-            // —— 线索（按 §2 映射表）——
-            const cxHint = sx + 1.15;
-            const hintY = 1.4;
-            if (def.color === 'red') {
-              // 褪色海报"回家"
-              const pm = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.25),
-                new THREE.MeshBasicMaterial({ map: textTex([{ t: '回', big: true }, { t: '家', big: true }], '#c8b89a', '#3a3230'), transparent: true, opacity: 0.9 }));
-              pm.position.set(cxHint, hintY, zTop - 0.9); pm.rotation.y = -Math.PI / 2;
-              g.add(pm);
-            } else if (def.color === 'orange') {
-              // 梯口水渍
-              const st = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.3),
-                new THREE.MeshBasicMaterial({ color: 0x1a3a55, transparent: true, opacity: 0.55 }));
-              st.rotation.x = -Math.PI / 2; st.position.set(cxHint, 0.03, zTop - 0.4);
-              g.add(st);
-            } else if (def.color === 'yellow') {
-              // 城市明信片（可读）
-              const pc = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.38),
-                new THREE.MeshBasicMaterial({ map: textTex([{ t: '11' }], '#d8b13a', '#2a3a5a') }));
-              pc.position.set(cxHint, hintY, zTop - 0.9); pc.rotation.y = -Math.PI / 2;
-              g.add(pc); built.push(pc);
-              addSlideNote('slide_pc', cxHint, zTop - 0.9, pc, '城市明信片',
-                '高楼、街道、电车……\n\n背面潦草地写着：11');
-            } else if (def.color === 'green') {
-              // 绿色荧光标记
-              const mk = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12),
-                new THREE.MeshBasicMaterial({ color: 0x39ff6a }));
-              mk.position.set(cxHint, hintY, zTop - 0.9);
-              g.add(mk);
-            } else if (def.color === 'cyan') {
-              // 咸腥水渍 + 贝壳
-              const st = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.3),
-                new THREE.MeshBasicMaterial({ color: 0x1a4a4a, transparent: true, opacity: 0.55 }));
-              st.rotation.x = -Math.PI / 2; st.position.set(cxHint, 0.03, zTop - 0.4);
-              g.add(st);
-              for (let i = 0; i < 3; i++) {
-                const sh = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6),
-                  new THREE.MeshLambertMaterial({ color: 0xe8e0d0 }));
-                sh.scale.y = 0.5;
-                sh.position.set(cxHint + (i - 1) * 0.25, 0.05, zTop + 0.15);
-                g.add(sh);
-              }
-            } else if (def.color === 'blue') {
-              // 星空贴纸 + 警告字条（夜间危险落点）
-              const cv = document.createElement('canvas');
-              cv.width = 128; cv.height = 128;
-              const c2 = cv.getContext('2d');
-              c2.fillStyle = '#0a1030'; c2.fillRect(0, 0, 128, 128);
-              c2.fillStyle = '#fff';
-              const srng = new BR.RNG(BR.hashSeed('stars' + sx));
-              for (let i = 0; i < 40; i++) c2.fillRect(srng.next() * 128, srng.next() * 128, 2, 2);
-              const sp = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8),
-                new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }));
-              sp.position.set(cxHint, hintY, zTop - 0.9); sp.rotation.y = -Math.PI / 2;
-              g.add(sp); built.push(sp);
-              addSlideNote('slide_blue_warn', cxHint, zTop - 0.2, sp, '警告字条',
-                '这条滑梯通向夜晚。\n\n做好准备再滑。');
-            } else if (def.color === 'purple') {
-              // 窗框碎片
-              const fm = new THREE.MeshLambertMaterial({ color: 0x6a5a48 });
-              [[-0.3, 0], [0.3, 0]].forEach(([ox]) => {
-                const v = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.9, 0.08), fm);
-                v.position.set(cxHint + ox, 0.45, zTop - 0.9); g.add(v);
-              });
-              [[-0.25], [0.25]].forEach(([oy]) => {
-                const h = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.08, 0.08), fm);
-                h.position.set(cxHint, 0.45 + oy, zTop - 0.9); g.add(h);
-              });
-            }
-            // —— 滑梯入口交互 ——
-            const dest = BR.Cutout.SLIDE_MAP[def.color].to;
-            const cname = BR.Cutout.SLIDE_MAP[def.color].name;
-            const entry = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5),
-              new THREE.MeshBasicMaterial({ color: def.c, transparent: true, opacity: 0.0, depthWrite: false }));
-            entry.position.set(sx + 1.2, 1.4, zTop - 0.9);
-            g.add(entry);
-            W.addInteractable({
-              id: 'slide_' + def.color, kind: 'slide',
-              chunkKey: W.chunkKeyOf(ctx, cty),
-              meshes: [entry, plat], pos: entry.position.clone(), radius: 3.2,
-              prompt: () => '爬上' + cname + '色滑梯',
-              canUse: () => !BR.Cutout.busy,
-              use: () => {
-                if (BR.Cutout.busy) return;
-                SLIDE_SND[def.color]();
-                BR.UI.toast('你滑进了' + cname + '色滑梯……', 1500);
-                BR.Cutout.travel(dest, { kind: 'slide' });
-              }
-            });
-          });
-          // 说明书（房间入口处，原创机制声明）
-          const nx0 = rx0 + wM / 2, nz0 = rz0 + 1.2;
-          const nm = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
-            new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-          nm.position.set(nx0, 1.5, nz0);
-          nm.rotation.y = Math.PI;
-          g.add(nm);
-          W.addInteractable({
-            id: 'slide_meta', kind: 'note',
-            chunkKey: W.chunkKeyOf(ctx, cty),
-            meshes: [nm], pos: nm.position.clone(), radius: 2.4,
-            prompt: () => '阅读褪色的说明书', canUse: () => true,
-            use: () => {
-              BR.Audio.paper();
-              BR.UI.showNote('褪色的说明书',
-                '（游戏原创机制说明）\n\n七色滑梯，派对区深处的固定出口。\n\n每条滑梯通向一个固定的楼层，颜色就是线索：\n红→家，橙→水，黄→城，绿→宜居，青→深海，蓝→夜晚，紫→窗。\n\n看好再滑。=)\n\n——开发组');
-            }
-          });
-          function addSlideNote(id, hx, hz, mesh, title, body) {
-            W.addInteractable({
-              id: id, kind: 'note',
-              chunkKey: W.chunkKeyOf(ctx, cty),
-              meshes: [mesh], pos: new THREE.Vector3(hx, 1.4, hz), radius: 2.4,
-              prompt: () => '阅读' + title, canUse: () => true,
-              use: () => { BR.Audio.paper(); BR.UI.showNote(title, body); }
-            });
-          }
-        });
-      })();
-      W.objective = '……留下来陪我们吧 =)';
-      BR.buildThinWalls(map, W);
-    };
-
-    BR.Levels.FUN.onEnter = function () {
-      BR.UI.setObjective(BR.World.objective);
-      BR.Audio.setAmbient('FUN');
-      BR.Audio.partyStart();
-      setTimeout(() => BR.UI.toast('派对客们注意到你了 =)'), 2500);
-    };
-    BR.Levels.FUN.tick = function (dt) {
-      const W = BR.World;
-      BR.thinWallTick(dt);
-      W._partyT = (W._partyT || 0) - dt;
-      if (W._partyT <= 0 && BR.Game.state === 'playing') {
-        W._partyT = 26;
-        BR.Audio.partyStart();
-      }
-    };
-  })();
