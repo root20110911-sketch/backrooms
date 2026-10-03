@@ -86,14 +86,55 @@
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="8" width="11" height="12" rx="2"/><path d="M10.5 8V5.5h3V8"/><path d="M12.8 10.5 10.8 14h3l-2 3.5"/></svg>'
     }
   };
+  // W9：新道具注册表（js/items.js）的显示信息合并进来；老 13 种保持原样不动
+  if (BR.Items && BR.Items.DEFS) {
+    for (const id in BR.Items.DEFS) {
+      if (!ITEM_INFO[id]) {
+        const d = BR.Items.DEFS[id];
+        ITEM_INFO[id] = { name: d.name, desc: d.desc, icon: d.icon };
+      }
+    }
+  }
 
   U.init = function () {
+    this.ensureShopPanel(); // M.E.G. 交易站面板（index.html 不许动，动态创建；必须在 cacheEls 之前）
     this.cacheEls();
     this.ensureHungerBar();
+    this.ensureStaminaBar();
     this.renderKeyHint();
     this.renderKeysTable();
     this.bindButtons();
     this.renderSettings();
+  };
+  // 商店面板 DOM（index.html 不许动，这里动态创建；cacheEls 统一缓存）
+  U.ensureShopPanel = function () {
+    if (BR.$('screen-shop')) return;
+    const d = document.createElement('div');
+    d.id = 'screen-shop';
+    d.className = 'screen';
+    d.innerHTML =
+      '<div class="panel shop-panel">' +
+      '<h2>M.E.G. 前哨交易站 <span class="shop-wallet">杏仁水 ×<b id="shop-almond">0</b></span></h2>' +
+      '<div class="shop-sub" id="shop-sub">队员：「明码标价，童叟无欺。杏仁水是硬通货。」</div>' +
+      '<div id="shop-list"></div>' +
+      '<button id="btn-shop-close" class="big">离开（Esc）</button>' +
+      '</div>';
+    document.body.appendChild(d);
+  };
+  // W9：耐力条 DOM（index.html 不许动，这里动态创建；疾跑时直观可见）
+  U.ensureStaminaBar = function () {
+    if (!this.$hud || BR.$('stam-wrap')) return;
+    const w = document.createElement('div');
+    w.id = 'stam-wrap';
+    w.style.cssText = 'position:absolute;left:12px;top:calc(80px + env(safe-area-inset-top));' +
+      'width:132px;height:6px;background:rgba(10,14,10,0.72);' +
+      'border:1px solid #3a4a34;border-radius:3px;overflow:hidden;';
+    const f = document.createElement('div');
+    f.id = 'stam-fill';
+    f.style.cssText = 'height:100%;width:100%;' +
+      'background:linear-gradient(90deg,#5a9a3a,#9ae87a);transition:width 0.2s;';
+    w.appendChild(f);
+    this.$hud.appendChild(w);
   };
   // 饥饿条 DOM（index.html 不许动，这里动态创建；桌面/触屏都显示）
   U.ensureHungerBar = function () {
@@ -109,6 +150,7 @@
     ['screen-title', 'screen-how', 'screen-loading', 'hud', 'screen-pause',
      'screen-note', 'screen-death', 'screen-ending', 'screen-trans',
      'screen-backpack', 'bp-grid', 'bp-detail', 'btn-bp-close', 'bp-key-hint',
+     'screen-shop', 'shop-list', 'shop-almond', 'btn-shop-close', 'shop-sub',
      'prompt', 'objective', 'inv-bar', 'toasts', 'debug',
      'note-title', 'note-body', 'death-cause', 'ending-title', 'ending-body',
      'trans-text', 'seed-line', 'btn-continue', 'set-sens', 'set-vol',
@@ -119,7 +161,8 @@
 
   U.show = function (name) {
     ['screen-title', 'screen-how', 'screen-loading', 'screen-pause',
-     'screen-note', 'screen-death', 'screen-ending', 'screen-backpack'].forEach(s => {
+     'screen-note', 'screen-death', 'screen-ending', 'screen-backpack',
+     'screen-shop'].forEach(s => {
       const el = this['$' + s.replace(/-/g, '_')];
       if (el) el.classList.toggle('show', s === name);
     });
@@ -178,16 +221,42 @@
         : `<span class="ct">${n}</span>`;
       // 手电筒按持有状态决定是否半透明（它不占 inv 数量）
       const dim = id === 'flashlight' ? !BR.Player.hasFlashlight : !n;
-      html += `<div class="inv-item${dim ? ' empty' : ''}${active ? ' on' : ''}" data-id="${id}">` +
+      // v1.5 W8：快捷栏选中高亮（数字键 1-5 / 点选）
+      const sel = this._slotSel === id ? ' sel' : '';
+      html += `<div class="inv-item${dim ? ' empty' : ''}${active ? ' on' : ''}${sel}" data-id="${id}">` +
         `<span class="ic">${info.icon}</span><span class="nm">${info.name}</span>` + ct + `</div>`;
     });
     this.$inv_bar.innerHTML = html;
+    const self = this;
     this.$inv_bar.querySelectorAll('.inv-item').forEach(el => {
-      el.addEventListener('click', () => this.useItem(el.dataset.id));
-      el.addEventListener('touchstart', (e) => { e.stopPropagation(); this.useItem(el.dataset.id); }, { passive: true });
+      // v1.5 W8：点 HUD 物品栏 = 选中（再按 Q/道具按钮使用）；原来是点即用，
+      // 改为"选中"语义，与数字键快捷栏选择统一。选中后再点一次 = 直接使用。
+      const tap = () => {
+        if (self._slotSel === el.dataset.id) self.useItem(el.dataset.id);
+        else self.selectSlot(U.INV_ORDER.indexOf(el.dataset.id) + 1);
+      };
+      el.addEventListener('click', tap);
+      // 触屏：touchstart 直接消费并阻止合成 click，避免同一次点击消耗两个道具
+      el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); tap(); }, { passive: false });
     });
     // 血条 / 理智条 / 饥饿条
     this.updateBars();
+  };
+  // v1.5 W8：快捷栏（HUD 物品栏）顺序 + 选中态。数字键 1-5 / 点物品栏 调用。
+  U.INV_ORDER = ['almond', 'bandage', 'flashlight', 'berry', 'food'];
+  U._slotSel = null; // 快捷栏当前选中的道具 id（Q/道具按钮使用它）
+  U.selectSlot = function (n) {
+    const id = U.INV_ORDER[n - 1];
+    if (!id || !ITEM_INFO[id]) return;
+    const inv = (BR.Game && BR.Game.inv) || {};
+    const P = BR.Player;
+    const has = id === 'flashlight' ? !!(P && P.hasFlashlight) : (inv[id] || 0) > 0;
+    if (!has) { this.toast('没有' + ITEM_INFO[id].name); return; }
+    // 再按一次已选中的 = 取消选中
+    this._slotSel = (this._slotSel === id) ? null : id;
+    if (this._slotSel) this.toast(ITEM_INFO[id].name + '已选中，按 ' +
+      (BR.Input ? BR.Input.bindingLabel('useItem') : 'Q') + ' 使用');
+    this.updateInv();
   };
   // 轻量血条/理智条/饥饿条刷新（主循环节流调用，updateInv 里复用）
   U.updateBars = function () {
@@ -199,20 +268,38 @@
     if (sf) { sf.style.width = san + '%'; sf.classList.toggle('low', san < 30); }
     const hun = BR.Player.hunger != null ? BR.Player.hunger : 100;
     const uf = BR.$('hun-fill');
-    if (uf) { uf.style.width = hun + '%'; uf.classList.toggle('low', hun < 25); }
+    if (uf) {
+      uf.style.width = hun + '%';
+      // E：饥饿档位警告——≤33 虚弱档红闪；归零（≤0）红闪加强
+      uf.classList.toggle('weak', hun <= 33 && hun > 0);
+      uf.classList.toggle('crit', hun <= 0);
+      uf.classList.remove('low'); // 旧 <25 档位已由 .weak 接管
+    }
     BR.$('dmg-vignette').style.opacity = hp < 35 ? (0.65 - hp / 60) : 0;
+    // W9：耐力条
+    const stf = BR.$('stam-fill');
+    if (stf && BR.Player) {
+      const smax = (BR.Items && BR.Items.CONFIG.stamina.max) || 100;
+      stf.style.width = Math.max(0, Math.min(100, BR.Player.stamina / smax * 100)) + '%';
+    }
+    // G（v1.3）：触屏按钮高亮与玩家状态同步（蹲下/第三人称/手电/疾跑）
+    if (BR.Input && BR.Input.syncTouchStates) BR.Input.syncTouchStates();
   };
   // 低理智暗角（player.update 每帧调用）
+  // Systems C-A：叠加轻度视线模糊（0~1.8px，随理智线性渐变；设置 sanityfx='off' 可关闭）
   U.setSanityFx = function (sanity) {
     const el = BR.$('sanity-vignette');
     if (!el) return;
     el.style.opacity = sanity < 40 ? (0.55 * (1 - sanity / 40)).toFixed(2) : 0;
+    if (BR.SanityEvents && BR.SanityEvents.applyBlur) BR.SanityEvents.applyBlur(sanity);
   };
   // 迁跃浆果目的地：候选池权重与裂隙系统同表（EXPANSION_PLAN §2），排除当前关；
   // 用 seed + ':berry:' + count 派生 RNG（可复现），count = 此前食用浆果次数。
   // 未注册的关卡（扩建文件未接入时）自动跳过，保证食用不落空。
   const BERRY_WEIGHTS = [['L0', 15], ['L1', 15], ['L11', 12], ['L37', 12],
-    ['L188', 10], ['L94', 10], ['L7', 8], ['L2', 8], ['L3', 6], ['FUN', 4]];
+    ['L188', 10], ['L7', 8], ['L2', 8], ['L3', 6], ['FUN', 4]];
+  // v1.5 W6：L94 从此表移除（94→! 替换）；实际候选走 BR.Cutout.pickRandomDest，
+  // Level !（'bang'）由 lv_bang.js 经 registerRiftDest 登记，权重 10。
   U.countBerryEvents = function () {
     // 跨关单调计数：flags.berryCount 在食用后递增、存档保留。
     // （修 bug：原来按本关 ws.events 计数，跨关后新关 events 为空，count 永远从 0 开始导致落点重复）
@@ -222,18 +309,17 @@
     const G = BR.Game;
     const count = this.countBerryEvents();
     const rng = new BR.RNG(BR.hashSeed((G.seed || 0) + ':berry:' + count));
-    const pool = [];
-    for (const [lv, w] of BERRY_WEIGHTS) {
-      if (lv === G.level) continue;                       // 排除当前关
-      if (BR.Levels && !BR.Levels[lv]) continue;          // 关卡未接入时跳过
-      for (let i = 0; i < w; i++) pool.push(lv);
-    }
-    const dest = pool.length ? pool[rng.int(0, pool.length - 1)] : 'L0';
+    // W10：与裂隙共用候选池（仅已完成且合规；尊重 flags.bangEscaped）；
+    // 权重表/顺序与旧 BERRY_WEIGHTS 一致，同种子同 count 落点不变
+    const dest = (BR.Cutout && BR.Cutout.pickRandomDest) ?
+      BR.Cutout.pickRandomDest(G.level, rng) : 'L0';
     return { dest, count };
   };
   U.useItem = function (id) {
     const G = BR.Game, P = BR.Player;
     if (!G || !P || G.state !== 'playing') return;
+    // W9：新道具（js/items.js 注册表）走统一逻辑；返回 true 表示已处理
+    if (BR.Items && BR.Items.handle(id)) return;
     const inv = G.inv;
     if (id === 'flashlight') { P.toggleFlashlight(); this.updateInv(); return; }
     if (!(inv[id] > 0)) { this.toast('没有' + ITEM_INFO[id].name); return; }
@@ -339,31 +425,54 @@
       BR.bus.emit('noise', { level: 1 });
       BR.Audio.drink();
       this.toast('这水味道不对——又苦又涩！理智-25，生命-5，还发出了巨大的声响……', 3600);
-      if (P.hp <= 0) { P.hp = 0; BR.bus.emit('died', { cause: 'cashew' }); }
+      if (P.hp <= 0) { P.hp = 0; P.setState('disabled'); BR.bus.emit('died', { cause: 'cashew' }); }
     } else if (id === 'battery') {
       // 电池：手电电量 +60（上限 100）
-      if (P.flashBat >= 100) { this.toast('手电电池已满'); return; }
+      // W9 扩展：手电已满、且持有未满电的水下照明灯时，给照明灯充电（同样 +60，上限 100）；
+      // 两者都满才拒绝（原"手电电池已满"语义保留）
+      const dl = P.diveLight;
+      const needFlash = P.flashBat < 100;
+      const needDive = !!(dl && dl.charge < 100);
+      if (!needFlash && !needDive) { this.toast('手电电池已满'); return; }
       inv.battery--;
-      P.flashBat = Math.min(100, P.flashBat + 60);
       BR.Audio.uiClick();
-      this.toast('换上新电池，手电电量恢复到 ' + Math.round(P.flashBat) + '%');
+      if (needFlash) {
+        P.flashBat = Math.min(100, P.flashBat + 60);
+        this.toast('换上新电池，手电电量恢复到 ' + Math.round(P.flashBat) + '%');
+      } else {
+        dl.charge = Math.min(100, dl.charge + 60);
+        this.toast('给水下照明灯充电，电量恢复到 ' + Math.round(dl.charge) + '%');
+      }
     }
+    // G（v1.4）：道具消耗/状态变化后立刻落盘——刷新页面不再恢复已消耗的道具。
+    // 提前 return 的拒绝路径（生命已满/数量为 0 等）不走到这里，不会误存档。
+    if (G.autosave) G.autosave();
     this.updateInv();
   };
 
-  // 桌面端 HUD 角落常驻键位提示：全部读按键绑定实时渲染，不写死；触屏端已有触控按钮，不显示
+  // 桌面端 HUD 角落常驻键位提示：全部读按键绑定实时渲染，不写死；
+  // 触屏端：显示触控操作说明（摇杆/视角/右侧按钮），不再隐藏
   U.renderKeyHint = function () {
     const el = BR.$('key-hint');
     if (!el || !BR.Input || !BR.Input.bindings) return;
     const I = BR.Input;
+    if (I.isTouch) {
+      el.innerHTML =
+        '<span>左侧摇杆：移动</span><span>右侧拖动：视角</span>' +
+        '<span>右侧按钮：交互 / 跳跃 / 奔跑 / 蹲下 / 手电 / 道具 / 背包 / 视角切换</span>' +
+        '<span>游泳：上浮 / 下潜按钮 · 坐骑：下坐骑按钮</span>';
+      el.style.display = 'flex';
+      return;
+    }
     const kb = (label) => `<kbd>${label}</kbd>`;
     // 移动：四个方向各取当前绑定（默认 W A S D + 方向键）
     const move = ['fwd', 'left', 'back', 'right'].map(a => kb(I.bindingLabel(a))).join('');
     let html = `<span>${move}移动</span>`;
+    // v1.5 W8：动作表与新默认键位对齐；未绑定的动作不在 HUD 占位
     const rest = [
-      ['run', '疾跑'], ['crouch', '蹲下'], ['interact', '交互'],
-      ['flashlight', '手电'], ['backpack', '背包'], ['thirdperson', '第三人称'],
-      ['useItem', '道具'], ['pause', '暂停']
+      ['run', '疾跑'], ['dive', '蹲/潜'], ['interact', '交互'],
+      ['jump', '跳/浮'], ['flashlight', '手电'], ['backpack', '背包'],
+      ['thirdperson', '视角'], ['useItem', '道具'], ['pause', '暂停']
     ];
     for (const [a, name] of rest) {
       const label = I.bindingLabel(a);
@@ -375,6 +484,15 @@
   };
 
   // 玩法说明里的键位表：按动作表动态生成行（index.html 只留空 table 容器）
+  // G（v1.3）：双平台说明——电脑端 / 手机端 两栏；电脑端读当前改键绑定，手机端读触控操作
+  U.TOUCH_OP = {
+    move: '左侧摇杆', look: '右侧区域拖动', run: '跑步按钮（开关）',
+    crouch: '蹲下按钮（仅陆地）', interact: '交互按钮', flashlight: '手电筒按钮',
+    backpack: '背包按钮', thirdperson: '视角按钮（右列）',
+    jump: '跳跃按钮（水中按住=上浮）', dive: '下潜按钮（按住）',
+    slot: '点 HUD 物品栏 / 数字键选择', useItem: '道具按钮', pause: '右上角暂停按钮',
+    dismount: '下坐骑按钮（坐骑时出现）'
+  };
   U.renderKeysTable = function () {
     const tb = this.$keys_table;
     if (!tb || !BR.Input || !BR.Input.bindings) return;
@@ -382,21 +500,25 @@
     const k = (label) => label === '未绑定'
       ? '<span class="k dim">未绑定</span>'
       : `<span class="k">${label}</span>`;
-    const row = (name, inner) => `<tr><td>${name}</td><td>${inner}</td></tr>`;
+    const row = (name, pc, mob) => `<tr><td>${name}</td><td>${pc}</td><td>${mob}</td></tr>`;
+    // v1.5 W8：动作表与新默认键位对齐（电脑端读当前改键绑定，手机端读触控操作）
     tb.innerHTML =
-      row('移动', ['fwd', 'left', 'back', 'right'].map(a => k(I.bindingLabel(a))).join('')) +
-      row('视角', '鼠标<span class="dim">（点击画面锁定）</span>') +
-      row('疾跑', k(I.bindingLabel('run'))) +
-      row('蹲下', k(I.bindingLabel('crouch'))) +
-      row('交互', k(I.bindingLabel('interact'))) +
-      row('手电筒', k(I.bindingLabel('flashlight'))) +
-      row('背包', k(I.bindingLabel('backpack'))) +
-      row('第三人称', k(I.bindingLabel('thirdperson'))) +
-      row('使用道具', I.bindingLabel('useItem') === '未绑定'
-        ? '<span class="dim">未绑定（可在暂停菜单按键设置里绑定）</span>'
-        : k(I.bindingLabel('useItem'))) +
-      row('背包', k(I.bindingLabel('backpack')) + ' 打开背包，点选道具查看说明并使用（HUD 物品栏点物品也可直接使用）') +
-      row('暂停', k(I.bindingLabel('pause')));
+      '<thead><tr><th>动作</th><th>电脑端</th><th>手机端</th></tr></thead><tbody>' +
+      row('移动', ['fwd', 'left', 'back', 'right'].map(a => k(I.bindingLabel(a))).join(''), U.TOUCH_OP.move) +
+      row('视角', '鼠标<span class="dim">（点击画面锁定）</span>', U.TOUCH_OP.look) +
+      row('疾跑', k(I.bindingLabel('run')), U.TOUCH_OP.run) +
+      row('蹲下 / 下潜', k(I.bindingLabel('dive')) + '<span class="dim">（陆地按一下=蹲/起身；深水区按住=下潜）</span>', U.TOUCH_OP.crouch + ' / ' + U.TOUCH_OP.dive) +
+      row('交互', k(I.bindingLabel('interact')) + '<span class="dim">（坐骑上按=下坐骑）</span>', U.TOUCH_OP.interact) +
+      row('手电筒', k(I.bindingLabel('flashlight')), U.TOUCH_OP.flashlight) +
+      row('背包', k(I.bindingLabel('backpack')) + ' 打开背包，点选道具查看说明并使用（HUD 物品栏点物品也可直接使用）',
+        U.TOUCH_OP.backpack + '打开背包，触摸点选道具查看说明并使用') +
+      row('第三人称', k(I.bindingLabel('thirdperson')), U.TOUCH_OP.thirdperson) +
+      row('跳跃 / 上浮', k(I.bindingLabel('jump')) + '<span class="dim">（陆地跳跃；深水区按住=上浮）</span>', U.TOUCH_OP.jump) +
+      row('快捷栏选择', ['slot1', 'slot2', 'slot3', 'slot4', 'slot5'].map(a => k(I.bindingLabel(a))).join(''), U.TOUCH_OP.slot) +
+      row('使用快捷道具', k(I.bindingLabel('useItem')), U.TOUCH_OP.useItem) +
+      row('下坐骑', k(I.bindingLabel('interact')) + '<span class="dim">（坐骑上按交互键）</span>', U.TOUCH_OP.dismount) +
+      row('暂停', k(I.bindingLabel('pause')), U.TOUCH_OP.pause) +
+      '</tbody>';
   };
 
   /* ---------- 暂停菜单：按键设置 ---------- */
@@ -482,6 +604,8 @@
     const P = BR.Player;
     const ids = Object.keys(ITEM_INFO).filter(id => {
       if (id === 'flashlight') return !!(P && P.hasFlashlight);
+      // W9：水下照明灯不占 inv 数量，按 P.diveLight 持有显示
+      if (id === 'dive_light') return !!(P && P.diveLight);
       return (inv[id] || 0) > 0;
     });
     let html = '';
@@ -489,32 +613,173 @@
       const info = ITEM_INFO[id];
       const ct = id === 'flashlight'
         ? Math.round(P.flashBat != null ? P.flashBat : 100) + '%'
-        : (inv[id] || 0);
+        : id === 'dive_light'
+          ? Math.round(P.diveLight.charge) + '%'
+          : (inv[id] || 0);
       html += `<div class="bp-cell${this._bpSel === id ? ' sel' : ''}" data-id="${id}">` +
         `<span class="ic">${info.icon}</span><span class="nm">${info.name}</span>` +
         `<span class="ct">${ct}</span></div>`;
     });
     grid.innerHTML = html || '<div class="bp-none">背包空空如也</div>';
     grid.querySelectorAll('.bp-cell').forEach(el => {
-      el.addEventListener('click', () => { this._bpSel = el.dataset.id; this.renderBackpack(); });
+      const sel = () => { this._bpSel = el.dataset.id; this.renderBackpack(); };
+      el.addEventListener('click', sel);
+      // 触屏：直接消费并阻止合成 click，避免一次点选触发两次选中渲染
+      el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); sel(); }, { passive: false });
     });
     const id = this._bpSel;
     if (id && ITEM_INFO[id] && ids.indexOf(id) >= 0) {
       const info = ITEM_INFO[id];
+      // G（v1.4）：选中物品显示 名称 / 数量 / 简短用途 / 可用操作（使用按钮）
+      const dct = id === 'flashlight'
+        ? '电量 ' + Math.round(P.flashBat != null ? P.flashBat : 100) + '%'
+        : id === 'dive_light'
+          ? '电量 ' + Math.round(P.diveLight.charge) + '%'
+          : '持有 ×' + (inv[id] || 0);
+      // W9：新道具显示装备态/剩余资源（BR.Items.detailStatus）
+      const dstatus = (BR.Items && BR.Items.DEFS && BR.Items.DEFS[id])
+        ? BR.Items.detailStatus(id) : '';
       det.innerHTML = `<div class="bp-dname">${info.name}</div>` +
+        `<div class="bp-dcount">${dct}</div>` +
         `<div class="bp-ddesc">${info.desc || ''}</div>` +
-        `<button id="btn-bp-use" class="big">使用</button>`;
+        dstatus +
+        `<button id="btn-bp-use" class="big">使用</button>` +
+        `<button id="btn-bp-drop" class="ghost" style="margin-top:8px">丢弃</button>`;
       const b = det.querySelector('#btn-bp-use');
-      if (b) b.addEventListener('click', () => {
-        // 先关背包（恢复 playing），再走正常使用流程
-        this.toggleBackpack(false);
-        this.useItem(id);
-      });
+      if (b) {
+        const use = () => {
+          // 先关背包（恢复 playing），再走正常使用流程
+          this.toggleBackpack(false);
+          this.useItem(id);
+        };
+        b.addEventListener('click', use);
+        // 触屏：阻止合成 click，避免一次点击消耗两个道具
+        b.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); use(); }, { passive: false });
+      }
+      const dp = det.querySelector('#btn-bp-drop');
+      if (dp) {
+        const drop = () => {
+          // W9：丢弃——背包扣 1，在面前生成真实拾取（不复制；背包保持打开，刷新显示）
+          if (BR.Items) BR.Items.drop(id);
+        };
+        dp.addEventListener('click', drop);
+        // 触屏：阻止合成 click，避免一次点击丢两个
+        dp.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); drop(); }, { passive: false });
+      }
     } else {
       det.innerHTML = '<div class="bp-empty">选择一件道具查看说明</div>';
     }
     if (this.$bp_key_hint && BR.Input)
       this.$bp_key_hint.textContent = '（' + BR.Input.bindingLabel('backpack') + ' / Esc 关闭）';
+  };
+
+  /* ---------- M.E.G. 前哨交易站（L1 POI 'meg_shop' 的商店交互打开） ----------
+   * 货币：杏仁水。价格表（消耗品便宜、稀有道具贵）：
+   *   绷带 2 / 手电电池 2 / 皇家口粮 3 / 笑魇驱散剂 4 / 火盐 6 / 迁跃浆果 8
+   * 只买不卖：买入扣杏仁水、道具进背包；不足时按钮灰显 + 点击提示。
+   * 买入走 BR.Game.inv 与 autosave，正常进存档（存档字段本来就是 inv 全量）。 */
+  U.SHOP_GOODS = [
+    { id: 'bandage', price: 2 },      // 绷带：常用消耗品
+    { id: 'battery', price: 2 },      // 手电电池：常用消耗品
+    { id: 'royal_ration', price: 3 }, // 皇家口粮：高级食物
+    { id: 'repellent', price: 4 },    // 笑魇驱散剂：中端保命
+    { id: 'firesalt', price: 6 },     // 火盐：稀有攻击道具
+    { id: 'berry', price: 8 }         // 迁跃浆果：稀有传送道具
+  ];
+  U._shopOpen = false; // 商店面板是否打开
+  // 开商店：暂停语义（参考 toggleBackpack）
+  U.openShop = function () {
+    const G = BR.Game;
+    if (!G || G.state !== 'playing' || this._shopOpen) return;
+    this._shopOpen = true;
+    G.state = 'paused';
+    BR.Input.setLocked(true);
+    this.renderShop();
+    this.show('screen-shop');
+    BR.Audio.setPaused(true);
+  };
+  U.closeShop = function () {
+    if (!this._shopOpen) return;
+    this._shopOpen = false;
+    BR.Game.state = 'playing';
+    BR.Input.setLocked(false);
+    this.show(null);
+    BR.Audio.setPaused(false);
+    this.updateInv(); // 同步 HUD（购买后数量变化）
+  };
+  // 商店列表：图标/名/说明/持有数/价格按钮；买不起的灰显。
+  // 触屏：整行可点（行点击=购买），按钮最小 48px（CSS）；买不起点行会 toast 提示。
+  U.renderShop = function () {
+    const list = this.$shop_list;
+    if (!list) return;
+    const inv = (BR.Game && BR.Game.inv) || {};
+    const almond = inv.almond || 0;
+    if (this.$shop_almond) this.$shop_almond.textContent = almond;
+    // 触屏模式不写键盘按键：关闭按钮只写"关闭"
+    if (this.$btn_shop_close)
+      this.$btn_shop_close.textContent = (BR.Input && BR.Input.isTouch) ? '关闭' : '离开（Esc）';
+    let html = '';
+    this.SHOP_GOODS.forEach(g => {
+      const info = ITEM_INFO[g.id];
+      if (!info) return;
+      const own = inv[g.id] || 0;
+      const afford = almond >= g.price;
+      html += `<div class="shop-row${afford ? '' : ' cant'}" data-id="${g.id}">` +
+        `<span class="ic">${info.icon}</span>` +
+        `<span class="shop-info"><span class="shop-name">${info.name}` +
+        `<span class="shop-own">持有 ×${own}</span></span>` +
+        `<span class="shop-desc">${info.desc || ''}</span></span>` +
+        `<button class="shop-buy${afford ? '' : ' cant'}" data-id="${g.id}"${afford ? '' : ' disabled'}>` +
+        `购买 · ${g.price} 杏仁水</button></div>`;
+    });
+    list.innerHTML = html || '<div class="bp-empty">今天没货</div>';
+    // 触屏 tap 购买：touchstart 只记录（不 preventDefault，保证小屏列表可滚动），
+    // touchend 时若为 tap（短时小位移）则购买并 preventDefault 阻止合成 click，
+    // 避免一次点击扣两次钱；桌面端走 click。委托在 list 上，一处处理行与按钮。
+    // 注意：list 元素在多次 renderShop 间复用，监听器只绑一次（防购买后重渲染叠加导致一次 tap 买 N 次）。
+    if (!list._shopBound) {
+      list._shopBound = true;
+      let tsX = 0, tsY = 0, tsT = 0, tsRow = null;
+      list.addEventListener('touchstart', (e) => {
+        const t = e.changedTouches[0];
+        tsX = t.clientX; tsY = t.clientY; tsT = Date.now();
+        tsRow = e.target && e.target.closest ? e.target.closest('.shop-row') : null;
+      }, { passive: true });
+      list.addEventListener('touchend', (e) => {
+        const t = e.changedTouches[0];
+        const row = tsRow; tsRow = null;
+        if (row && Date.now() - tsT < 600 && Math.hypot(t.clientX - tsX, t.clientY - tsY) < 12) {
+          e.preventDefault(); // 吞掉合成 click，只买一次
+          e.stopPropagation();
+          this.buyItem(row.dataset.id);
+        }
+      }, { passive: false });
+      list.addEventListener('click', (e) => {
+        const row = e.target && e.target.closest ? e.target.closest('.shop-row') : null;
+        if (row) this.buyItem(row.dataset.id);
+      });
+    }
+  };
+  // 买入：扣杏仁水、道具进背包、自动存档；货币不足拒绝
+  U.buyItem = function (id) {
+    const G = BR.Game;
+    if (!G || !this._shopOpen || G.state !== 'paused') return;
+    const g = this.SHOP_GOODS.filter(x => x.id === id)[0];
+    if (!g || !ITEM_INFO[id]) return;
+    const inv = G.inv;
+    const almond = inv.almond || 0;
+    if (almond < g.price) {
+      this.toast('杏仁水不够（需要 ' + g.price + ' 瓶，你只有 ' + almond + ' 瓶）', 2600);
+      if (BR.Audio.doorLocked) BR.Audio.doorLocked();
+      return;
+    }
+    inv.almond = almond - g.price;
+    inv[id] = (inv[id] || 0) + 1;
+    BR.Audio.pickup();
+    this.toast('购入' + ITEM_INFO[id].name + ' ×1（-' + g.price + ' 杏仁水）');
+    this.renderShop(); // 刷新钱包与按钮灰显
+    this.updateInv();
+    if (G.autosave) G.autosave(); // state=paused 时 autosave 会执行
   };
 
   /* ---------- 暂停 ---------- */
@@ -546,6 +811,10 @@
     if (hb) hb.value = s.headbob || 'on';
     const dc = BR.$('set-dropcam'); // Systems A：坠落镜头强度
     if (dc) dc.value = s.dropcam || 'full';
+    const sc = BR.$('set-shakecam'); // W10：减镜头晃动（trauma 震动缩放）
+    if (sc) sc.value = s.shakecam || 'on';
+    const sx = BR.$('set-sanityfx'); // Systems C-A：低理智视觉特效（模糊+暗角）开关
+    if (sx) sx.value = s.sanityfx || 'on';
     const fs = BR.$('btn-fullscreen');
     if (fs) fs.textContent = BR.Input.isFullscreen() ? '退出全屏' : '进入全屏';
     this.renderBindings(); // 暂停菜单每次打开刷新按键设置区
@@ -559,6 +828,7 @@
       steam: '过热的蒸汽灼伤了你。',
       lurker: '潜伏者把你拖进了管道阴影。',
       fall: '你坠入了无光的深渊。',
+      starve: '你饿死在了后室深处。',
       default: '你死在了后室深处。'
     };
     this.$death_cause.textContent = texts[cause] || texts.default;
@@ -628,6 +898,10 @@
     if (hb) hb.onchange = (e) => { S.headbob = e.target.value; BR.Input.saveSettings(); };
     const dc = BR.$('set-dropcam'); // Systems A：坠落镜头强度（唯一允许的 ui.js 新增）
     if (dc) dc.onchange = (e) => { S.dropcam = e.target.value; BR.Input.saveSettings(); };
+    const sc = BR.$('set-shakecam'); // W10：减镜头晃动
+    if (sc) sc.onchange = (e) => { S.shakecam = e.target.value; BR.Input.saveSettings(); };
+    const sx = BR.$('set-sanityfx'); // Systems C-A：低理智特效开关
+    if (sx) sx.onchange = (e) => { S.sanityfx = e.target.value; BR.Input.saveSettings(); };
     const fsb = BR.$('btn-fullscreen');
     if (fsb) fsb.onclick = () => {
       BR.Input.toggleFullscreen();
@@ -636,6 +910,20 @@
     // 背包关闭按钮
     const bpb = BR.$('btn-bp-close');
     if (bpb) bpb.onclick = () => this.toggleBackpack(false);
+    // 商店关闭按钮
+    const shb = BR.$('btn-shop-close');
+    if (shb) shb.onclick = () => this.closeShop();
+    // 商店打开时：Esc / 暂停键关闭商店（捕获阶段拦截，防 Esc 继续分发去触发暂停）
+    addEventListener('keydown', (e) => {
+      if (!this._shopOpen || e.repeat) return;
+      const I = BR.Input;
+      const act = I && I.actionForCode ? I.actionForCode(e.code) : null;
+      if (act === 'pause' || e.code === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeShop();
+      }
+    }, true);
     // 背包打开时：B（当前绑定）/ Esc / 暂停键关闭背包。
     // 捕获阶段拦截 + stopPropagation：input.js 的冒泡 keydown 看不到这次按键，
     // Esc 不会继续分发去触发暂停（state 已是 paused，直接关背包回到 playing）。
