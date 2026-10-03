@@ -1,6 +1,22 @@
 /* textures.js —— 程序化 Canvas 贴图（全部原创绘制，无外部素材）
  * 提供 BR.Textures.init / get / makeWallMaterial，供 world.js 使用。
- * 纹理 256x256（荧光灯面板 / 海报 256x128），wrapS/T = RepeatWrapping。
+ *
+ * 【H 路 v1.4 材质重构：贴图拼贴根因】
+ * 墙面"小像素块反复拼贴"的根因是 UV 缩放 + 单贴图复用，不是过滤：
+ *  1) world.js 里墙 = BoxGeometry(3,1,3) 再 scale.y=wallH，每面墙 3m×wallH 上 UV 都是完整 0~1，
+ *     即 1 张贴图铺满一块 3m 宽的墙面 tile；
+ *  2) 整关所有墙 tile 共用同一张 CanvasTexture（W.mat 按名缓存），画师用 Math.random()
+ *     画的污渍/裂缝位置全关完全相同 → 每 3m 肉眼可见地重复一次；
+ *  3) 画师按"像素"画、没按"米"画：吊顶画 2×2 格 → 每格 1.5m（实际 0.6m），
+ *     砖墙 64×32px → 砖 0.75m×0.34m（实际 0.2×0.075m），瓷砖地 64px → 0.75m（实际 0.375m）
+ *     —— 特征比实物大 2~10 倍，看起来像"像素块"。
+ * 过滤不是问题：CanvasTexture 默认 LinearMipmapLinear + 本文件 anisotropy=8。
+ * 修法（本文件内可完成）：大表面贴图 256→512，画师全部按"真实米制"起稿
+ * （tile 宽 3m；墙高按 ~3m 名义，允许随 wallH 轻微拉伸），污渍改小改多、
+ * 规律图案（条纹/砖缝）加不规则抖动，让 3m 重复不刺眼。
+ * 不为每面墙建独立贴图：显存与"复用纹理+适量变化"的折中。
+ * （逐 tile 色调抖动需要改 buildChunk 的 InstancedMesh，属 C 路区块加载，H 路不动，
+ *  已在汇报里列为后续项。）
  */
 (function () {
   var BR = window.BR = window.BR || {};
@@ -75,65 +91,75 @@
   // ---------------- 各贴图绘制 ----------------
   var painters = {
     // L0 泛黄墙纸：竖条纹 + 污渍
+    // 世界尺度：整张贴图 = 3m 宽墙面。条纹周期 ~0.125m（24 条/3m），轻微不规则。
     wallpaper: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#b3a061'; x.fillRect(0, 0, w, h);
-      for (var i = 0; i < w; i += 32) { // 竖条纹
-        x.fillStyle = (i / 32) % 2 ? 'rgba(0,0,0,0.055)' : 'rgba(255,255,255,0.045)';
-        x.fillRect(i, 0, 16, h);
+      var n = 24, sw = w / n;
+      for (var i = 0; i < n; i++) { // 竖条纹（宽度轻微抖动，弱化 3m 重复感）
+        var wob = 1 + (Math.random() - 0.5) * 0.22;
+        x.fillStyle = (i % 2) ? 'rgba(0,0,0,0.055)' : 'rgba(255,255,255,0.045)';
+        x.fillRect(i * sw, 0, sw * wob, h);
       }
       var vg = x.createLinearGradient(0, 0, 0, h); // 顶部略亮、底部发暗
       vg.addColorStop(0, 'rgba(255,250,230,0.10)');
       vg.addColorStop(1, 'rgba(40,30,10,0.22)');
       x.fillStyle = vg; x.fillRect(0, 0, w, h);
-      stains(x, w, h, 9, ['rgba(90,70,30,0.28)', 'rgba(60,50,25,0.30)', 'rgba(120,95,50,0.22)'], 12, 46);
+      // 污渍：小而多（3~12cm），大斑块最容易暴露"每 3m 重复"
+      stains(x, w, h, 16, ['rgba(90,70,30,0.26)', 'rgba(60,50,25,0.28)', 'rgba(120,95,50,0.20)'], 8, 30);
       x.fillStyle = 'rgba(50,40,20,0.35)'; x.fillRect(0, 0, w, 5); x.fillRect(0, h - 7, w, 7); // 踢脚线污边
-      grain(x, w, h, 1100, 0.10);
+      grain(x, w, h, 2600, 0.10);
       return c;
     },
-    // L0 潮湿地毯：深色水迹
+    // L0 潮湿地毯：深色水迹（整张 = 3m×3m 地面）
     carpet: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#9c8a5e'; x.fillRect(0, 0, w, h);
-      for (var i = 0; i < 2600; i++) { // 地毯绒毛短划
+      for (var i = 0; i < 5200; i++) { // 地毯绒毛短划
         x.strokeStyle = Math.random() < 0.5 ? 'rgba(60,50,30,0.25)' : 'rgba(220,200,150,0.20)';
         x.lineWidth = 1;
         var px = Math.random() * w, py = Math.random() * h, a = Math.random() * 6.2832;
         x.beginPath(); x.moveTo(px, py);
         x.lineTo(px + Math.cos(a) * 3, py + Math.sin(a) * 3); x.stroke();
       }
-      stains(x, w, h, 7, ['rgba(35,42,58,0.42)', 'rgba(30,36,50,0.45)', 'rgba(70,60,40,0.30)'], 22, 70); // 深色水迹
-      stains(x, w, h, 5, ['rgba(50,40,25,0.30)'], 10, 30);
-      grain(x, w, h, 700, 0.08);
+      stains(x, w, h, 10, ['rgba(35,42,58,0.40)', 'rgba(30,36,50,0.42)', 'rgba(70,60,40,0.28)'], 16, 50); // 深色水迹
+      stains(x, w, h, 8, ['rgba(50,40,25,0.28)'], 8, 24);
+      grain(x, w, h, 1600, 0.08);
       return c;
     },
-    // L0 吊顶方格
+    // L0 吊顶方格（整张 = 3m×3m；标准矿棉板 0.6m → 5×5 格）
     ceiling: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#cfc9b8'; x.fillRect(0, 0, w, h);
-      var t = 128;
-      for (var ty = 0; ty < 2; ty++) for (var tx = 0; tx < 2; tx++) {
+      var n = 5, t = w / n;
+      for (var ty = 0; ty < n; ty++) for (var tx = 0; tx < n; tx++) {
         var v = 196 + ((Math.random() * 22) | 0); // 每块板轻微色差
         x.fillStyle = 'rgb(' + v + ',' + (v - 6) + ',' + (v - 24) + ')';
         x.fillRect(tx * t + 2, ty * t + 2, t - 4, t - 4);
       }
-      x.strokeStyle = '#7d7768'; x.lineWidth = 4; // 龙骨缝
-      for (var i = 0; i <= 2; i++) {
+      x.strokeStyle = '#7d7768'; x.lineWidth = 3; // 龙骨缝
+      for (var i = 0; i <= n; i++) {
         x.beginPath(); x.moveTo(i * t, 0); x.lineTo(i * t, h); x.stroke();
         x.beginPath(); x.moveTo(0, i * t); x.lineTo(w, i * t); x.stroke();
       }
-      stains(x, w, h, 4, ['rgba(120,90,50,0.30)', 'rgba(90,70,40,0.28)'], 14, 40);
-      grain(x, w, h, 800, 0.08);
+      stains(x, w, h, 6, ['rgba(120,90,50,0.28)', 'rgba(90,70,40,0.26)'], 10, 28);
+      grain(x, w, h, 1800, 0.08);
       return c;
     },
-    // 荧光灯面板 256x128
+    // 荧光灯面板 256x128：灯管芯更亮一档（轻微辉光感，不用 bloom/泛白）
     fluor: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#2e2e2e'; x.fillRect(0, 0, w, h); // 灯框
       var g = x.createLinearGradient(0, 10, 0, h - 10);
-      g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, '#f4f4ec'); g.addColorStop(1, '#dcdcd2');
+      g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, '#fafaf2'); g.addColorStop(1, '#e2e2d6');
       x.fillStyle = g; x.fillRect(10, 10, w - 20, h - 20);
-      x.fillStyle = 'rgba(255,255,255,0.9)'; // 灯管高光
+      // 灯管芯：两道高光 + 周围柔光晕（辉光只做在贴图里，不碰后期）
+      var halo = x.createLinearGradient(0, h * 0.18, 0, h * 0.82);
+      halo.addColorStop(0, 'rgba(255,255,255,0)');
+      halo.addColorStop(0.5, 'rgba(255,255,240,0.55)');
+      halo.addColorStop(1, 'rgba(255,255,255,0)');
+      x.fillStyle = halo; x.fillRect(10, h * 0.18, w - 20, h * 0.64);
+      x.fillStyle = 'rgba(255,255,255,0.95)'; // 灯管高光
       x.fillRect(10, h * 0.30, w - 20, 6); x.fillRect(10, h * 0.66, w - 20, 6);
       x.fillStyle = 'rgba(120,110,80,0.25)'; x.fillRect(10, 10, w - 20, 8); // 灯管旁积灰
       x.fillStyle = '#1c1c1c'; // 四角螺丝
@@ -143,28 +169,28 @@
       grain(x, w, h, 200, 0.05);
       return c;
     },
-    // L1/L2 混凝土墙
+    // L1/L2 混凝土墙（整张 = 3m 宽；墙高名义 3m，随 wallH 轻微拉伸）
     concrete: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#8d8d8c'; x.fillRect(0, 0, w, h);
-      stains(x, w, h, 12, ['rgba(255,255,255,0.10)', 'rgba(0,0,0,0.12)', 'rgba(70,70,70,0.18)'], 20, 70);
+      stains(x, w, h, 18, ['rgba(255,255,255,0.09)', 'rgba(0,0,0,0.11)', 'rgba(70,70,70,0.16)'], 14, 48);
       x.fillStyle = 'rgba(0,0,0,0.10)'; x.fillRect(0, h * 0.48, w, 3); // 模板接缝
       crack(x, w * 0.3, h * 0.2, 120, 7);
       crack(x, w * 0.7, h * 0.6, 90, 6);
-      stains(x, w, h, 3, ['rgba(96,74,52,0.35)'], 8, 22); // 锈水渍
-      grain(x, w, h, 1600, 0.10);
+      stains(x, w, h, 5, ['rgba(96,74,52,0.32)'], 6, 16); // 锈水渍
+      grain(x, w, h, 3200, 0.10);
       return c;
     },
-    // L1/L2 混凝土地面
+    // L1/L2 混凝土地面（整张 = 3m×3m；伸缩缝间距 ~3m）
     concreteFloor: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#747474'; x.fillRect(0, 0, w, h);
-      stains(x, w, h, 10, ['rgba(0,0,0,0.20)', 'rgba(255,255,255,0.07)', 'rgba(40,40,40,0.22)'], 18, 60);
+      stains(x, w, h, 14, ['rgba(0,0,0,0.18)', 'rgba(255,255,255,0.06)', 'rgba(40,40,40,0.20)'], 12, 40);
       x.strokeStyle = 'rgba(30,30,30,0.5)'; x.lineWidth = 3; // 伸缩缝
       x.beginPath(); x.moveTo(w / 2, 0); x.lineTo(w / 2, h); x.stroke();
       x.beginPath(); x.moveTo(0, h / 2); x.lineTo(w, h / 2); x.stroke();
-      stains(x, w, h, 4, ['rgba(20,18,14,0.45)'], 10, 34); // 油渍
-      grain(x, w, h, 1400, 0.10);
+      stains(x, w, h, 6, ['rgba(20,18,14,0.42)'], 8, 24); // 油渍
+      grain(x, w, h, 2800, 0.10);
       return c;
     },
     // 混凝土柱
@@ -182,39 +208,40 @@
       grain(x, w, h, 1200, 0.10);
       return c;
     },
-    // L3 棕色砖墙
+    // L3 棕色砖墙（整张 = 3m 宽；标准砖 0.2×0.075m → 约 15 块/行）
     brick: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#4e423b'; x.fillRect(0, 0, w, h); // 灰缝
-      var bw = 64, bh = 32;
-      for (var row = 0; row < h / bh; row++) {
+      var bw = w * 0.2 / 3, bh = h / 40; // 0.2m 宽，~0.075m 高（含缝）
+      var row = 0;
+      for (var yy = 0; yy < h + bh; yy += bh, row++) {
         var off = (row % 2) * bw / 2;
-        for (var col = -1; col < w / bw + 1; col++) {
+        for (var xx = -bw; xx < w + bw; xx += bw) {
           var r = 112 + ((Math.random() * 36) | 0), gg = 66 + ((Math.random() * 22) | 0), b = 46 + ((Math.random() * 16) | 0);
           x.fillStyle = 'rgb(' + r + ',' + gg + ',' + b + ')';
-          x.fillRect(col * bw + off + 2, row * bh + 2, bw - 4, bh - 4);
+          x.fillRect(xx + off + 1.5, yy + 1.5, bw - 3, bh - 3);
           x.fillStyle = 'rgba(255,255,255,0.06)';
-          x.fillRect(col * bw + off + 2, row * bh + 2, bw - 4, 5); // 砖顶受光
+          x.fillRect(xx + off + 1.5, yy + 1.5, bw - 3, 2.5); // 砖顶受光
         }
       }
-      stains(x, w, h, 6, ['rgba(0,0,0,0.25)', 'rgba(60,40,25,0.30)'], 16, 50);
-      grain(x, w, h, 1000, 0.10);
+      stains(x, w, h, 10, ['rgba(0,0,0,0.22)', 'rgba(60,40,25,0.26)'], 10, 32);
+      grain(x, w, h, 2200, 0.10);
       return c;
     },
-    // L3 灰色瓷砖地
+    // L3 灰色瓷砖地（整张 = 3m×3m；砖 0.375m → 8×8）
     tileFloor: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
       x.fillStyle = '#4c4c4c'; x.fillRect(0, 0, w, h); // 缝
-      var t = 64;
-      for (var ty = 0; ty < 4; ty++) for (var tx = 0; tx < 4; tx++) {
+      var n = 8, t = w / n;
+      for (var ty = 0; ty < n; ty++) for (var tx = 0; tx < n; tx++) {
         var v = 148 + ((Math.random() * 26) | 0);
         x.fillStyle = 'rgb(' + v + ',' + (v + 3) + ',' + (v + 6) + ')';
         x.fillRect(tx * t + 2, ty * t + 2, t - 4, t - 4);
         x.fillStyle = 'rgba(255,255,255,0.10)'; // 釉面反光
-        x.fillRect(tx * t + 8, ty * t + 8, t - 20, 6);
+        x.fillRect(tx * t + 6, ty * t + 6, t - 14, 4);
       }
-      stains(x, w, h, 6, ['rgba(30,28,24,0.35)', 'rgba(90,70,45,0.25)'], 12, 40);
-      grain(x, w, h, 700, 0.07);
+      stains(x, w, h, 8, ['rgba(30,28,24,0.32)', 'rgba(90,70,45,0.22)'], 8, 26);
+      grain(x, w, h, 1500, 0.07);
       return c;
     },
     // 金属天花板/墙
@@ -326,21 +353,21 @@
       grain(x, w, h, 400, 0.05);
       return c;
     },
-    // FUN 格纹地
+    // FUN 格纹地（整张 = 3m×3m；格 0.375m → 8×8）
     partyFloor: function (w, h) {
       var c = makeCanvas(w, h), x = c.getContext('2d');
-      var t = 32, cols = ['#f7f3ea', '#ff9ecb', '#f7f3ea', '#9ed8ff'];
-      for (var ty = 0; ty < 8; ty++) for (var tx = 0; tx < 8; tx++) {
+      var n = 8, t = w / n, cols = ['#f7f3ea', '#ff9ecb', '#f7f3ea', '#9ed8ff'];
+      for (var ty = 0; ty < n; ty++) for (var tx = 0; tx < n; tx++) {
         x.fillStyle = cols[(tx + ty * 2) % 4];
         x.fillRect(tx * t, ty * t, t, t);
       }
       x.strokeStyle = 'rgba(120,90,110,0.35)'; x.lineWidth = 2;
-      for (var i = 0; i <= 8; i++) {
+      for (var i = 0; i <= n; i++) {
         x.beginPath(); x.moveTo(i * t, 0); x.lineTo(i * t, h); x.stroke();
         x.beginPath(); x.moveTo(0, i * t); x.lineTo(w, i * t); x.stroke();
       }
-      stains(x, w, h, 5, ['rgba(150,60,80,0.25)', 'rgba(80,60,40,0.22)'], 10, 30); // 饮料渍
-      grain(x, w, h, 500, 0.06);
+      stains(x, w, h, 6, ['rgba(150,60,80,0.22)', 'rgba(80,60,40,0.20)'], 8, 24); // 饮料渍
+      grain(x, w, h, 1100, 0.06);
       return c;
     },
     // FUN 海报 256x128："TIME 4 FUN"
@@ -530,18 +557,40 @@
       x.fillStyle = '#000000'; x.fillRect(0, 0, w, h);
       grain(x, w, h, 120, 0.03);
       return c;
+    },
+    // 接触阴影（blob）：径向黑渐变，用于箱/柜/桌/灌木底部，柔化"物体接触处"。
+    // 注意这是贴在地面上的透明片，不是实时阴影，不遮材质。
+    blob: function (w, h) {
+      var c = makeCanvas(w, h), x = c.getContext('2d');
+      var g = x.createRadialGradient(w / 2, h / 2, w * 0.08, w / 2, h / 2, w * 0.5);
+      g.addColorStop(0, 'rgba(0,0,0,0.55)');
+      g.addColorStop(0.55, 'rgba(0,0,0,0.28)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      x.fillStyle = g; x.fillRect(0, 0, w, h);
+      return c;
     }
   };
 
   // ---------------- 构建与缓存 ----------------
+  // 大表面（墙/地/顶）用 512 起稿，保证 3m tile 上特征是真实米制；
+  // 小道具（门/箱/管/灯/海报）256 足够，省显存。
+  var RES512 = {
+    wallpaper: 1, carpet: 1, ceiling: 1, concrete: 1, concreteFloor: 1,
+    pillar: 1, brick: 1, tileFloor: 1, metal: 1, partyWall: 1, partyFloor: 1
+  };
   function build(name) {
     var p = painters[name];
     if (!p) { if (BR.log) BR.log('[textures] 缺少贴图: ' + name); return null; }
-    var w = 256, h = 256;
+    var s = RES512[name] ? 512 : 256, w = s, h = s;
     if (name === 'fluor' || name === 'posterFun') h = 128;
     var tex = new THREE.CanvasTexture(p(w, h));
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = 4;
+    // 过滤显式声明（根因排查结论：过滤本就没问题，这里只是写死防回归）：
+    // 远处用 mipmap 平滑缩小，近处线性放大，掠射角 anisotropy=8 压条纹闪烁。
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.anisotropy = 8;
     return tex;
   }
 
@@ -591,4 +640,178 @@
   // 扩建钩子：新关卡注册墙面贴图映射
   // 用法：BR.Textures.registerWallTex('L7', 'ocean_wall');
   BR.Textures.registerWallTex = function (level, texName) { WALL_TEX[level] = texName; };
+
+  // ---------------- H 路：接触阴影（blob shadow） ----------------
+  // 实时点光源阴影 = 6 面 cube map，移动端/核显扛不住，设计为 0（见 world.js W.shadowLightCount）。
+  // 转角/柱后/物体接触处的柔和变暗用 blob 阴影片 + 灯光衰减 + 雾来表现。
+  // 材质共享（随关卡常驻，不释放）；几何体每次新建，由调用方的 W.reg 登记到区块 disposables，
+  // 区块卸载时自动 dispose（见 world.js unloadChunkMeshes），不泄漏。
+  var blobMat = null;
+  BR.Textures.blobShadowMaterial = function () {
+    if (!blobMat) {
+      blobMat = new THREE.MeshBasicMaterial({
+        map: BR.Textures.get('blob'),
+        transparent: true, opacity: 0.5, depthWrite: false
+      });
+    }
+    return blobMat;
+  };
+  // 在 (x, z) 地面铺一张半径 r 的接触阴影，返回 mesh（调用方自行定位 + W.reg）。
+  // 画质档 blobShadow=0 时返回 null（调用方直接跳过）。
+  BR.Textures.makeBlobShadow = function (r) {
+    var q = (window.BR && BR.QUALITY) || {};
+    if (q.blobShadow === 0) return null;
+    var m = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), BR.Textures.blobShadowMaterial());
+    m.rotation.x = -Math.PI / 2;
+    m.renderOrder = 1; // 画在地面之后，避免 z-fighting
+    return m;
+  };
+
+  // ---------------- W10：材质光泽度（roughness / metalness） ----------------
+  // 墙纸/地毯/混凝土/砖=高粗糙哑光；釉面瓷砖=低粗糙；拉丝金属=中低粗糙+金属度；
+  // 锈蚀=极高粗糙（L7 锈蚀舱门/管道）；水体=极低粗糙（L7 海面/L37 池面，镜面波光）。
+  // 大面积墙面仍用 MeshLambertMaterial（性能）；需要高光的表面（水面/金属件）
+  // 用 finishMaterial() 取带光泽度的 MeshStandardMaterial，按 (贴图|光泽|参数) 缓存共享。
+  // 注意：共享材质随关卡常驻、不释放（与 makeWallMaterial 同策略），调用方不得再
+  // 用 W._levelMats/trackMat 登记它，否则跨关 dispose 会杀死共享缓存。
+  var FINISH = {
+    wallpaper: { roughness: 0.92, metalness: 0.0 },
+    carpet:    { roughness: 1.0,  metalness: 0.0 },
+    concrete:  { roughness: 0.95, metalness: 0.0 },
+    brick:     { roughness: 0.93, metalness: 0.0 },
+    tile:      { roughness: 0.28, metalness: 0.05 },  // 釉面瓷砖
+    metal:     { roughness: 0.42, metalness: 0.8 },   // 拉丝金属
+    rust:      { roughness: 0.96, metalness: 0.12 },  // 锈蚀（L7 锈蚀舱门/管道）
+    water:     { roughness: 0.10, metalness: 0.15 },  // 水体（L7 海面/L37 池面）
+    wood:      { roughness: 0.80, metalness: 0.0 }
+  };
+  BR.Textures.FINISH = FINISH;
+  BR.Textures.finishOf = function (name) { return FINISH[name] || FINISH.concrete; };
+  var finishMatCache = {};
+  // finishMaterial(texName, finishName, extra)：extra={color, transparent, opacity, side}
+  BR.Textures.finishMaterial = function (texName, finishName, extra) {
+    extra = extra || {};
+    var key = (texName || 'nocolor') + '|' + finishName + '|' +
+      (extra.color != null ? extra.color.toString(16) : '-') + '|' +
+      (extra.transparent ? ('t' + (extra.opacity != null ? extra.opacity : 1)) : 'o') + '|' +
+      (extra.side != null ? extra.side : '-');
+    if (finishMatCache[key]) return finishMatCache[key];
+    var f = BR.Textures.finishOf(finishName);
+    var params = { roughness: f.roughness, metalness: f.metalness };
+    if (texName) params.map = BR.Textures.get(texName);
+    if (extra.color != null) params.color = extra.color;
+    if (extra.transparent) {
+      params.transparent = true;
+      params.opacity = extra.opacity != null ? extra.opacity : 1;
+      params.depthWrite = false;
+    }
+    if (extra.side != null) params.side = extra.side;
+    var m = new THREE.MeshStandardMaterial(params);
+    finishMatCache[key] = m;
+    return m;
+  };
+
+  // ---------------- Systems D：环境涂鸦文字贴图 ----------------
+  // 透明底 Canvas：手绘字 + 手绘箭头 + 滴漆 + 磨损 + 喷溅晕。
+  // 同 (text|sub|color|arrow) 复用同一张贴图与材质，避免材质/贴图爆炸。
+  var graffitiTexCache = {};
+  var graffitiMatCache = {};
+  // 手绘箭头（避免字体缺 →← 字形）：dir=+1 朝右 / -1 朝左
+  function drawGraffitiArrow(x, ax, y, dir, color, s) {
+    var len = 36 * s;
+    function j() { return (Math.random() - 0.5) * 4 * s; }
+    x.strokeStyle = color; x.lineCap = 'round'; x.lineJoin = 'round';
+    x.lineWidth = 7 * s;
+    x.beginPath();
+    x.moveTo(ax, y + j());
+    x.quadraticCurveTo(ax + dir * len * 0.5, y + j(), ax + dir * len, y + j());
+    x.stroke();
+    x.lineWidth = 6 * s;
+    var hx = ax + dir * len, hy = y + j();
+    x.beginPath();
+    x.moveTo(hx, hy); x.lineTo(hx - dir * 15 * s, hy - 11 * s + j());
+    x.moveTo(hx, hy); x.lineTo(hx - dir * 15 * s, hy + 11 * s + j());
+    x.stroke();
+  }
+  function paintGraffiti(text, sub, color, arrow) {
+    var c = makeCanvas(256, 128), x = c.getContext('2d');
+    x.clearRect(0, 0, 256, 128);
+    function font(px) {
+      return 'italic bold ' + px + 'px "Comic Sans MS","Segoe Print",cursive,sans-serif';
+    }
+    x.font = font(46);
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    var maxW = arrow ? 150 : 230; // 有箭头时给箭头留 100px
+    var tw = x.measureText(text).width;
+    if (tw > maxW) { x.font = font(Math.max(20, Math.floor(46 * maxW / tw))); tw = x.measureText(text).width; }
+    var y = sub ? 48 : 64;
+    // 喷溅晕（overspray）
+    x.fillStyle = color;
+    var i;
+    for (i = 0; i < 44; i++) {
+      x.globalAlpha = 0.05 + Math.random() * 0.08;
+      x.fillRect(128 - tw / 2 - 8 + Math.random() * (tw + 16), y - 32 + Math.random() * 64, 2, 2);
+    }
+    x.globalAlpha = 1;
+    // 主文字：描边 + 双层填充，双层营造喷漆边缘与浓度
+    x.lineWidth = 5; x.strokeStyle = color;
+    x.strokeText(text, 128, y);
+    x.fillStyle = color;
+    x.fillText(text, 128, y);
+    x.fillText(text, 128, y);
+    if (sub) {
+      x.font = 'italic 23px "Comic Sans MS","Segoe Print",cursive,sans-serif';
+      x.globalAlpha = 0.85;
+      x.fillText(sub, 128, 100);
+      x.globalAlpha = 1;
+    }
+    // 手绘箭头
+    if (arrow === 'left') drawGraffitiArrow(x, 128 - tw / 2 - 10, y, -1, color, 1);
+    else if (arrow === 'right') drawGraffitiArrow(x, 128 + tw / 2 + 10, y, 1, color, 1);
+    // 滴漆
+    x.fillStyle = color;
+    for (i = 0; i < 3; i++) {
+      var dx = 128 - tw / 2 + Math.random() * tw;
+      var dl = 10 + Math.random() * 18;
+      x.globalAlpha = 0.55 + Math.random() * 0.2;
+      x.fillRect(dx, y + 20, 3, dl);
+      x.beginPath(); x.arc(dx + 1.5, y + 20 + dl, 2.5, 0, 6.2832); x.fill();
+    }
+    x.globalAlpha = 1;
+    // 磨损：擦掉几块（旧涂鸦感），力度保守以保证可读
+    x.globalCompositeOperation = 'destination-out';
+    for (i = 0; i < 6; i++) {
+      x.globalAlpha = 0.10 + Math.random() * 0.10;
+      x.beginPath();
+      x.ellipse(128 - tw / 2 + Math.random() * tw, y - 24 + Math.random() * 48,
+        3 + Math.random() * 7, 2 + Math.random() * 5, Math.random() * 3, 0, 6.2832);
+      x.fill();
+    }
+    x.globalAlpha = 1;
+    x.globalCompositeOperation = 'source-over';
+    // 墙面污渍罩一层（融入墙面）
+    stains(x, 256, 128, 2, ['rgba(0,0,0,0.14)', 'rgba(60,50,30,0.12)'], 20, 60);
+    grain(x, 256, 128, 150, 0.06);
+    return c;
+  }
+  BR.Textures.graffiti = function (text, sub, color, arrow) {
+    var key = text + '|' + (sub || '') + '|' + color + '|' + (arrow || '-');
+    if (!graffitiTexCache[key]) {
+      var tex = new THREE.CanvasTexture(paintGraffiti(text, sub, color, arrow));
+      tex.anisotropy = 4;
+      graffitiTexCache[key] = tex;
+    }
+    return graffitiTexCache[key];
+  };
+  // 涂鸦共享材质（MeshBasicMaterial：黑暗走廊里也清晰可读，真提示是玩法信息）
+  BR.Textures.graffitiMaterial = function (text, sub, color, arrow) {
+    var key = text + '|' + (sub || '') + '|' + color + '|' + (arrow || '-');
+    if (!graffitiMatCache[key]) {
+      graffitiMatCache[key] = new THREE.MeshBasicMaterial({
+        map: BR.Textures.graffiti(text, sub, color, arrow),
+        transparent: true, opacity: 0.94
+      });
+    }
+    return graffitiMatCache[key];
+  };
 })();

@@ -9,7 +9,16 @@
     crouch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="M6.5 9.5 12 15l5.5-5.5"/><path d="M4.5 20.5h15"/></svg>',
     run: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5h9M3 12h13M3 17.5h9"/><path d="M15.5 8.5 19.5 12l-4 3.5"/></svg>',
     interact: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6"/><path d="M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3"/></svg>',
-    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/></svg>'
+    pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/></svg>',
+    // G（v1.3 触屏补齐）：背包 / 第三人称
+    backpack: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7.5" width="10" height="11.5" rx="4"/><path d="M9.5 7.5V6a2.4 2.4 0 0 1 2.4-2.4h0.2A2.4 2.4 0 0 1 14.5 6v1.5"/><rect x="9.6" y="11.5" width="4.8" height="4.4" rx="1.4"/></svg>',
+    thirdperson: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/></svg>',
+    // F（v1.4）：跳跃 / 下潜（与蹲下图标同风格的线条箭头）
+    jump: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.5v-13"/><path d="M6.5 9.5 12 4l5.5 5.5"/><path d="M5 20.5h14" opacity="0.55"/></svg>',
+    dive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v13"/><path d="M6.5 14.5 12 20l5.5-5.5"/><path d="M4.5 7.5c1.6 1.2 3.4 1.2 5 0s3.4-1.2 5 0 3.4 1.2 5 0" opacity="0.55"/></svg>',
+    // v1.5 W8：道具（使用快捷道具）/ 下坐骑
+    item: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12.5V6.8a1.6 1.6 0 0 1 3.2 0v5.2"/><path d="M11.2 11.5V5.4a1.6 1.6 0 0 1 3.2 0v6.1"/><path d="M14.4 12V7.2a1.6 1.6 0 0 1 3.2 0v8.1c0 3-2.2 5.2-5.4 5.2-2.4 0-3.9-1-5.3-3.4l-2-3.5a1.5 1.5 0 0 1 2.6-1.5l1.5 2.6"/></svg>',
+    dismount: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15.5h9"/><path d="M10.5 11.5 14.5 15.5l-4 4"/><path d="M15.5 4.5v6"/><path d="M13 8.5l2.5 2.5L18 8.5"/></svg>'
   };
 
   // 触屏判定：触屏笔记本/台式机的 maxTouchPoints>0，不能直接判触屏，
@@ -33,32 +42,52 @@
     lookDX: 0, lookDY: 0,
     runToggle: false,
     _interact: false,
+    // E 路（v1.4）：跳跃/下潜的触屏状态位（F 路触摸按钮写入，player.js 经 jumpHeld/diveHeld 读取；
+    // 触屏按钮语义：跳跃钮=点按跳/水中按住上浮，下潜钮=按住下潜）
+    touchJump: false, touchDive: false,
+    // F（v1.4）：跳跃/下潜按住状态（触屏 hold 语义：touchstart 置 true，touchend/touchcancel/
+    // 手指移出/切后台 置 false；玩家物理层读取，与 PC 按键按住语义对齐）
+    touchJumpHold: false,
+    touchDiveHold: false,
+    _holdIds: {},          // 按住类按钮 id → 当前 touch identifier（多点触控跟踪）
     _orientDismissed: false,   // 本次游玩手动关闭过横屏提示
-    settings: { sens: 1.0, joySize: 120, joySide: 'left', vol: 0.8, quality: 'auto', headbob: 'on', dropcam: 'full' }
+    settings: { sens: 1.0, joySize: 120, joySide: 'left', vol: 0.8, quality: 'auto', headbob: 'on', dropcam: 'full', sanityfx: 'on', shakecam: 'on' }
   };
   BR.Input = I;
 
   /* ---------- 可改键系统 ---------- */
   // 动作表：id → 中文名
+  // v1.5 W8 新默认键位（替换旧默认）：
+  //   E=交互/拾取/上下坐骑（鼠标左键保留副键）、Shift=疾跑、Space=陆地跳跃/水中上浮、
+  //   C=下潜（陆地上按一下=蹲/起身）、Tab或I=背包、数字键 1-5=快捷栏选择、
+  //   Q=使用快捷道具（独立可绑定）、F=手电、Esc=暂停、V=第三人称。
+  // 全部动作可改键：冲突提示、恢复默认、localStorage 保存、刷新保持、
+  // HUD/说明提示全部读 bindingLabel 实时渲染、自动同步新键。
+  I.BINDINGS_VERSION = 2; // 键位表版本：v1 旧默认（Ctrl 疾跑/Shift 蹲/B 背包）→ v2 新默认
   I.ACTION_NAMES = {
     fwd: '前移', back: '后退', left: '左移', right: '右移',
-    run: '疾跑', crouch: '蹲下', flashlight: '手电筒', interact: '交互',
-    backpack: '背包', thirdperson: '第三人称', pause: '暂停', useItem: '使用选中道具'
+    run: '疾跑', dive: '蹲下 / 下潜', jump: '跳跃 / 上浮', interact: '交互',
+    backpack: '背包',
+    slot1: '快捷栏 1', slot2: '快捷栏 2', slot3: '快捷栏 3', slot4: '快捷栏 4', slot5: '快捷栏 5',
+    useItem: '使用快捷道具',
+    flashlight: '手电筒', thirdperson: '第三人称', pause: '暂停'
   };
-  // 默认绑定（疾跑=Ctrl，蹲下=Shift；交互=鼠标左键+E）
+  // 默认绑定（v2）
   I.DEFAULT_BINDINGS = {
     fwd: ['KeyW', 'ArrowUp'],
     back: ['KeyS', 'ArrowDown'],
     left: ['KeyA', 'ArrowLeft'],
     right: ['KeyD', 'ArrowRight'],
-    run: ['ControlLeft', 'ControlRight'],
-    crouch: ['ShiftLeft', 'ShiftRight'],
+    run: ['ShiftLeft', 'ShiftRight'],
+    dive: ['KeyC'],
+    jump: ['Space'],
+    interact: ['KeyE', 'MouseLeft'],
+    backpack: ['Tab', 'KeyI'],
+    slot1: ['Digit1'], slot2: ['Digit2'], slot3: ['Digit3'], slot4: ['Digit4'], slot5: ['Digit5'],
+    useItem: ['KeyQ'],
     flashlight: ['KeyF'],
-    interact: ['MouseLeft', 'KeyE'],
-    backpack: ['KeyB'],
     thirdperson: ['KeyV'],
-    pause: ['Escape'],
-    useItem: []
+    pause: ['Escape']
   };
   // code → 中文显示（左修饰键用通用名，右修饰键加"右"前缀）
   I.CODE_LABELS = {
@@ -101,12 +130,14 @@
     }
     return out;
   };
-  // 校验：非法值（非数组/空数组/非法 code）回填默认，保证向后兼容
+  // 校验：非法值（非数组/非法 code）回填默认，保证向后兼容
+  // 修（E 路 v1.4）：空数组 = "用户主动解绑（或冲突自动解除）"，属合法状态不再回填默认；
+  // 否则冲突解决无法持久化（下次加载默认键回来，冲突复活）。缺失/非法才回填。
   I.sanitizeBindings = function (raw) {
     const out = {};
     for (const a of Object.keys(I.DEFAULT_BINDINGS)) {
       const v = raw && raw[a];
-      const ok = Array.isArray(v) && v.length > 0 && v.every(c => this.isValidCode(c));
+      const ok = Array.isArray(v) && v.every(c => this.isValidCode(c));
       out[a] = ok ? v.slice() : I.DEFAULT_BINDINGS[a].slice();
     }
     return out;
@@ -131,13 +162,75 @@
   // 动作分发（keydown / mousedown 共用）
   I.dispatchAction = function (action) {
     if (!action) return;
-    const P = BR.Player;
-    if (action === 'interact') this._interact = true;
+    const P = BR.Player, U = BR.UI;
+    if (action === 'interact') {
+      // v1.5 W8：E=交互/拾取/上下坐骑——坐骑上按 E = 下坐骑
+      if (P && P.isMounted && P.isMounted()) P.dismount();
+      else this._interact = true;
+    }
     else if (action === 'flashlight') P.toggleFlashlight();
-    else if (action === 'crouch') P.toggleCrouch();
+    else if (action === 'dive') {
+      // v1.5 W8：C=下潜（水中按住语义走 diveHeld，不在这里分发）；
+      // 陆地上按一下 = 蹲/起身切换（原 Shift 蹲的 toggle 语义搬过来）；
+      // 坐骑上不许蹲（_enterState 已强制起身，这里防误触又蹲回去）
+      if (P && P.isSwimmingState && P.isSwimmingState()) { /* 水中：按住下潜，无需分发 */ }
+      else if (P && P.isMounted && P.isMounted()) { /* 坐骑上：忽略 */ }
+      else P.toggleCrouch();
+    }
     else if (action === 'pause') BR.UI.togglePause();
     else if (action === 'backpack') { if (BR.UI.toggleBackpack) BR.UI.toggleBackpack(); }
     else if (action === 'thirdperson') { if (P.toggleThirdPerson) P.toggleThirdPerson(); }
+    else if (action && action.indexOf('slot') === 0) {
+      // v1.5 W8：数字键=快捷栏选择（1-5 对应 HUD 物品栏）
+      const n = parseInt(action.slice(4), 10);
+      if (U && U.selectSlot) U.selectSlot(n);
+    }
+    else if (action === 'useItem') { // v1.5 W8：Q=使用快捷道具（独立可绑定）
+      if (U && U.useItem) {
+        const sel = U._slotSel || U._bpSel; // 快捷栏选中优先，其次背包内选中
+        if (sel) { if (U._bpOpen) U.toggleBackpack(false); U.useItem(sel); }
+        else U.toast('先选择一件道具（数字键 1-5 / 点 HUD 物品栏 / 背包点选）');
+      }
+    }
+    // v1.5 W2：首次动作提示（键盘/触屏按钮走同一分发，在此统一钩入）
+    if (action === 'interact' || action === 'flashlight' || action === 'dive' ||
+        action === 'backpack' || action === 'thirdperson' || action === 'jump') {
+      this.firstHint(action);
+    }
+  };
+
+  /* ---------- 首次动作提示（v1.5 W2） ----------
+   * 每个动作首次执行时 toast 短暂提示后自动淡出；无强制教学任务。
+   * 已提示的动作记入 localStorage（br_hints_v1），跨存档只提示一次。
+   * 离散动作经 dispatchAction 钩入；移动/疾跑为轮询，分别在 getMove 与 player.js 的
+   * wantRun 处钩入。提示文案读实时按键绑定（bindingLabel），触屏显示触控按钮名。
+   */
+  I._hintSeen = null;
+  I._loadHints = function () {
+    try { this._hintSeen = JSON.parse(localStorage.getItem('br_hints_v1') || '{}') || {}; }
+    catch (e) { this._hintSeen = {}; }
+  };
+  I._saveHints = function () {
+    try { localStorage.setItem('br_hints_v1', JSON.stringify(this._hintSeen)); } catch (e) {}
+  };
+  I.firstHint = function (action) {
+    if (!this._hintSeen) this._loadHints();
+    if (this._hintSeen[action]) return;
+    this._hintSeen[action] = 1; this._saveHints();
+    const touch = !!this.isTouch;
+    const L = (a) => this.bindingLabel(a);
+    let msg = null;
+    switch (action) {
+      case 'move': msg = touch ? '推动左摇杆：移动' : (L('fwd') + '：移动'); break;
+      case 'run': msg = touch ? '按住疾跑按钮：疾跑' : (L('run') + '：疾跑（移动时按住）'); break;
+      case 'dive': msg = touch ? '点按蹲下按钮：蹲伏，再按起身' : (L('dive') + '：蹲下，再按起身'); break;
+      case 'flashlight': msg = touch ? '点按手电按钮：开关手电筒' : (L('flashlight') + '：开关手电筒'); break;
+      case 'interact': msg = touch ? '点按交互按钮：与目标互动' : (L('interact') + '：交互'); break;
+      case 'backpack': msg = touch ? '点按背包按钮：打开背包' : (L('backpack') + '：打开背包'); break;
+      case 'thirdperson': msg = touch ? '点按视角按钮：切换第一/第三人称' : (L('thirdperson') + '：切换视角'); break;
+      case 'jump': msg = touch ? '点按跳跃按钮：跳跃' : (L('jump') + '：跳跃'); break;
+    }
+    if (msg && BR.UI && BR.UI.toast) BR.UI.toast(msg, 2600);
   };
 
   /* ---------- 改键捕获 ---------- */
@@ -148,21 +241,45 @@
     this.captureAction = null;
     if (BR.UI && BR.UI.renderBindings) BR.UI.renderBindings();
   };
+  // E 路（v1.4）：冲突检测 —— code 正被哪些其它动作占用（排除 exceptAction 自身）
+  // 修：此前 finishCapture 直接覆盖绑定，无任何冲突提示；新动作与 12 个旧动作统一走此检测
+  I.findConflicts = function (code, exceptAction) {
+    const out = [];
+    for (const a of Object.keys(this.DEFAULT_BINDINGS)) {
+      if (a === exceptAction) continue;
+      if ((this.bindings[a] || []).indexOf(code) !== -1) out.push(a);
+    }
+    return out;
+  };
   I.finishCapture = function (code) {
     const a = this.captureAction;
     this.captureAction = null;
     this._captureEndT = Date.now();
-    let changed = false;
+    let changed = false, note = '';
     if (a && this.isValidCode(code)) {
-      this.bindings[a] = [code]; // 单键绑定，直接覆盖
-      this.saveSettings();
-      changed = true;
+      const cur = this.bindings[a] || [];
+      if (cur.length === 1 && cur[0] === code) {
+        note = '未更改';
+      } else {
+        // 冲突处理：新按键若已被其它动作占用，自动从那些动作上解除并提示（保证一键一动作）
+        const conflicts = this.findConflicts(code, a);
+        for (const ca of conflicts) {
+          this.bindings[ca] = (this.bindings[ca] || []).filter(c => c !== code);
+        }
+        this.bindings[a] = [code]; // 单键绑定，直接覆盖
+        this.saveSettings();
+        changed = true;
+        if (conflicts.length) {
+          note = '已更改；' + this.codeLabel(code) + ' 已从「' +
+            conflicts.map(c => this.ACTION_NAMES[c] || c).join('」「') + '」解除';
+        }
+      }
     }
     if (BR.UI) {
       if (BR.UI.renderBindings) BR.UI.renderBindings();
       if (BR.UI.renderKeyHint) BR.UI.renderKeyHint();
       if (BR.UI.renderKeysTable) BR.UI.renderKeysTable();
-      if (changed && BR.UI.toast) BR.UI.toast('已更改');
+      if (BR.UI.toast) BR.UI.toast(note || (changed ? '已更改' : '未更改'));
     }
   };
   I.resetBindings = function () {
@@ -175,21 +292,56 @@
   I.loadSettings = function () {
     try {
       const s = JSON.parse(localStorage.getItem('br_settings') || '{}');
+      // W10：设置一致性检查（枚举/数值范围回填，老存档缺字段不崩；未知键透传）
+      if (BR.Save && BR.Save.validateSettings) {
+        const chk = BR.Save.validateSettings(s);
+        if (chk.fixed && chk.fixed.length && BR.log) BR.log('settings fixed:', chk.fixed.join(','));
+      }
       Object.assign(this.settings, s);
       // 向后兼容：老存档没有 headbob / dropcam 时回填默认值
       if (!['on', 'weak', 'off'].includes(this.settings.headbob)) this.settings.headbob = 'on';
       if (!['full', 'soft', 'off'].includes(this.settings.dropcam)) this.settings.dropcam = 'full';
+      // Systems C-A：老存档没有 sanityfx 时回填 'on'
+      if (!['on', 'off'].includes(this.settings.sanityfx)) this.settings.sanityfx = 'on';
+      // W10：老存档没有 shakecam 时回填 'on'
+      if (!['on', 'weak', 'off'].includes(this.settings.shakecam)) this.settings.shakecam = 'on';
     } catch (e) {}
-    // 按键绑定：从 br_settings.bindings 读；老存档无 bindings 时用默认，非法值回填默认
-    this.bindings = this.sanitizeBindings(this.settings.bindings);
+    // 按键绑定：从 br_settings.bindings 读。
+    // v1.5 W8 迁移：settings.bindingsV < BINDINGS_VERSION（v1 旧默认）→
+    // 直接采用新默认键位（旧键位表整体替换）；v2+ 用户的自定义改键保留。
+    // 迁移后立即落盘，保证版本号持久化（下次不再重复迁移）。
+    if ((this.settings.bindingsV || 0) < I.BINDINGS_VERSION) {
+      this.bindings = this.cloneBindings(I.DEFAULT_BINDINGS);
+      this.saveSettings();
+    } else {
+      // 老存档无 bindings 时用默认，非法值回填默认
+      this.bindings = this.sanitizeBindings(this.settings.bindings);
+    }
   };
   I.saveSettings = function () {
     try {
       this.settings.bindings = this.bindings;
+      this.settings.bindingsV = I.BINDINGS_VERSION;
       localStorage.setItem('br_settings', JSON.stringify(this.settings));
     } catch (e) {}
   };
-  I.setLocked = function (b) { this.locked = b; };
+  I.setLocked = function (b) {
+    this.locked = b;
+    // F（v1.4）：背包/菜单/商店打开时锁定输入——同时释放触控按住（跳跃/下潜/摇杆/视角），
+    // 保证按住下潜时开菜单不会"穿透"继续下潜；按钮事件本身已有 locked 门禁。
+    if (b && this.clearTouchInputs) this.clearTouchInputs();
+  };
+  // v1.5 W8：清理键盘持续输入（失焦 / 层级切换 / 测试复位用）。
+  // 与 clearTouchInputs 配对；setLocked(true) 只清触控，这里补键盘。
+  I.clearKeyboard = function () {
+    this.keys = {};
+  };
+  // 一键全清：键盘 + 触控（背包/菜单锁定、切后台、切关卡时调用，
+  // 保证"按住下潜时开菜单 / 切后台回来"不会残留持续输入）
+  I.clearAll = function () {
+    this.clearKeyboard();
+    if (this.clearTouchInputs) this.clearTouchInputs();
+  };
 
   /* ---------- 全屏 / 横屏 ---------- */
   I.isFullscreen = function () {
@@ -268,7 +420,7 @@
         return;
       }
       this.dispatchAction(this.actionForCode(e.code));
-      if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+      if (['Space', 'ArrowUp', 'ArrowDown', 'Tab'].includes(e.code)) e.preventDefault();
     });
     addEventListener('keyup', (e) => { this.keys[e.code] = false; });
     // —— 鼠标视角（pointer lock，桌面） ——
@@ -333,15 +485,26 @@
   /* ---------- 触控 UI ---------- */
   I.buildTouchUI = function () {
     const root = BR.$('touch-ui');
+    // G（v1.3 触屏补齐）：按钮与 PC 改键走同一动作语义（全部经 dispatchAction 分发）；
+    // 从上到下：背包 / 第三人称 / 手电 / 蹲下（仅陆地） / 道具 / 下坐骑（仅坐骑） / 疾跑 / 交互（大钮在最下，贴近拇指自然位）
     root.innerHTML =
       '<div id="joy-zone"><div id="joy-base"><div id="joy-knob"></div></div></div>' +
       '<div id="touch-btns">' +
-      '<button id="btn-use" class="tbtn" aria-label="手电筒">' + ICONS.flashlight + '</button>' +
-      '<button id="btn-crouch" class="tbtn" aria-label="蹲伏">' + ICONS.crouch + '</button>' +
-      '<button id="btn-run" class="tbtn" aria-label="奔跑">' + ICONS.run + '</button>' +
-      '<button id="btn-interact" class="tbtn big" aria-label="交互">' + ICONS.interact + '</button>' +
+      '<button id="btn-backpack" class="tbtn" aria-label="背包" title="背包">' + ICONS.backpack + '</button>' +
+      '<button id="btn-thirdperson" class="tbtn" aria-label="第三人称" title="第三人称">' + ICONS.thirdperson + '</button>' +
+      '<button id="btn-use" class="tbtn" aria-label="手电筒" title="手电筒">' + ICONS.flashlight + '</button>' +
+      '<button id="btn-crouch" class="tbtn land-only" aria-label="蹲下" title="蹲下（陆地）">' + ICONS.crouch + '</button>' +
+      '<button id="btn-item" class="tbtn" aria-label="使用道具" title="使用快捷道具">' + ICONS.item + '</button>' +
+      '<button id="btn-dismount" class="tbtn mount-only" aria-label="下坐骑" title="下坐骑">' + ICONS.dismount + '</button>' +
+      '<button id="btn-run" class="tbtn" aria-label="奔跑" title="疾跑">' + ICONS.run + '</button>' +
+      '<button id="btn-interact" class="tbtn big" aria-label="交互" title="交互">' + ICONS.interact + '</button>' +
       '</div>' +
-      '<button id="btn-pause-t" class="tbtn mini" aria-label="暂停">' + ICONS.pause + '</button>';
+      // F（v1.4）：跳跃/下潜簇——交互大钮左侧的横排拇指区；下潜仅游泳时显示（body.swimming）
+      '<div id="touch-jump-cluster">' +
+      '<button id="btn-dive" class="tbtn big swim-only" aria-label="下潜" title="下潜（长按）">' + ICONS.dive + '</button>' +
+      '<button id="btn-jump" class="tbtn big" aria-label="跳跃" title="跳跃">' + ICONS.jump + '</button>' +
+      '</div>' +
+      '<button id="btn-pause-t" class="tbtn mini" aria-label="暂停" title="暂停">' + ICONS.pause + '</button>';
     const joyZone = BR.$('joy-zone'), base = BR.$('joy-base'), knob = BR.$('joy-knob');
     const R = () => this.settings.joySize / 2;
 
@@ -353,6 +516,28 @@
       e.preventDefault();
       if (this.joyId !== null || this.locked || BR.Game.state !== 'playing') return;
       const t = e.changedTouches[0];
+      // W9 修：HUD 快捷栏（#inv-bar，左下角）在 #joy-zone 的触摸区域内，
+      // 且 #touch-ui（z-index 25）盖在 #hud（z-index 20）上面——
+      // 触摸点落在快捷栏物品上时，直接走统一道具使用逻辑，不启动摇杆，
+      // 否则手机上永远点不到快捷栏的绷带/杏仁水（触摸被摇杆吞掉）。
+      // （joy-zone 已 preventDefault，不会合成 click，一次只触发一次。）
+      const invBar = document.getElementById('inv-bar');
+      if (invBar && BR.UI && BR.UI.useItem) {
+        const r = invBar.getBoundingClientRect();
+        if (t.clientX >= r.left && t.clientX <= r.right &&
+            t.clientY >= r.top && t.clientY <= r.bottom) {
+          const cells = invBar.querySelectorAll('.inv-item');
+          for (let i = 0; i < cells.length; i++) {
+            const er = cells[i].getBoundingClientRect();
+            if (t.clientX >= er.left && t.clientX <= er.right &&
+                t.clientY >= er.top && t.clientY <= er.bottom) {
+              BR.UI.useItem(cells[i].dataset.id);
+              return;
+            }
+          }
+          return; // 落在栏内空白处：吞掉，不启动摇杆
+        }
+      }
       this.joyId = t.identifier; this.joyOX = t.clientX; this.joyOY = t.clientY;
       this.joyX = 0; this.joyY = 0;
       base.style.display = 'block';
@@ -417,21 +602,139 @@
     cv.addEventListener('touchend', lookEnd);
     cv.addEventListener('touchcancel', lookEnd);
 
-    // 按钮
+    // 按钮：全部走 dispatchAction，与 PC 键盘改键同一条动作分发路径。
+    // 疾跑在触屏上是"开关"式（touch 独有），PC 是按住——语义都是"跑起来"，状态由 player.update 统一读取。
     const bind = (id, fn) => {
       const b = BR.$(id);
       b.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); fn(); }, { passive: false });
       b.addEventListener('mousedown', (e) => { e.stopPropagation(); });
     };
-    bind('btn-interact', () => { if (!this.locked) this._interact = true; });
-    bind('btn-run', () => {
+    bind('btn-interact', () => { if (!this.locked) this.dispatchAction('interact'); });
+    bind('btn-run', () => { // v1.4 集成修复：G 路发现背包打开时疾跑钮没上锁
+      if (this.locked) return;
       this.runToggle = !this.runToggle;
       BR.$('btn-run').classList.toggle('on', this.runToggle);
     });
-    bind('btn-crouch', () => { if (!this.locked) BR.Player.toggleCrouch(); });
-    bind('btn-use', () => { if (!this.locked) BR.Player.toggleFlashlight(); });
-    bind('btn-pause-t', () => BR.UI.togglePause());
+    bind('btn-crouch', () => { if (!this.locked) this.dispatchAction('dive'); }); // v1.5 W8：C=陆地蹲/水中下潜，走同一动作
+    bind('btn-use', () => { if (!this.locked) this.dispatchAction('flashlight'); });
+    bind('btn-backpack', () => { if (!this.locked) this.dispatchAction('backpack'); });
+    // v1.5 W8：道具按钮（=Q 使用快捷道具）/ 下坐骑按钮（仅坐骑时显示）
+    bind('btn-item', () => { if (!this.locked) this.dispatchAction('useItem'); });
+    bind('btn-dismount', () => { if (!this.locked && BR.Player) BR.Player.dismount(); });
+    bind('btn-thirdperson', () => {
+      if (this.locked) return;
+      this.dispatchAction('thirdperson');
+      BR.$('btn-thirdperson').classList.toggle('on', !!(BR.Player && BR.Player.thirdPerson));
+    });
+    bind('btn-pause-t', () => { if (!this.locked) this.dispatchAction('pause'); }); // v1.4 集成修复：同上
+
+    // F（v1.4）：按住类按钮（跳跃/下潜）——多点触控语义：
+    //   touchstart：dispatchAction 按下语义 + 置 hold 标志（touchJumpHold/touchDiveHold，
+    //              供玩家物理层读"按住上浮/按住下潜"）；记录 touch identifier。
+    //   touchend/touchcancel/手指移出按钮：只清自己 identifier 对应的按住，不动摇杆与视角。
+    // 与 E 路约定：按下走 BR.Input.dispatchAction('jump'/'dive') 同一动作分发。
+    const bindHold = (id, action, setHold) => {
+      const b = BR.$(id);
+      b.addEventListener('touchstart', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (this.locked || BR.Game.state !== 'playing') return;
+        if (this._holdIds[id] != null) return; // 同一按钮第二根手指忽略
+        this._holdIds[id] = e.changedTouches[0].identifier;
+        b.classList.add('on');
+        setHold(true);
+        this.dispatchAction(action);
+      }, { passive: false });
+      const release = (e, fromMove) => {
+        for (const t of e.changedTouches) {
+          if (t.identifier !== this._holdIds[id]) continue;
+          if (fromMove) {
+            // 手指移出：超出按钮边界（含 14px 容差）才视为松开
+            const r = b.getBoundingClientRect(), slop = 14;
+            if (t.clientX >= r.left - slop && t.clientX <= r.right + slop &&
+                t.clientY >= r.top - slop && t.clientY <= r.bottom + slop) continue;
+            e.preventDefault();
+          }
+          this._holdIds[id] = null;
+          b.classList.remove('on');
+          setHold(false);
+        }
+      };
+      b.addEventListener('touchend', (e) => release(e, false));
+      b.addEventListener('touchcancel', (e) => release(e, false));
+      b.addEventListener('touchmove', (e) => release(e, true), { passive: false });
+      b.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+    };
+    // 跳跃：陆地点击=跳（dispatch 'jump'）；游泳时长按=上浮（touchJumpHold 供物理层读）
+    bindHold('btn-jump', 'jump', (v) => { this.touchJumpHold = v; });
+    // 下潜：仅游泳时显示；长按=下潜（touchDiveHold），松开立即停止
+    bindHold('btn-dive', 'dive', (v) => { this.touchDiveHold = v; });
+
+    // F（v1.4）：切后台 / 失去焦点时清理全部触控输入——
+    // 避免切出去回来后"人物一直走 / 一直下潜 / 视角乱飞"。
+    // v1.5 W8：桌面端也要清键盘（按住 W 切后台回来不再"鬼走"）。
+    const onHide = () => { this.clearAll(); };
+    document.addEventListener('visibilitychange', () => { if (document.hidden) onHide(); });
+    addEventListener('blur', onHide);
+    addEventListener('pagehide', onHide);
+
     this.applyJoySide();
+  };
+
+  // G（v1.3）：触屏按钮高亮与玩家状态同步（UI.updateBars 节流调用）
+  // F（v1.4）：是否在游泳（头部在水下 / 身处水域）——决定下潜按钮显隐与跳跃按钮语义
+  I.isSwimming = function () {
+    const S = BR.Swim, P = BR.Player;
+    if (S && S.inWater) return true; // L37 主实现每帧维护
+    // 兜底：L7 shim 无 inWater 时，用水域 + 眼睛高度判定
+    try {
+      if (S && typeof S.zoneAt === 'function' && P && P.pos && typeof P.eyeY === 'function') {
+        const z = S.zoneAt(P.pos.x, P.pos.z);
+        if (z && z.waterY != null && P.eyeY() < z.waterY) return true;
+      }
+    } catch (e) {}
+    return false;
+  };
+  // F（v1.4）：清理全部触控输入（切后台 / 菜单锁定 / 测试复位用）。
+  // 注意：不碰键盘 keys（E 路辖区）与 runToggle（疾跑是触屏开关式状态，非按住）。
+  I.clearTouchInputs = function () {
+    this.joyId = null; this.joyX = 0; this.joyY = 0;
+    this.lookId = null; this.lookDX = 0; this.lookDY = 0;
+    this._interact = false;
+    this.touchJumpHold = false;
+    this.touchDiveHold = false;
+    this._holdIds = {};
+    const base = BR.$('joy-base'), knob = BR.$('joy-knob');
+    if (base) base.style.display = 'none';
+    if (knob) knob.style.transform = 'translate(0px,0px)';
+    for (const id of ['btn-jump', 'btn-dive']) {
+      const b = BR.$(id);
+      if (b) b.classList.remove('on');
+    }
+  };
+  I.syncTouchStates = function () {
+    const P = BR.Player;
+    if (!P || !this.isTouch) return;
+    const tgl = (id, on) => {
+      const b = BR.$(id);
+      if (b) b.classList.toggle('on', !!on);
+    };
+    tgl('btn-crouch', P.crouching);
+    tgl('btn-thirdperson', P.thirdPerson);
+    tgl('btn-use', P.flashlightOn);
+    tgl('btn-run', this.runToggle);
+    // F（v1.4）：游泳时显示下潜按钮；跳跃按钮语义切换为"上浮"（长按）
+    const swimming = this.isSwimming();
+    document.body.classList.toggle('swimming', swimming);
+    // v1.5 W8：坐骑时显示下坐骑按钮（body.mounted → CSS 显示 .mount-only）
+    document.body.classList.toggle('mounted', !!(P.mountHandle));
+    const jb = BR.$('btn-jump');
+    if (jb) {
+      jb.classList.toggle('swim', swimming);
+      jb.classList.toggle('on', !!this.touchJumpHold);
+      jb.setAttribute('aria-label', swimming ? '上浮（长按）' : '跳跃');
+      jb.setAttribute('title', swimming ? '上浮（长按）' : '跳跃');
+    }
+    tgl('btn-dive', this.touchDiveHold);
   };
 
   I.applyJoySide = function () {
@@ -451,9 +754,16 @@
     x += this.joyX; z += -this.joyY; // 摇杆上推 = 前
     const m = Math.hypot(x, z);
     if (m > 1) { x /= m; z /= m; }
+    if (m > 0.05 && this.firstHint) this.firstHint('move'); // v1.5 W2：首次移动提示
     return { x, z };
   };
   Object.defineProperty(I, 'runHeld', { get() { const k = this.keys; return (this.bindings.run || []).some(c => !!k[c]); } });
+  // E 路（v1.4）：跳跃（陆地=点按起跳，水中=按住上浮）/ 下潜（水中按住=下沉）；
+  // 触屏标志兼容两套命名：touchJump/touchDive（E 路预留）与 touchJumpHold/touchDiveHold
+  // （F 路触摸按钮实际写入）；物理层只做边沿/按住轮询，dispatchAction('jump'/'dive')
+  // 保持无 case（F 路按钮的 touchstart 置 hold=true 已产生上升沿，无需另起分发）。
+  Object.defineProperty(I, 'jumpHeld', { get() { const k = this.keys; return ((this.bindings.jump || []).some(c => !!k[c])) || !!this.touchJump || !!this.touchJumpHold; } });
+  Object.defineProperty(I, 'diveHeld', { get() { const k = this.keys; return ((this.bindings.dive || []).some(c => !!k[c])) || !!this.touchDive || !!this.touchDiveHold; } });
   I.consumeLook = function () {
     const r = { dx: this.lookDX, dy: this.lookDY };
     this.lookDX = 0; this.lookDY = 0;
@@ -463,6 +773,8 @@
     const r = this._interact; this._interact = false; return r;
   };
   I.setTouchVisible = function (v) {
-    BR.$('touch-ui').style.display = v ? 'block' : 'none';
+    // F（v1.4）：触控 UI 只在触屏设备显示；桌面端进关时 main.js 也会调这里，
+    // 之前会导致桌面凭空出现一排触控按钮。
+    BR.$('touch-ui').style.display = (v && this.isTouch) ? 'block' : 'none';
   };
 })();

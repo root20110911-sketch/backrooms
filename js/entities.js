@@ -262,10 +262,10 @@
     pois.filter(p => p.type === 'watcher').forEach(p => {
       spawn('watcher', p.tx, p.ty, W, p.data || {});
     });
-    // 利维坦：L7（POI type 'leviathan'，单点 + data.depth；栖居最深水区，不远离巢穴）
-    pois.filter(p => p.type === 'leviathan').forEach(p => {
-      spawn('leviathan', p.tx, p.ty, W, p.data || {});
-    });
+    // 利维坦：v1.5 W3 重构——L7 的深海实体只做环境演出（lv_l7.js 的远影/极低频声/
+    // 局部水面变化/超尺度身体局部），不再经 POI 生成追逐实体。
+    // POI type 'leviathan' 保留为环境演出的锚点（lv_l7.js initEntity 用 homeX/homeZ）。
+    // 此处不再 spawn('leviathan', …)；buildLeviathan/updateLeviathan 保留未用。
   };
 
   E.dispose = function () {
@@ -327,6 +327,9 @@
 
   /* ---------- 移动 ---------- */
   function moveToward(ent, tx, tz, speed, dt) {
+    // 断电事件加成：灯灭期间实体更活跃，移速 ×1.25。
+    // 按 W.blackout 实时加成（随机断电/L1 POI 闪烁区都走这个旗），断电结束自动恢复，无需手动还原。
+    if (ent.W && ent.W.blackout) speed *= 1.25;
     const dx = tx - ent.x, dz = tz - ent.z;
     const d = Math.hypot(dx, dz);
     if (d < 0.15) return true;
@@ -451,6 +454,9 @@
     else v = 16;
     // 低理智：你更容易被"注意"到（也更难集中精神躲藏）
     if (BR.Player && BR.Player.sanity < 30) v *= 1.35;
+    // 断电事件加成：索敌半径 ×1.3，随 W.blackout 自动恢复
+    // （与 lurker 自带的黑暗增益是两套独立加成，会叠加——黑暗里它本来就看得远，断电更甚）
+    if (ent.W && ent.W.blackout) v *= 1.3;
     return v;
   }
 
