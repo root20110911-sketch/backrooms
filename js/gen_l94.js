@@ -229,9 +229,34 @@
       var kt = randTileInRoom(rng, map, kr);
       addPOI(map, 'crate', kt[0], kt[1], { item: items[k] });
     }
+    // 薄墙 1~2 处（"布景裂缝"：贴墙挤压 1.4s 后跨关切出；距出生≥6 格、两两≥8 格）
+    var twTarget = 1 + rng.int(0, 1), twPlaced = 0, twGuard = 0;
+    while (twPlaced < twTarget && twGuard++ < 90) {
+      var tr = pickRoom(rng, map, [spawnRoom]);
+      var tt = randTileInRoom(rng, map, tr), tx = tt[0], ty = tt[1];
+      var tdirs = rng.shuffle([[1, 0], [-1, 0], [0, 1], [0, -1]]), twall = null;
+      for (var td = 0; td < 4; td++) {
+        var wx2 = tx + tdirs[td][0], wy2 = ty + tdirs[td][1];
+        if (wx2 < 1 || wy2 < 1 || wx2 >= map.w - 1 || wy2 >= map.h - 1) continue;
+        if (map.tiles[wy2 * map.w + wx2] !== 1) { twall = tdirs[td]; break; }
+      }
+      if (!twall) continue;
+      if (Math.hypot(tx - sx, ty - sy) < 6) continue;
+      var tdup = false;
+      for (var tk = 0; tk < map.pois.length; tk++) {
+        var tp = map.pois[tk];
+        if (tp.type === 'thin_wall' && Math.hypot(tp.tx - tx, tp.ty - ty) < 8) { tdup = true; break; }
+      }
+      if (tdup) continue;
+      addPOI(map, 'thin_wall', tx, ty, { dx: twall[0], dz: twall[1] });
+      twPlaced++;
+    }
   }
 
-  BR.Gen.registerLevel('L94',
+  // v1.5 W6：Level 94「动画」退役 —— 被 Level !「不想死就快跑！」(id 'bang') 替换。
+  // 生成注册已摘除；老存档由 js/save.js 迁移。文件保留作历史参考，不再被 index.html 加载。
+  // BR.Gen.registerLevel('L94',  // RETIRED 2026-10-03
+  if (false) BR.Gen.registerLevel('__L94_RETIRED__',
     { rw: [6, 12], rh: [6, 12], corrW: [2, 3], loops: [2, 4], wallH: 3.2 },
     placeL94,
     ['spawn', 'car', 'castle', 'cache']

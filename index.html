@@ -33,7 +33,7 @@ window.addEventListener('unhandledrejection', function (e) {
   var r = e.reason; showBrErr('REJ: ' + (r && (r.message || r) || '?'));
 });
 </script>
-<link rel="stylesheet" href="css/style.css?v=1.2.8">
+<link rel="stylesheet" href="css/style.css?v=1.5.0">
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
@@ -138,7 +138,9 @@ window.addEventListener('unhandledrejection', function (e) {
     <label>视角灵敏度 <span class="val" id="sens-val"></span><input id="set-sens" type="range" min="0.3" max="2.5" step="0.1"></label>
     <label>音量 <span class="val" id="vol-val"></span><input id="set-vol" type="range" min="0" max="1" step="0.05"></label>
     <label>镜头晃动 <select id="set-headbob"><option value="on">开</option><option value="weak">弱</option><option value="off">关</option></select></label>
+    <label>减镜头震动 <select id="set-shakecam"><option value="on">开</option><option value="weak">弱</option><option value="off">关</option></select></label>
     <label>坠落镜头 <select id="set-dropcam"><option value="full">完整</option><option value="soft">柔和</option><option value="off">关闭</option></select></label>
+    <label>低理智特效 <select id="set-sanityfx"><option value="on">开</option><option value="off">关</option></select></label>
     <label>摇杆大小 <span class="val" id="joysize-val"></span><input id="set-joysize" type="range" min="90" max="170" step="5"></label>
     <label>摇杆位置 <select id="set-joyside"><option value="left">左侧</option><option value="right">右侧</option></select></label>
     <label>画质 <select id="set-quality"><option value="auto">自动</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
@@ -199,30 +201,35 @@ window.addEventListener('unhandledrejection', function (e) {
 <script>window.THREE || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>')</script>
 <script>window.THREE || document.write('<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>')</script>
 <script>window.THREE || showBrErr('3D 引擎加载失败：请检查网络后刷新重试')</script>
-<script src="js/config.js?v=1.2.3"></script>
-<script src="js/utils.js?v=1.2.3"></script>
-<script src="js/textures.js?v=1.2.3"></script>
-<script src="js/audio.js?v=1.2.7"></script>
-<script src="js/gen.js?v=1.2.8"></script>
-<script src="js/gen_l188.js?v=1.2.3"></script>
-<script src="js/gen_l37.js?v=1.2.3"></script>
-<script src="js/gen_l94.js?v=1.2.3"></script>
-<script src="js/gen_l7.js?v=1.2.3"></script>
-<script src="js/gen_l11.js?v=1.2.3"></script>
-<script src="js/world.js?v=1.2.3"></script>
-<script src="js/player.js?v=1.2.9"></script>
-<script src="js/input.js?v=1.2.7"></script>
-<script src="js/entities.js?v=1.2.8"></script>
-<script src="js/transitions.js?v=1.2.3"></script>
-<script src="js/cutout.js?v=1.2.3"></script>
-<script src="js/levels.js?v=1.2.6"></script>
-<script src="js/lv_l188.js?v=1.2.3"></script>
-<script src="js/lv_l37.js?v=1.2.3"></script>
-<script src="js/lv_l94.js?v=1.2.3"></script>
-<script src="js/lv_l7.js?v=1.2.3"></script>
-<script src="js/lv_l11.js?v=1.2.3"></script>
-<script src="js/ui.js?v=1.2.8"></script>
-<script src="js/save.js?v=1.2.8"></script>
-<script src="js/main.js?v=1.2.8"></script>
+<script src="js/config.js?v=1.5.0"></script>
+<script src="js/utils.js?v=1.5.0"></script>
+  <script src="js/items.js?v=1.5.0"></script>
+<script src="js/textures.js?v=1.5.0"></script>
+<script src="js/audio.js?v=1.5.0"></script>
+<script src="js/gen.js?v=1.5.0"></script>
+<script src="js/gen_l188.js?v=1.5.0"></script>
+<script src="js/gen_l37.js?v=1.5.0"></script>
+<!-- v1.5 W6：Level 94「动画」退役（被 Level ! 'bang' 替换），gen_l94.js 不再加载 -->
+<script src="js/gen_l7.js?v=1.5.0"></script>
+<script src="js/gen_l11.js?v=1.5.0"></script>
+<script src="js/gen_bang.js?v=1.5.0"></script>
+<script src="js/world.js?v=1.5.0"></script>
+<script src="js/player.js?v=1.5.0"></script>
+<script src="js/input.js?v=1.5.0"></script>
+<script src="js/entities.js?v=1.5.0"></script>
+<script src="js/transitions.js?v=1.5.0"></script>
+<script src="js/cutout.js?v=1.5.0"></script>
+<script src="js/levels.js?v=1.5.0"></script>
+<script src="js/levels2.js?v=1.5.0"></script>
+<script src="js/lv_l188.js?v=1.5.0"></script>
+<script src="js/lv_l37.js?v=1.5.0"></script>
+<!-- v1.5 W6：Level 94「动画」退役（被 Level ! 'bang' 替换），lv_l94.js 不再加载 -->
+<script src="js/lv_l7.js?v=1.5.0"></script>
+<script src="js/lv_l11.js?v=1.5.0"></script>
+<script src="js/lv_bang.js?v=1.5.0"></script>
+<script src="js/sanityEvents.js?v=1.5.0"></script>
+<script src="js/ui.js?v=1.5.0"></script>
+<script src="js/save.js?v=1.5.0"></script>
+<script src="js/main.js?v=1.5.0"></script>
 </body>
 </html>

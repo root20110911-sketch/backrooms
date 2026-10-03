@@ -15,9 +15,12 @@ window.BR = window.BR || {};
     FOV: 72, FOV_RUN: 78,
     STEP_LEN: 2.1,             // 每步距离（米），触发脚步声
     qualities: {
-      low:  { pixelRatio: 1.0, fogScale: 0.75, maxLights: 3, fixtures: 14, particles: 0.4 },
-      mid:  { pixelRatio: 1.5, fogScale: 1.0,  maxLights: 5, fixtures: 22, particles: 0.7 },
-      high: { pixelRatio: 2.0, fogScale: 1.25, maxLights: 7, fixtures: 32, particles: 1.0 }
+      // H 路 v1.4：与 main.js applyQuality 的档位对齐（fogScale/maxLights/pr/grain/lightDist/particles）；
+      // pixelRatio=pr，fixtures 为灯具密度参考（world.js 按主题 fixtureEvery 布灯）。
+      // 实时阴影灯：全档 0（设计选择，见 world.js W.shadowLightCount）。
+      low:  { pixelRatio: 1.0, fogScale: 0.8,  maxLights: 3, fixtures: 14, particles: 0.4, grain: 0, lightDist: 16 },
+      mid:  { pixelRatio: 1.5, fogScale: 1.0,  maxLights: 5, fixtures: 22, particles: 0.7, grain: 1, lightDist: 20 },
+      high: { pixelRatio: 2.0, fogScale: 1.15, maxLights: 7, fixtures: 32, particles: 1.0, grain: 1, lightDist: 24 }
     }
   };
   // 调试输出：?debug=1 或 localStorage br_debug=1
