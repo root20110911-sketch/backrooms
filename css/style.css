@@ -127,6 +127,12 @@ button:disabled { opacity: 0.4; }
 .keys-table td { padding: 5px 4px; border-bottom: 1px solid rgba(59,56,46,0.6); color: #b9b5a6; vertical-align: top; }
 .keys-table tr:last-child td { border-bottom: none; }
 .keys-table td:first-child { width: 76px; color: #8f8b7d; letter-spacing: 2px; white-space: nowrap; }
+/* G（v1.3）：双平台说明表头（动作 / 电脑端 / 手机端） */
+.keys-table th {
+  padding: 5px 4px; border-bottom: 1px solid rgba(128,112,70,0.7);
+  color: #d3ba72; font-weight: 600; font-size: 12px; letter-spacing: 3px; text-align: left;
+  white-space: nowrap;
+}
 .keys-table .k {
   display: inline-block; border: 1px solid #4a463a; border-radius: 4px;
   padding: 1px 7px; margin: 1px 2px; color: #d3ba72;
@@ -199,6 +205,8 @@ button.ghost.bind-key.capturing {
 .inv-item:active { transform: scale(0.93); }
 .inv-item.empty { opacity: 0.35; }
 .inv-item.on { border-color: #8a743d; box-shadow: 0 0 10px rgba(138,116,61,0.45); }
+/* v1.5 W8：快捷栏选中（数字键 1-5 / 点选），与"手电开启"区分用冷色描边 */
+.inv-item.sel { border-color: #7fb3c8; box-shadow: 0 0 10px rgba(127,179,200,0.5); }
 .inv-item .ic { display: block; height: 22px; margin-bottom: 3px; color: #cdb872; }
 .inv-item .ic svg { width: 22px; height: 22px; }
 .inv-item .nm { font-size: 11px; letter-spacing: 1px; color: #a8a496; display: block; }
@@ -255,7 +263,10 @@ button.ghost.bind-key.capturing {
   border: 1px solid #50402e; border-radius: 3px; overflow: hidden;
 }
 #hun-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #a8742f, #d8a04a); transition: width 0.3s; }
-#hun-fill.low { background: linear-gradient(90deg, #96422f, #d06a3f); animation: sanpulse 1.2s ease-in-out infinite; }
+/* E：饥饿档位警告——≤33 虚弱档红闪；归零红闪加强（更快更亮） */
+#hun-fill.weak { background: linear-gradient(90deg, #8a2f2f, #c04040); animation: sanpulse 1.2s ease-in-out infinite; }
+#hun-fill.crit { background: linear-gradient(90deg, #a01212, #e03030); animation: hunpulse 0.5s ease-in-out infinite; }
+@keyframes hunpulse { 50% { opacity: 0.25; } }
 /* HUD 角落常驻键位提示（桌面端；触屏由 ui.js 设 display:none） */
 #key-hint {
   position: absolute; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
@@ -309,9 +320,14 @@ body.joy-right #joy-zone { left: auto; right: 0; }
 }
 #touch-btns {
   position: absolute; right: 14px; bottom: calc(20px + env(safe-area-inset-bottom));
-  display: flex; flex-direction: column; gap: 12px; align-items: flex-end; pointer-events: auto;
+  display: flex; flex-direction: column; gap: 14px; align-items: flex-end; pointer-events: auto;
 }
 body.joy-right #touch-btns { right: auto; left: 14px; }
+/* v1.5 W8：下坐骑按钮仅坐骑时显示（input.js syncTouchStates 切 body.mounted） */
+.tbtn.mount-only { display: none; }
+body.mounted .tbtn.mount-only { display: flex; }
+/* v1.5 W8：蹲下按钮仅陆地显示（游泳时走跳跃簇的下潜按钮） */
+body.swimming .tbtn.land-only { display: none; }
 .tbtn {
   width: 60px; height: 60px; border-radius: 50%; margin: 0; padding: 0;
   background: rgba(14,15,18,0.62); border: 1.5px solid rgba(214,210,196,0.32);
@@ -329,6 +345,24 @@ body.joy-right #touch-btns { right: auto; left: 14px; }
   width: 44px; height: 44px; pointer-events: auto;
 }
 .tbtn.mini svg { width: 18px; height: 18px; }
+
+
+/* ---------- F（v1.4）：跳跃/下潜触控簇 ---------- */
+/* 交互大钮左侧的横排拇指区：[下潜（仅游泳）][跳跃/上浮]；与右侧纵列对齐底部 */
+#touch-jump-cluster {
+  position: absolute; right: calc(14px + 82px + 16px);
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: row; gap: 16px; align-items: flex-end;
+  pointer-events: auto;
+}
+body.joy-right #touch-jump-cluster { right: auto; left: calc(14px + 82px + 16px); }
+/* 下潜按钮：仅游泳时显示（input.js syncTouchStates 切 body.swimming） */
+.tbtn.swim-only { display: none; }
+body.swimming .tbtn.swim-only { display: flex; }
+/* 游泳时跳跃按钮=上浮：水蓝色高亮，区别于陆地跳跃 */
+.tbtn.swim { border-color: rgba(120,190,220,0.65); background: rgba(24,52,72,0.62); color: #d5ecf7; }
+/* 长按防 iOS 弹出菜单（body 已全局禁选/touch-action:none，这里补 callout） */
+.tbtn { -webkit-touch-callout: none; touch-action: none; }
 
 /* ---------- 横屏引导遮罩 ---------- */
 #screen-orient {
@@ -383,6 +417,9 @@ body.need-orient #screen-orient { display: flex; }
   .tbtn { width: 54px; height: 54px; }
   .tbtn.big { width: 72px; height: 72px; }
   #touch-btns { gap: 9px; }
+  /* F（v1.4）：矮屏下跳跃簇跟随缩小 */
+  #touch-jump-cluster { right: calc(14px + 72px + 12px); gap: 12px; }
+  body.joy-right #touch-jump-cluster { right: auto; left: calc(14px + 72px + 12px); }
 }
 /* 窄屏竖屏：面板收紧 */
 @media (max-width: 420px) {
@@ -395,6 +432,11 @@ body.underwater #fx-water {
   position: fixed; inset: 0; z-index: 14; pointer-events: none;
   background: linear-gradient(180deg, rgba(20,80,110,0.35), rgba(8,40,70,0.55));
 }
+/* v1.5 L7：深海水下 = 有限透光（压暗+去饱和），不是蓝色滤镜 */
+body.underwater.l7deep #fx-water {
+  background: linear-gradient(180deg, rgba(10,14,16,0.55), rgba(2,5,8,0.82));
+}
+body.underwater.l7deep #game-canvas { filter: saturate(0.55) brightness(0.72); }
 body.underwater #game-canvas { filter: saturate(1.2) brightness(0.85); }
 #breath-wrap {
   position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%);
@@ -404,3 +446,55 @@ body.underwater #game-canvas { filter: saturate(1.2) brightness(0.85); }
 body.underwater #breath-wrap.need { display: block; }
 #breath-fill { height: 100%; width: 100%; border-radius: 3px;
   background: linear-gradient(90deg, #4fc3e8, #9fe8ff); transition: width 0.2s; }
+
+/* ---------- M.E.G. 前哨交易站（商店面板） ---------- */
+#screen-shop .shop-panel { max-width: 620px; width: min(620px, 94vw); }
+.shop-wallet { font-size: 13px; color: #d3ba72; font-weight: 400; letter-spacing: 1px; margin-left: 8px; }
+.shop-wallet b { color: #e8cf7a; font-size: 16px; }
+.shop-sub { font-size: 13px; color: #8a867a; margin: 2px 0 10px; letter-spacing: 1px; }
+#shop-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; margin-bottom: 10px; text-align: left; }
+.shop-row {
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(10,11,14,0.78); border: 1px solid #3f3d33; border-radius: 6px;
+  padding: 10px 12px; color: #cfcaba;
+}
+.shop-row .ic { display: block; height: 30px; color: #cdb872; flex: none; }
+.shop-row .ic svg { width: 30px; height: 30px; }
+.shop-info { flex: 1; min-width: 0; }
+.shop-name { font-size: 14px; color: #e8e4d8; letter-spacing: 2px; display: block; }
+.shop-own { font-size: 11px; color: #7a766a; letter-spacing: 1px; margin-left: 8px; }
+.shop-desc { font-size: 12px; color: #8a867a; line-height: 1.6; display: block; margin-top: 2px; }
+.shop-buy {
+  flex: none; width: auto; /* G 修：覆盖全局 button{width:100%}，否则按钮撑满整行挤掉商品名 */
+  padding: 8px 12px; border-radius: 6px; cursor: pointer;
+  background: #3a3220; border: 1px solid #8a743d; color: #e8cf7a;
+  font-size: 13px; letter-spacing: 1px; white-space: nowrap;
+}
+.shop-buy:active { transform: scale(0.95); }
+.shop-row.cant { opacity: 0.55; }
+.shop-buy.cant { background: #222; border-color: #444; color: #777; cursor: not-allowed; }
+
+/* ---------- M.E.G. 商店：触屏适配（硬性要求） ---------- */
+.shop-row, .shop-buy, #btn-shop-close {
+  touch-action: manipulation; /* 去掉双击缩放延迟 */
+  -webkit-tap-highlight-color: transparent;
+}
+#shop-list { -webkit-overflow-scrolling: touch; }
+@media (pointer: coarse) {
+  /* 小屏手机：面板收紧，字体/按钮放大到可触摸尺寸 */
+  #screen-shop .shop-panel { padding: 16px 14px; max-height: 94vh; max-height: 94dvh; }
+  #screen-shop .panel h2 { font-size: 19px; margin-bottom: 8px; }
+  .shop-sub { font-size: 13px; }
+  #shop-list { max-height: 46vh; max-height: 46dvh; }
+  .shop-row { padding: 12px 10px; gap: 10px; min-height: 68px; cursor: pointer; }
+  .shop-row .ic { height: 34px; }
+  .shop-row .ic svg { width: 34px; height: 34px; }
+  .shop-name { font-size: 15px; }
+  .shop-own { font-size: 12px; }
+  .shop-desc { font-size: 13px; }
+  .shop-buy { padding: 12px 14px; font-size: 14px; min-height: 48px; }
+  #btn-shop-close { min-height: 48px; font-size: 16px; width: 100%; }
+}
+
+/* ---------- G v1.4：背包详情数量行（选中物品 名称/数量/用途/操作 四要素之一） ---------- */
+.bp-dcount { font-size: 13px; color: #d3ba72; font-weight: 700; letter-spacing: 1px; margin-bottom: 10px; }
