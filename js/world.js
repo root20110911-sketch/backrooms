@@ -45,6 +45,9 @@
   const chunkOf = (tx, ty) => key2(Math.floor(tx / CH), Math.floor(ty / CH));
   W.chunkKeyOf = (tx, ty) => chunkOf(tx, ty);
 
+  // H 路：遮挡检查用的复用向量（避免每 0.12s 的交互检测产生 GC）
+  const _occDir = new THREE.Vector3();
+
   W.tile = function (tx, ty) {
     const m = this.map;
     if (!m || tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return 0;
@@ -129,6 +132,8 @@
       this.map = map;
       this.theme = (BR.Levels[map.level] && BR.Levels[map.level].theme) || {};
       this.state = savedState || { openedDoors: [], picked: [], openedCrates: [], events: [] };
+      // v1.5 W1：恢复区块级状态（老存档缺 chunkState 字段 → 空对象，向后兼容）
+      BR.ChunkState.deserialize(this.state.chunkState);
       const th = this.theme;
       sharedGeo();
 
@@ -163,6 +168,8 @@
       if (BR.Levels[map.level] && BR.Levels[map.level].buildContent) {
         BR.Levels[map.level].buildContent(map, this);
       }
+      // Systems D：环境涂鸦（各关通用；gen.js 已按种子登记 'graffiti' POI）
+      if (BR.buildGraffitiDecals) BR.buildGraffitiDecals(map, this);
       // 实体
       if (BR.Entities && BR.Entities.spawnForMap) BR.Entities.spawnForMap(map, this);
 
@@ -189,10 +196,16 @@
     this.contentHooks.clear();
     this.interactables = []; this.interactMeshes = [];
     this.doors = {}; this.fixtures = []; this.lights = [];
+    // v1.5 W1：跨关扫尾 —— 残留的蒸汽循环音源清掉（卸区块时已逐个停，这里防漏）
+    if (BR.Audio && BR.Audio.removeLoop)
+      for (const v of this.steamVents) BR.Audio.removeLoop('steam_' + v.id);
     this.steamVents = []; this.lowDucts.clear();
     this.elevator = null; this.blackout = false;
-    this._noWall = null; this._openCeil = null; this._matCache = null;
+    this._rbT = null; this._rbDur = 0; // 随机断电事件计时：跨关不残留
+    this._noWall = null; this._openCeil = null; this._openFloor = null; this._matCache = null;
+    this._funPit = null; // L0 FUN 深坑触发器（levels.js 登记，跨关不残留）
     this._manilaRect = null; // 马尼拉房间灯具禁区（levels.js 登记，跨关不残留）
+    this._shopNPC = null;    // M.E.G. 交易站 NPC 动画引用（跨关不残留）
     this._surfZones = null;
     // 闪烁风暴出口提示音（updateStormHint 建的循环声）清理
     if (this._stormHintOn && BR.Audio && BR.Audio.removeLoop) BR.Audio.removeLoop('storm_exit_hint');
@@ -255,10 +268,16 @@
       for (let tx = x0; tx < x0 + CH && tx < this.map.w; tx++) {
         const t = this.tile(tx, ty);
         const wx = BR.tileCX(tx), wz = BR.tileCZ(ty);
-        if (t === 1) {
-          dummy.position.set(wx, 0, wz); dummy.rotation.set(-Math.PI / 2, 0, 0);
-          dummy.scale.set(1, 1, 1); dummy.updateMatrix();
-          floorM.push(dummy.matrix.clone());
+        // tile=2：二层地板（L188）：渲染/灯具与 1 相同；gen 侧 BFS/缝线只认 1
+        const isFloor = (t === 1 || t === 2);
+        const isGround = (x, y) => { const v = this.tile(x, y); return v === 1 || v === 2; };
+        if (isFloor) {
+          // v1.5 W2：setOpenFloor 登记的破洞 tile 跳过地板实例（坑体由内容钩子自建）
+          if (!this.openFloorAt(tx, ty)) {
+            dummy.position.set(wx, 0, wz); dummy.rotation.set(-Math.PI / 2, 0, 0);
+            dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+            floorM.push(dummy.matrix.clone());
+          }
           if (!this.openCeilAt(tx, ty)) {
             dummy.position.set(wx, wallH, wz); dummy.rotation.set(Math.PI / 2, 0, 0);
             dummy.updateMatrix(); ceilM.push(dummy.matrix.clone());
@@ -267,10 +286,11 @@
           const dens = th.fixtureEvery || 5;
           const _mz = this._manilaRect;
           const _inMz = _mz && tx >= _mz.x0 && tx <= _mz.x1 && ty >= _mz.y0 && ty <= _mz.y1;
-          if (rngH.int(1, dens) === 1 && !this.blackout && !_inMz) {
+          if (rngH.int(1, dens) === 1 && !this.blackout && !_inMz && !this.openFloorAt(tx, ty) && !this.openCeilAt(tx, ty)) {
             dummy.position.set(wx, wallH - 0.02, wz); dummy.rotation.set(Math.PI / 2, 0, 0);
             dummy.updateMatrix(); fixM.push(dummy.matrix.clone());
-            chunk.fixtures.push({ x: wx, y: wallH - 0.15, z: wz, phase: rngH.next() * 9, flicker: rngH.chance(th.flickerRate != null ? th.flickerRate : 0.12) });
+            chunk.fixtures.push({ x: wx, y: wallH - 0.15, z: wz, phase: rngH.next() * 9, flicker: rngH.chance(th.flickerRate != null ? th.flickerRate : 0.12),
+              bright: 0.88 + rngH.next() * 0.24 }); // W10：灯具亮度个体差异（种子派生 ±12%，灯下不死板均匀）
           }
         } else {
           // 墙：任一 4 邻域是地面则渲染；门洞/电梯井跳过（专用网格覆盖）
@@ -283,8 +303,8 @@
             floorM.push(dummy.matrix.clone());
           }
           if (!hasDoor && !noWall &&
-              (this.tile(tx + 1, ty) === 1 || this.tile(tx - 1, ty) === 1 ||
-               this.tile(tx, ty + 1) === 1 || this.tile(tx, ty - 1) === 1)) {
+              (isGround(tx + 1, ty) || isGround(tx - 1, ty) ||
+               isGround(tx, ty + 1) || isGround(tx, ty - 1))) {
             dummy.position.set(wx, wallH / 2, wz); dummy.rotation.set(0, 0, 0);
             dummy.scale.set(1, wallH, 1); dummy.updateMatrix();
             wallM.push(dummy.matrix.clone());
@@ -333,11 +353,27 @@
     this._openCeil = this._openCeil || new Set();
     this._openCeil.add(tx + ',' + ty);
   };
+  // 地板破洞（L0 fun_hole2 真实深坑等）由 levels.js 登记：buildChunk 跳过该 tile 的
+  // 地板/灯具实例，内容钩子自行建造坑体几何
+  W.openFloorAt = function (tx, ty) {
+    return !!(this._openFloor && this._openFloor.has(tx + ',' + ty));
+  };
+  W.setOpenFloor = function (tx, ty) {
+    this._openFloor = this._openFloor || new Set();
+    this._openFloor.add(tx + ',' + ty);
+  };
 
   W.unloadChunkMeshes = function (chunk) {
     // 从场景移除并释放实例缓冲（共享几何体/材质保留）
     this.scene.remove(chunk.group);
     for (const mm of chunk.meshes) mm.dispose();
+    // v1.5 W1：该区块的循环音源必须停掉（蒸汽/机器声），否则卸掉的区块声音会一直残留。
+    // 灯光是全局池按距离重分配的（fixtures 记录已清），无残留；事件监听：区块内容钩子里
+    // 没有 BR.bus.on / addEventListener（已全工程 grep 确认），交互物闭包随数组移除。
+    if (BR.Audio && BR.Audio.removeLoop) {
+      for (const v of this.steamVents)
+        if (v.chunkKey === chunk.key) BR.Audio.removeLoop('steam_' + v.id);
+    }
     // 移除该区块的交互物与灯具记录
     this.interactables = this.interactables.filter(it => it.chunkKey !== chunk.key);
     this.interactMeshes = this.interactMeshes.filter(mm => {
@@ -365,6 +401,80 @@
     this.chunks.delete(k);
   };
 
+  /* ---------------- C 路 v1.4：跨区块确定性 ----------------
+   * 边界契约：整图由（seed）一次性确定性生成，是唯一的真实来源；
+   * 区块只是渲染/碰撞的划分。边界状态 = 缝线处的 tile 行/列，
+   * 由（seed → map）派生；相邻区块读同一份数据（见 BR.Gen.chunkSeam /
+   * BR.Gen.assertChunkSeams），与加载顺序无关。
+   * 碰撞（blocked/circleFree）直接读 map.tiles，不依赖区块 meshes，
+   * 因此碰撞在区块未建/已卸时也不会"暂时消失"。
+   */
+  // 已建区块的确定性指纹：tile 布局哈希（gen 层）+ 灯具 + 交互物 id + 网格数。
+  // 同一种子、同一区块坐标 → 相同指纹，不受加载顺序影响。
+  // 用途："乱序加载 vs 顺序加载"一致性测试；"返回原区块"布局稳定性测试。
+  W.chunkFingerprint = function (cx, cy) {
+    const c = this.chunks.get(key2(cx, cy));
+    if (!c || !this.map || !BR.Gen || !BR.Gen.chunkLayoutHash) return null;
+    const parts = [BR.Gen.chunkLayoutHash(this.map, cx, cy)];
+    const fx = c.fixtures.map(f =>
+      f.x.toFixed(2) + ',' + f.z.toFixed(2) + ',' + f.phase.toFixed(3) + ',' + (f.flicker ? 1 : 0)).sort();
+    parts.push('F' + fx.join(';'));
+    const its = this.interactables.filter(it => it.chunkKey === c.key).map(it => it.id).sort();
+    parts.push('I' + its.join(','));
+    parts.push('M' + c.meshes.length);
+    const s = parts.join('|');
+    return (BR.hashSeed ? (BR.hashSeed(s) >>> 0) : s.length).toString(16);
+  };
+
+  /* ---------------- v1.5 W1：区块状态存档 BR.ChunkState ----------------
+   * 拾取/柜子/门锁/坐骑/事件等"区块级可变状态"的独立存档接口，供各关 builder 用。
+   * - 与关级 W.state（openedDoors/picked/openedCrates/events）分离：按区块 key 隔离，
+   *   各关自定义状态不再挤进全局数组；
+   * - 不随区块卸载重置：数据只活在 ChunkState._data（内存）并直写 W.state.chunkState
+   *   （存档）；区块卸载/重建只影响渲染与交互物实例，不碰这里；
+   * - 存档：W.build 时从 savedState.chunkState 恢复；G.snapshot()/S.saveGame() 走
+   *   W.state 自动带上；老存档缺 chunkState 字段 → 按空处理（向后兼容）；
+   * - 值必须是 JSON 可序列化的（存档走 JSON）。
+   * 用法：const k = W.chunkKeyOf(tx, ty);
+   *       BR.ChunkState.set(k, 'shop_stock', { almond: 3 });
+   *       const stock = BR.ChunkState.get(k, 'shop_stock', {});
+   */
+  const CS = { _data: {} };
+  BR.ChunkState = CS;
+  CS._k = (chunkKey, name) => chunkKey + '::' + name;
+  CS._sync = function () { if (W.state) W.state.chunkState = this._data; };
+  CS.get = function (chunkKey, name, def) {
+    const v = this._data[this._k(chunkKey, name)];
+    return v === undefined ? def : v;
+  };
+  CS.set = function (chunkKey, name, value) {
+    this._data[this._k(chunkKey, name)] = value;
+    this._sync();
+    return value;
+  };
+  CS.remove = function (chunkKey, name) {
+    delete this._data[this._k(chunkKey, name)];
+    this._sync();
+  };
+  CS.has = function (chunkKey, name) {
+    return Object.prototype.hasOwnProperty.call(this._data, this._k(chunkKey, name));
+  };
+  CS.keys = function (chunkKey) {
+    const pre = chunkKey + '::', out = [];
+    for (const k in this._data)
+      if (k.indexOf(pre) === 0) out.push(k.slice(pre.length));
+    return out;
+  };
+  CS.clearChunk = function (chunkKey) {
+    for (const n of this.keys(chunkKey)) this.remove(chunkKey, n);
+  };
+  CS.serialize = function () { return JSON.parse(JSON.stringify(this._data)); };
+  CS.deserialize = function (obj) {
+    this._data = (obj && typeof obj === 'object') ? JSON.parse(JSON.stringify(obj)) : {};
+    this._sync();
+  };
+  CS.reset = function () { this._data = {}; this._sync(); };
+
   /* ---------------- 每帧：加载/卸载 ---------------- */
   W.update = function (dt, px, pz, force) {
     this.time += dt;
@@ -377,10 +487,32 @@
     this.buildQueue = [];
     for (let cy = pcy - R; cy <= pcy + R; cy++)
       for (let cx = pcx - R; cx <= pcx + R; cx++) {
+        // C 路 v1.4：完全落在地图外的区块不建（56×56 恰为 7×8 区块，无半包区块）
+        if (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h) continue;
         const k = key2(cx, cy);
         if (!this.chunks.has(k)) this.buildQueue.push({ cx, cy, d: Math.abs(cx - pcx) + Math.abs(cy - pcy) });
       }
     this.buildQueue.sort((a, b) => a.d - b.d);
+    // v1.5 W1：前进方向预加载 —— 玩家朝向的扇区多预载 1 圈（R+1），朝向对齐（余弦）> 0.6
+    // 的区块优先入队（d 减 0.5，排在同圈远角之前）。行走 3.4~5.6m/s，区块 24m，
+    // 前方 1 区块 ≈ 4~7s 路程；配合每帧 1 区块预算，玩家靠近前必建好，无虚空/墙体突现。
+    // （卸载阈值是 >R+1，预载的这圈不会被立即卸掉。）
+    const P = BR.Player;
+    if (P && isFinite(P.yaw)) {
+      const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw); // yaw=0 面向 -z（见 player.js）
+      for (let cy = pcy - R - 1; cy <= pcy + R + 1; cy++)
+        for (let cx = pcx - R - 1; cx <= pcx + R + 1; cx++) {
+          const ox = cx - pcx, oy = cy - pcy;
+          const rad = Math.max(Math.abs(ox), Math.abs(oy));
+          if (rad <= R || rad > R + 1) continue; // 方阵已覆盖 / 超出预载圈
+          const len = Math.hypot(ox, oy) || 1;
+          if ((ox * fx + oy * fz) / len < 0.6) continue; // 只预载前进扇区
+          if (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h) continue;
+          const k = key2(cx, cy);
+          if (!this.chunks.has(k)) this.buildQueue.push({ cx, cy, d: rad - 0.5 });
+        }
+      this.buildQueue.sort((a, b) => a.d - b.d);
+    }
     // 预算：每帧最多建 1 个（force 时多建几个保证出生点）
     const t0 = performance.now();
     let built = 0;
@@ -390,6 +522,15 @@
       this.buildChunk(b.cx, b.cy);
       built++;
     }
+    // C 路 v1.4：玩家所在 + 相邻 3×3 区块必须在本帧结束前建好（预算外补建）。
+    // 正常行走时预算构建已跟上，这里只在落后时触发（慢设备、同层传送、刚读档），
+    // 保证玩家脚下永远有地面/碰撞，不出现"虚空帧"；碰撞本身读 tile 网格，
+    // 与区块是否建成无关（circleFree/blocked 不依赖 meshes），这里保的是视觉连续。
+    for (let cy = pcy - 1; cy <= pcy + 1; cy++)
+      for (let cx = pcx - 1; cx <= pcx + 1; cx++) {
+        if (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h) continue;
+        if (!this.chunks.has(key2(cx, cy))) this.buildChunk(cx, cy);
+      }
     // 卸载过远区块（每帧 ≤2）
     let un = 0;
     this.chunks.forEach((c, k) => {
@@ -402,6 +543,7 @@
     this.updateSteam(dt);
     this.updateDoors(dt);
     this.updateStormHint();
+    this.updateRandomBlackout(dt); // 全关卡随机断电事件（只在 playing 时调到这里）
     // 实体
     if (BR.Entities && BR.Entities.update) {
       const ctx = this.entityCtx(px, pz);
@@ -449,6 +591,7 @@
       const f = near[i].f;
       L.position.set(f.x, f.y, f.z);
       let inten = (th.lightInt != null ? th.lightInt : 0.9) * 0.92;
+      inten *= (f.bright || 1); // W10：灯具个体亮度差异
       const flickDepth = th.flickerDepth != null ? th.flickerDepth : 0.15;
       if (f.flicker && !this.blackout) {
         const n = Math.sin(this.time * 37 + f.phase) * Math.sin(this.time * 13.7 + f.phase * 2);
@@ -554,7 +697,9 @@
     this.addInteractable({
       id: 'door_' + id, kind: 'door', chunkKey: d.chunkKey,
       meshes: [panel], pos: new THREE.Vector3(wx, 1.4, wz), radius: 2.2,
-      prompt: def.prompt || (() => d.locked ? '🔒 ' + (def.label || '门') + '（锁住了）' : (d.open ? '关上' : '打开') + (def.label || '门')),
+      // W9：统一加按键标签（读 BR.Input 当前绑定，不硬编码；levels.js 在运行时已定义）
+      prompt: def.prompt || (() => (BR.interactKeyLabel ? BR.interactKeyLabel() : '') +
+        (d.locked ? '🔒 ' + (def.label || '门') + '（锁住了）' : (d.open ? '关上' : '打开') + (def.label || '门'))),
       canUse: () => true,
       use: def.use ? () => def.use(d) : () => {
         if (d.locked) { BR.Audio.doorLocked(); BR.UI.toast('锁住了，纹丝不动'); return; }
@@ -597,8 +742,20 @@
     'pool_exit', 'tunnel', 'deep_exit', 'anomaly_exit', 'car', 'castle',
     'subway', 'entry_door', 'berry_bush', 'cache', 'hideout', 'house',
     'shop', 'balcony', 'room_door', 'lounge', 'staff_room',
-    // builder 实际交付中新增的（lv_l11/lv_l37/lv_l7/lv_l94）
-    'exit', 'inspect', 'shop_sign', 'car_exit', 'castle_exit'
+    // builder 实际交付中新增的（lv_l11/lv_l37/lv_l7/lv_l94/lv_bang）
+    'exit', 'inspect', 'shop_sign', 'car_exit', 'castle_exit',
+    // v1.5 W4（L11 城市重构）：特定井盖出口、异常门
+    'manhole_exit', 'anomaly_door',
+    // F1 新增：跳水台（lv_l37）
+    'dive_board',
+    // v1.5 W5：小鸭子坐骑 / 金属扶梯（lv_l37）
+    'mount_duck', 'ladder',
+    // W9 补登记：此前已在使用但未注册（DEBUG 下会 warn）
+    'fun_hole',   // levels.js：L1 天花板趣味洞（→FUN）
+    'rift',       // cutout.js：随机裂隙
+    // v1.5 W7：L188 百窗庭重构（楼梯换层/返回门/紧急出口/事件窗/穿越窗/魔术窗帘/衣柜）
+    'stair_up', 'stair_down', 'return_door', 'emergency_exit',
+    'event_window', 'travel_window', 'magic_curtain', 'cabinet'
     // 注：'ocean' / 'deep' 是 BR.Swim 的水 zone kind，不是交互物 kind，不在此登记
   ];
   // {id,kind,meshes,pos,radius,prompt(),canUse(),use()}
@@ -625,9 +782,50 @@
       const it = h.object.userData.it;
       if (!it) continue;
       if (h.distance > (it.radius || BR.Config.INTERACT_DIST)) continue;
+      // H 路：遮挡检查——被墙/关着的门挡住就不能隔墙拾取、不能隔墙开远处柜子。
+      // 门自己除外（射线终点就在门 tile 里，tile 步进会跳过终点 tile）。
+      if (this.interactOccluded(origin, h.point)) continue;
       return { it, dist: h.distance, point: h.point };
     }
     return null;
+  };
+
+  // H 路：交互遮挡检查。origin（眼位）→ point（命中点）之间：
+  //  (1) 3D 精确：对玩家周围区块的墙体 InstancedMesh（chunk.meshes 里 BoxGeometry 的只有墙体）
+  //      做射线，命中即被挡；
+  //  (2) tile 步进：用 blocked() 查沿线 tile（覆盖"关着的门"——门 tile 没有墙体盒子，
+  //      靠这一步；终点 tile 跳过，避免门把自己挡住）。
+  // 返回 true = 被挡住（本次命中作废，继续找更远的候选）。
+  W.interactOccluded = function (origin, point) {
+    const dx = point.x - origin.x, dy = point.y - origin.y, dz = point.z - origin.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist < 1e-4) return false;
+    // (1) 墙体射线（只查玩家周围 (R+1) 区块，先粗后细）
+    this._rcOcc = this._rcOcc || new THREE.Raycaster();
+    const rc = this._rcOcc;
+    rc.set(origin, _occDir.set(dx / dist, dy / dist, dz / dist));
+    rc.far = dist - 0.12;
+    const pcx = Math.floor(origin.x / T / CH), pcy = Math.floor(origin.z / T / CH);
+    for (const c of this.chunks.values()) {
+      if (Math.abs(c.cx - pcx) > 3 || Math.abs(c.cy - pcy) > 3) continue;
+      const ms = c.meshes;
+      for (let i = 0; i < ms.length; i++) {
+        const m = ms[i];
+        // r128 的 BoxGeometry 没有 isBoxGeometry 标记，用 type 判（墙体是唯一的盒体实例网格）
+        if (!m.isInstancedMesh || m.geometry.type !== 'BoxGeometry') continue; // 墙体实例网格
+        if (rc.intersectObject(m, false).length) return true;
+      }
+    }
+    // (2) 关着的门：tile 步进（终点 tile 跳过；起点 tile 是玩家脚下，必为地板）
+    const endTX = Math.floor(point.x / T), endTY = Math.floor(point.z / T);
+    const steps = Math.ceil(dist / (T * 0.25));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const tx = Math.floor((origin.x + dx * t) / T), ty = Math.floor((origin.z + dz * t) / T);
+      if (tx === endTX && ty === endTY) continue;
+      if (this.blocked(tx, ty)) return true;
+    }
+    return false;
   };
 
   /* ---------------- 蒸汽 ---------------- */
@@ -701,6 +899,52 @@
     BR.log('blackout', on);
   };
 
+  /* ---------------- 全关卡随机断电事件 ----------------
+   * 规则（与其它灯光事件的叠加约定）：
+   * 1. 任意关卡都可能触发：首次在开局 60~120s 后掷，之后每 75~150s 掷一次；每次持续 8~15s（随机）。
+   * 2. 灯光：复用 setBlackout(true)（灯具全灭、灯罩隐藏）；手电筒（flashSpot 聚光）不受影响，
+   *    断电时手电是唯一可靠光源（toast 里明示）。
+   * 3. 实体：断电期间移速 ×1.25、索敌半径 ×1.30 —— 实现在 entities.js（moveToward / entView），
+   *    按 W.blackout 实时加成，断电结束自动恢复，无需手动还原。
+   * 4. 理智：走 player.js 现有的 world.blackout 分支（3.5/s 侵蚀），不另写逻辑。
+   * 5. 与 L1 闪烁风暴：断电期间暂停风暴的"下一次"计时 _stormT（levels.js 里 !W.blackout 才递减）；
+   *    若断电开始时风暴正好在进行中，flickerStorm.t 照常衰减（不冻结），但灯光层面断电优先
+   *    （updateLights 里 blackout 分支直接 intensity=0 并 continue，风暴闪烁代码不可达），
+   *    电恢复后若风暴还有剩余时间会继续闪——两者叠加不打架。
+   * 6. 与 L1 POI 闪烁区 blackout：共用 W.blackout 旗；随机事件只在 !W.blackout 时触发，
+   *    POI 断电期间随机计时同样暂停（不延长、不嵌套、不抢它那套 setTimeout 结束逻辑）。
+   * 提示：开始/结束走 BR.Audio.blackoutStart/blackoutEnd（电流断开的"啪"+嗡鸣消失 /
+   * 来电的电流爬升+荧光灯逐个点亮声），HUD 小字 toast 提示"电力中断……"。
+   */
+  W.updateRandomBlackout = function (dt) {
+    // 懒初始化：开局 60~120s 后首次掷
+    if (this._rbT == null) this._rbT = 60 + Math.random() * 60;
+    if (this._rbDur == null) this._rbDur = 0;
+    if (this.blackout) {
+      // 已在断电中（随机事件自身或 L1 POI 闪烁区）：随机计时暂停，不触发、不延长
+      if (this._rbDur > 0) {
+        this._rbDur -= dt;
+        if (this._rbDur <= 0) {
+          this._rbDur = 0;
+          this.setBlackout(false);
+          if (BR.Audio && BR.Audio.blackoutEnd) BR.Audio.blackoutEnd();
+          if (BR.UI) BR.UI.toast('电力恢复了，灯重新亮起', 2600);
+          if (BR.bus) BR.bus.emit('blackout:end');
+        }
+      }
+      return;
+    }
+    this._rbT -= dt;
+    if (this._rbT <= 0) {
+      this._rbT = 75 + Math.random() * 75; // 下一次 75~150s 后再掷
+      this._rbDur = 8 + Math.random() * 7;  // 本次持续 8~15s
+      this.setBlackout(true);
+      if (BR.Audio && BR.Audio.blackoutStart) BR.Audio.blackoutStart();
+      if (BR.UI) BR.UI.toast('电力中断……抓紧你的手电筒', 3200);
+      if (BR.bus) BR.bus.emit('blackout:start');
+    }
+  };
+
   /* ---------------- 闪烁风暴出口提示（L1 "必须判断"元素） ---------------- */
   // 闪烁风暴期间，在出口走廊入口放一个方位循环声（荧光灯近场嗡鸣，带距离衰减+声像）：
   // 闪烁时听声辨位可以判断出口方向，但必须顶着闪烁/理智侵蚀走过去——"必须判断"，不是白给。
@@ -718,6 +962,34 @@
       this._stormHintOn = false;
     }
   };
+  /* ---------------- H 路：光照管理（只追加新函数，不改现有函数） ----------------
+   * 设计取舍（用户第九节）：
+   *  - 灯下亮、远处平滑变暗：靠 PointLight decay=2 的物理衰减（build 里已设），本函数只按画质档
+   *    收紧 distance（穿墙漏光主要来自"距离 26m 的灯隔墙照到玩家"——没有实时阴影时只能靠缩距离缓解）。
+   *  - 实时阴影灯数量：恒为 0。点光源阴影 = 每灯 6 面 cube map，移动端/核显不可承受；
+   *    转角/柱后/物体接触处的柔和变暗用 blob 接触阴影（textures.js）+ 灯光衰减 + 雾表现。
+   *    quality.shadow 字段保留（全档 0），将来真机允许时再开。
+   *  - 环境补光：build 里的 Ambient+Hemisphere 保留（暗部不死黑），本函数不动。
+   * 调用：main.js applyQuality（画质切换）与 loadLevel 的 build().then（灯池重建后）。
+   */
+  // 按画质档调整灯池距离/衰减 + 粒子量（蒸汽点数按档缩放 drawRange）
+  W.applyLightTuning = function () {
+    const q = BR.QUALITY || {};
+    const dist = q.lightDist || 22;
+    for (const L of this.lights || []) { L.distance = dist; L.decay = 2; }
+    if (this.playerLight) { this.playerLight.distance = 12; this.playerLight.decay = 2; }
+    // 粒子：蒸汽 Points 按画质档缩放实际绘制点数（不重建几何，drawRange 即可）
+    const ps = q.particles != null ? q.particles : 1;
+    for (const v of this.steamVents || []) {
+      if (!v.points || !v.points.geometry) continue;
+      const total = v.points.geometry.attributes.position.count;
+      v.points.geometry.setDrawRange(0, Math.max(8, Math.round(total * ps)));
+    }
+    BR.log('light tuning', 'dist=' + dist, 'particles=' + ps);
+  };
+  // 实时阴影灯数量（见上：设计为 0）
+  W.shadowLightCount = function () { return 0; };
+
   /* ---------------- 统计 ---------------- */
   W.getStats = function () {
     return {

@@ -251,22 +251,41 @@
     return { ok: missing.length === 0, missing: missing };
   };
 
-  // 兜底：仍有关键 POI 不可达时，从出生点向其打一条直走廊（挖穿），最多 20 次
+  // 兜底：仍有关键 POI 不可达时打通。修法：从"离目标最近的可达地板 tile"挖一条 L 形走廊过去，
+  // 而不是从出生点横穿整图——更短、对原有地形破坏最小。
+  // 注意：这是整图生成阶段、按种子确定性的最后兜底；C 路 v1.4 不在区块边界上逐墙拼接细长通道——
+  // 边界衔接靠"同一份边界描述"（chunkSeam / assertChunkSeams）保证，不靠逐墙打洞。
   function ensureConnected(map, rng) {
-    var s = map.rooms[0];
+    var runs = 0;
     for (var attempt = 0; attempt < 20; attempt++) {
       var chk = BR.Gen.assertConnected(map);
-      if (chk.ok) return;
+      if (chk.ok) break;
+      runs++;
+      var s = map.rooms[0];
+      var ds = doorSetOf(map);
+      var dist = bfsDist(map, Math.round(s.cx), Math.round(s.cy));
       for (var i = 0; i < chk.missing.length; i++) {
         var poi = null;
         for (var j = 0; j < map.pois.length; j++)
           if (map.pois[j].id === chk.missing[i].id) { poi = map.pois[j]; break; }
         if (!poi) continue;
         var t = poiFloorTile(poi);
-        carveL(rng, map, Math.round(s.cx), Math.round(s.cy), t[0], t[1], 1);
+        // 出生点 BFS：找离目标最近的可达地板 tile，从那里开挖
+        var bx = -1, by = -1, bd = Infinity, xx, yy;
+        for (yy = 1; yy < map.h - 1; yy++)
+          for (xx = 1; xx < map.w - 1; xx++) {
+            var idx = T(xx, yy);
+            if (map.tiles[idx] !== 1 && !ds[idx]) continue;
+            if (dist[idx] < 0) continue;
+            var d2 = (xx - t[0]) * (xx - t[0]) + (yy - t[1]) * (yy - t[1]);
+            if (d2 < bd) { bd = d2; bx = xx; by = yy; }
+          }
+        if (bx < 0) { bx = Math.round(s.cx); by = Math.round(s.cy); } // 终极兜底（理论上走不到）
+        carveL(rng, map, bx, by, t[0], t[1], 1);
       }
     }
-    if (BR.log) BR.log('gen: 20 次兜底后仍有不可达', JSON.stringify(BR.Gen.assertConnected(map).missing));
+    map.meta.ensureRuns = runs; // 兜底实际触发次数（0 = 主生成已全连通；测试统计用）
+    if (runs >= 20 && BR.log) BR.log('gen: 20 次兜底后仍有不可达', JSON.stringify(BR.Gen.assertConnected(map).missing));
   };
 
   // ---- 通用放置工具 ----
@@ -890,9 +909,48 @@
     }
     // 薄墙（不稳定切出点）：数量 4→6，优先放在走廊直线段中段（更显眼，而非角落）
     placeThinWallsCorridor(map, rng, 6);
+    // M.E.G. 前哨交易站：离出生点中段房间（人流合理），排除特殊房间；
+    // 插在薄墙之后/家具之前：本身不挖地、不改旧 POI；家具/浆果的自带 dup 规则
+    // 会自动与本 POI 保持距离（placeFurnitureL1 对全部旧 POI 要求曼哈顿 ≥2）。
+    placeMegShopL1(map, rng);
     // 家具：桌子/柜子 ×3~6，靠墙（建造工人在 levels.js 按 kind/item 建内饰与补给）
     placeFurnitureL1(map, rng);
     placeBerryBush(map, rng); // 迁跃浆果灌木：极低概率 0~1 株（末尾调用，不影响已有布局）
+  }
+
+  // M.E.G. 前哨交易站（POI type 'meg_shop'，builder 在 levels.js 建柜台/帐篷/NPC/商店交互）。
+  // 位置规则（种子派生、可复现）：按离出生点距离排序房间，取中段约 1/3 处；
+  // 排除出生点/安全屋/闪烁区/破洞房间（特殊房间各就各位），兜底取第一个候选。
+  // POI tile 本身是地板 tile（randTileInRoom），NPC/柜台建在其周围。
+  function placeMegShopL1(map, rng) {
+    var used = {}; // 已被特殊 POI 占用的房间索引
+    for (var i = 0; i < map.pois.length; i++) {
+      var pt = map.pois[i];
+      if (pt.type !== 'safe_room' && pt.type !== 'blackout' && pt.type !== 'fun_hole') continue;
+      for (var j = 1; j < map.rooms.length; j++) {
+        var r = map.rooms[j];
+        if (pt.tx >= r.x && pt.tx < r.x + r.w && pt.ty >= r.y && pt.ty < r.y + r.h) { used[j] = true; break; }
+      }
+    }
+    var cands = [];
+    for (var k = 1; k < map.rooms.length; k++) if (!used[k]) cands.push(map.rooms[k]);
+    cands.sort(function (a, b) { return a._d - b._d; });
+    var shopR = cands[Math.floor(cands.length / 3)] || cands[0] || map.rooms[1];
+    if (!shopR) return;
+    // 选 tile：柜台+帐篷占地约 2 tile，与已有 POI 保持曼哈顿 ≥3（防穿插）；
+    // 12 次都撞上则用房间中心兜底（保证每局恰好 1 个 POI）。
+    var t = null;
+    for (var a = 0; a < 12 && !t; a++) {
+      var cand = randTileInRoom(rng, map, shopR);
+      var clash = false;
+      for (var i = 0; i < map.pois.length; i++) {
+        var q = map.pois[i];
+        if (Math.abs(q.tx - cand[0]) + Math.abs(q.ty - cand[1]) < 3) { clash = true; break; }
+      }
+      if (!clash) t = cand;
+    }
+    if (!t) t = [Math.round(shopR.cx), Math.round(shopR.cy)];
+    addPOI(map, 'meg_shop', t[0], t[1], {});
   }
 
   // 在已挖掘的走廊直线段上找一段放蒸汽；传 nearX/nearY 时优先选其附近的段
@@ -1066,6 +1124,152 @@
 
   var PLACERS = { L0: placeL0, L1: placeL1, L2: placeL2, L3: placeL3, FUN: placeFUN };
 
+  // ---- Systems D：环境涂鸦叙事 ----
+  // 每关 6~12 处墙面涂鸦（POI type 'graffiti'，levels.js 负责建 decal）：
+  //   kind 'true'：真提示 —— 箭头经计算真实指向出口/安全点（读关卡出口坐标，按墙面朝向折算 ←/→/身后）
+  //   kind 'fake'：假提示 —— 箭头随机，玩家需自行分辨
+  //   kind 'calm'：氛围 —— 无方向性
+  // 独立 RNG 流（'graffiti:' + level + ':' + seed），不消耗主 rng，已有 POI/地形布局逐 tile 不变。
+  function firstPoiOf(map, type) {
+    for (var i = 0; i < map.pois.length; i++)
+      if (map.pois[i].type === type) return map.pois[i];
+    return null;
+  }
+  // 各关"真出口"的目标 tile（真提示箭头指向它）
+  function graffitiExitTarget(map) {
+    var p, L = map.level;
+    if (L === 'L0') { p = firstPoiOf(map, 'anomaly_wall'); return p ? [p.tx + p.data.dirx, p.ty + p.data.dirz] : null; }
+    if (L === 'L1') { p = firstPoiOf(map, 'exit_corridor'); return p ? [p.tx + p.data.dirx * (p.data.len - 1), p.ty + p.data.dirz * (p.data.len - 1)] : null; }
+    if (L === 'L2') { p = firstPoiOf(map, 'exit_door'); return p ? [p.data.fx, p.data.fy] : null; }
+    if (L === 'L3') { p = firstPoiOf(map, 'elevator'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'FUN') { p = firstPoiOf(map, 'fun_exit'); return p ? [p.data.fx, p.data.fy] : null; }
+    if (L === 'L11') { p = firstPoiOf(map, 'subway'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'L37') { p = firstPoiOf(map, 'shallow_exit'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'L7') { p = firstPoiOf(map, 'deep_exit'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'bang') { p = firstPoiOf(map, 'bang_exit'); return p ? [p.tx, p.ty] : null; } // v1.5 W6：94→! 替换
+    if (L === 'L188') { p = firstPoiOf(map, 'odd_window'); return p ? [p.tx, p.ty] : null; }
+    return null;
+  }
+  // 各关"安全点"的目标 tile（部分真提示指向安全方向；没有安全点的关返回 null）
+  function graffitiSafeTarget(map) {
+    var p, L = map.level;
+    if (L === 'L0') { p = firstPoiOf(map, 'manila_room'); return p ? [p.data.doorTx, p.data.doorTy] : null; }
+    if (L === 'L1') { p = firstPoiOf(map, 'safe_room'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'L11') { p = firstPoiOf(map, 'meg_post'); return p ? [p.tx, p.ty] : null; }
+    return null;
+  }
+
+  var G_TRUE_EXIT = ['EXIT', 'this way', 'follow the lights', 'keep going', 'almost out', 'RUN'];
+  var G_TRUE_SAFE = ['SAFE ROOM', 'safe here', 'rest here'];
+  var G_FAKE = ["it's a lie", "DON'T MOVE", 'turn back', 'NO EXIT', 'trust no one', 'GO BACK', 'wrong way', 'no one leaves'];
+  var G_CALM = ['the end is near', 'level !', "don't count the lights", 'it hears you', 'the humming never stops', 'day 143', 'stay quiet', 'nothing is real'];
+  var G_COLORS = ['#d8d2c0', '#1b1b1d', '#a02723', '#c08a1e', '#3d6b8e'];
+
+  function placeGraffiti(map) {
+    var rng = new BR.RNG(BR.hashSeed('graffiti:' + map.level + ':' + map.seed));
+    var W = map.w, H = map.h;
+    function T(x, y) { return y * W + x; }
+    var spawn = firstPoiOf(map, 'spawn');
+    // 出生点 BFS：只在可达区放涂鸦（reachable 抽查要求全部 POI 可达）
+    var dist = spawn ? bfsDist(map, spawn.tx, spawn.ty) : null;
+    var doorSet = {};
+    for (var i = 0; i < map.doors.length; i++) doorSet[T(map.doors[i].tx, map.doors[i].ty)] = 1;
+    // 候选：地板 tile 且 4 邻域有墙（非门洞），离出生点 ≥4 格
+    var cands = [];
+    for (var y = 1; y < H - 1; y++)
+      for (var x = 1; x < W - 1; x++) {
+        if (map.tiles[T(x, y)] !== 1 || doorSet[T(x, y)]) continue;
+        if (dist && dist[T(x, y)] < 0) continue;
+        if (spawn && Math.hypot(x - spawn.tx, y - spawn.ty) < 4) continue;
+        var walls = [], ds = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var d = 0; d < 4; d++) {
+          var wx = x + ds[d][0], wy = y + ds[d][1];
+          if (map.tiles[T(wx, wy)] === 0 && !doorSet[T(wx, wy)]) walls.push(ds[d]);
+        }
+        if (!walls.length) continue;
+        cands.push([x, y, walls]);
+      }
+    if (!cands.length) return;
+    // 散布取点：随机顺序 + 最小间距（先 7 格再 4 格，仍不够按序补足）
+    var order = rng.shuffle(cands.slice()), picked = [];
+    var want = Math.min(cands.length, 6 + rng.int(0, 6));
+    for (var pass = 0; pass < 2 && picked.length < want; pass++) {
+      var md = pass === 0 ? 7 : 4;
+      for (var k = 0; k < order.length && picked.length < want; k++) {
+        var c = order[k];
+        if (c[3]) continue;
+        var ok = true;
+        for (var j = 0; j < picked.length; j++)
+          if (Math.abs(c[0] - picked[j][0]) + Math.abs(c[1] - picked[j][1]) < md) { ok = false; break; }
+        if (!ok) continue;
+        c[3] = 1; picked.push(c);
+      }
+    }
+    for (var k2 = 0; k2 < order.length && picked.length < want; k2++)
+      if (!order[k2][3]) { order[k2][3] = 1; picked.push(order[k2]); }
+    var exit = graffitiExitTarget(map), safe = graffitiSafeTarget(map);
+    // 真假混杂：先随机分配，再保底（有出口时 ≥2 真，恒 ≥2 假）
+    var kinds = [];
+    for (var s0 = 0; s0 < picked.length; s0++) {
+      var r0 = rng.next();
+      kinds.push(r0 < 0.34 ? 'true' : (r0 < 0.67 ? 'fake' : 'calm'));
+    }
+    function kindCount(k) { var n = 0; for (var i = 0; i < kinds.length; i++) if (kinds[i] === k) n++; return n; }
+    function kindConvert(from, to, n2) {
+      for (var i = 0; i < kinds.length && n2 > 0; i++)
+        if (kinds[i] === from) { kinds[i] = to; n2--; }
+    }
+    if (!exit) kindConvert('true', 'calm', 99); // 无出口目标的关不写真提示
+    if (exit) kindConvert('calm', 'true', Math.max(0, 2 - kindCount('true'))); // 保真：只从 calm 取
+    // 保假：先从 calm 取，不够再从 true 借（给 true 至少留 1 个）
+    var needFake = Math.max(0, 2 - kindCount('fake'));
+    var fromCalm = Math.min(needFake, kindCount('calm'));
+    kindConvert('calm', 'fake', fromCalm);
+    needFake -= fromCalm;
+    if (needFake > 0 && kindCount('true') > 1)
+      kindConvert('true', 'fake', Math.min(needFake, kindCount('true') - 1));
+    for (var s = 0; s < picked.length; s++) {
+      var c = picked[s], kind = kinds[s];
+      var wall = rng.pick(c[2]);
+      var nx = -wall[0], nz = -wall[1]; // 墙→房间法线
+      var text = null, sub = null, arrow = null;
+      if (kind === 'true' && exit) {
+        var useSafe = safe && rng.chance(0.3);
+        var tgt = useSafe ? safe : exit;
+        var dx = tgt[0] - c[0], dy = tgt[1] - c[1];
+        // 墙切向两候选：a=(nz,-nx)，b=-a；取与出口方向点积大者
+        var dotA = dx * nz + dy * (-nx);
+        var ax = dotA >= 0 ? nz : -nz, ay = dotA >= 0 ? -nx : nx;
+        var tComp = Math.abs(dotA), nComp = dx * nx + dy * nz;
+        if (tComp >= 1.2) {
+          // 画布 →（local +x）在世界系为 (cosθ,-sinθ)，θ=atan2(nx,nz)；点积定左右
+          var th = Math.atan2(nx, nz);
+          arrow = (ax * Math.cos(th) + ay * (-Math.sin(th))) >= 0 ? 'right' : 'left';
+          text = rng.pick(useSafe ? G_TRUE_SAFE : G_TRUE_EXIT);
+        } else if (nComp > 0) {
+          arrow = 'back'; // 出口在看涂鸦者的身后（房间一侧）
+          text = useSafe ? 'SAFE ROOM' : 'EXIT'; sub = 'behind you';
+        } else {
+          kind = 'calm'; // 出口在墙另一侧：无真话可说，降级为氛围
+        }
+      }
+      if (kind === 'fake') {
+        text = rng.pick(G_FAKE);
+        var fr = rng.next();
+        arrow = fr < 0.4 ? 'left' : (fr < 0.8 ? 'right' : null);
+      }
+      if (kind === 'calm') { text = rng.pick(G_CALM); arrow = null; }
+      addPOI(map, 'graffiti', c[0], c[1], {
+        text: text, sub: sub, kind: kind, arrow: arrow,
+        nx: nx, nz: nz,
+        y: 1.15 + rng.next() * 0.75,
+        w: 1.6 + rng.next() * 0.9,
+        rot: (rng.next() - 0.5) * 0.16,
+        color: rng.pick(G_COLORS)
+      });
+    }
+  }
+
   // 计算离出生点最远的房间（BFS 距离）
   function computeFarRoom(map) {
     var s = map.rooms[0];
@@ -1081,22 +1285,42 @@
   }
 
   // ---- 主入口 ----
-  BR.Gen.generate = function (level, seed) {
-    if (!BR.RNG) throw new Error('gen.js 需要先加载 utils.js（BR.RNG）');
-    if (!LEVEL_CFG[level]) throw new Error('未知关卡: ' + level);
-    var rng = new BR.RNG(seed >>> 0);
-    var cfg = LEVEL_CFG[level];
-    var map = createMap(level, seed);
-    map._segs = [];
+  /* v1.5 W1：生成分三层（整体结构 → 局部空间 → 环境细节），在代码结构上显式体现。
+   * 三层只划分代码结构，RNG 消耗顺序与旧版逐行一致（同种子逐 tile 一致，hashMap 不变）：
+   *   layerStructure —— 整体结构：地形挖掘（房间/大厅/走廊/柱阵/半墙），只写 map.tiles 与 map.rooms
+   *   layerSpaces    —— 局部空间：房间用途划分（computeFarRoom）+ 各关 placer（POI/门）
+   *   layerDetails   —— 环境细节：涂鸦（独立 RNG 流）+ 连通兜底（ensureConnected）
+   * 各关 placer 内部（W2-W7 地盘）不动；registerLevel 注册的扩建关同样走这三层。
+   */
+  BR.Gen.layerStructure = function (map, rng) {
+    var cfg = LEVEL_CFG[map.level];
     if (cfg.openHall) carveOpenHall(rng, map); // L0：开阔大厅+柱子+半墙（不用房间+窄走廊）
     else {
       placeRooms(rng, map, cfg);      // 14~22 个不重叠房间，首个为出生房
       connectRooms(rng, map, cfg);    // L 形走廊连通 + 额外回环
       if (cfg.garagePillars) scatterGaragePillars(rng, map); // L1：走廊挖完后布混凝土柱阵（_segs 避让）
     }
+  };
+  BR.Gen.layerSpaces = function (map, rng) {
     computeFarRoom(map);            // 最远房间（出口 / 电梯 / 异常墙用）
-    PLACERS[level](map, rng);       // 各关 POI / 门
+    PLACERS[map.level](map, rng);   // 各关 POI / 门
+  };
+  BR.Gen.layerDetails = function (map, rng) {
+    placeGraffiti(map);             // Systems D：环境涂鸦（独立 RNG 流，不扰动已有布局）
     ensureConnected(map, rng);      // 兜底：关键 POI 全部可达
+  };
+  // 供测试/工具用的 map 构造器（与 generate 内部一致）
+  BR.Gen.createMap = createMap;
+
+  BR.Gen.generate = function (level, seed) {
+    if (!BR.RNG) throw new Error('gen.js 需要先加载 utils.js（BR.RNG）');
+    if (!LEVEL_CFG[level]) throw new Error('未知关卡: ' + level);
+    var rng = new BR.RNG(seed >>> 0);
+    var map = createMap(level, seed);
+    map._segs = [];
+    BR.Gen.layerStructure(map, rng);
+    BR.Gen.layerSpaces(map, rng);
+    BR.Gen.layerDetails(map, rng);
     delete map._segs;
     delete map._slabs;   // L0 半墙列表（placer 已用完）
     delete map._manila;  // L0 马尼拉房间数据（POI data 已登记）
@@ -1131,6 +1355,188 @@
     var h2 = 2166136261 >>> 0;
     for (var m = 0; m < s.length; m++) { h2 ^= s.charCodeAt(m); h2 = Math.imul(h2, 16777619); }
     return (h2 >>> 0).toString(16).padStart(8, '0');
+  };
+
+  // ---- C 路 v1.4 / v1.5 W1：跨区块边界契约 ----
+  // 设计（对应"不要逐墙拼接细长通道"的旧模式）：
+  //   整图由（seed）一次性确定性生成，是唯一的真实来源；区块只是渲染/碰撞的划分。
+  //   边界状态 = 缝线处的 tile 行/列，只由（seed → map）派生，不依赖加载顺序；
+  //   相邻两区块读的是同一行/列 tile 数据（同一份边界描述），天然一致。
+  //   相邻区块衔接全部由这份共享数据源保证，无需逐区块拼接：
+  //     道路/开口 —— map.tiles（0=墙/1=地）+ map.doors（门 tile 在 BFS/碰撞中视为可通过）；
+  //     水道     —— 各关水面查询是 (map,x,z) 的纯函数（如 BR.Gen.L37waterAt），
+  //                  世界坐标连续，跨区块天然连续，不依赖区块边界；
+  //     地板高度 —— 地面高度查询同样是 (map,x,z) 的纯函数（如 BR.Gen.L37floorAt，
+  //                  player.js _groundYAt 探测），默认 0；
+  //     碰撞     —— W.blocked/circleFree 直接读 map.tiles，不依赖区块 meshes，
+  //                  区块未建/已卸时碰撞也不"暂时消失"；
+  //     跨区块大建筑 —— 整体布局在 gen 阶段定好（BR.Gen.chunkPOIs 供 builder 按区块取），
+  //                  区块只显示自己范围内的部分（见 chunkPOIs 注释）。
+  //   渲染（buildChunk）、碰撞（W.blocked/circleFree）、吊顶（openCeilAt）全都读同一份 map.tiles。
+  BR.Gen.CHUNK = 8; // 每区块边长（tile 数），与 BR.CHUNK / world.js 一致
+
+  // 某区块某条边的确定性边界描述。
+  // side: 'N' = 北缝线；'S' = 南缝线；'W' = 西缝线；'E' = 东缝线。
+  // 缝线是两列/两行 tile 之间的分界；描述 = 沿缝线的每一位置上"两侧 tile 的一对状态"，
+  // 以规范顺序排列：纵向缝线 a=西 tile、b=东 tile，按 ty 从小到大；
+  // 横向缝线 a=北 tile、b=南 tile，按 tx 从小到大。
+  // cell = {atx,aty,aopen,adoor, btx,bty,bopen,bdoor}；
+  // open = tile===1 或门 tile（门在 BFS/碰撞中视为可通过）；地图外 tile 视为墙（与 W.tile 一致）。
+  // 纯函数：只读 map（而 map 只由 seed 派生）。相邻两区块对共享缝线算出深相等的描述——
+  // 即"同一份边界描述"，与计算/加载顺序无关。
+  BR.Gen.chunkSeam = function (map, cx, cy, side) {
+    var CH = BR.Gen.CHUNK;
+    var ds = doorSetOf(map);
+    var cells = [];
+    var x0 = cx * CH, y0 = cy * CH, i;
+    function st(tx, ty) {
+      var inB = tx >= 0 && ty >= 0 && tx < map.w && ty < map.h;
+      var t = inB ? map.tiles[ty * map.w + tx] : 0;
+      var dr = inB && !!ds[ty * map.w + tx];
+      return { open: (t === 1 || dr) ? 1 : 0, door: dr ? 1 : 0 };
+    }
+    function pair(ax, ay, bx, by) {
+      var A = st(ax, ay), B = st(bx, by);
+      return {
+        atx: ax, aty: ay, aopen: A.open, adoor: A.door,
+        btx: bx, bty: by, bopen: B.open, bdoor: B.door
+      };
+    }
+    if (side === 'N') for (i = 0; i < CH; i++) cells.push(pair(x0 + i, y0 - 1, x0 + i, y0));
+    else if (side === 'S') for (i = 0; i < CH; i++) cells.push(pair(x0 + i, y0 + CH - 1, x0 + i, y0 + CH));
+    else if (side === 'W') for (i = 0; i < CH; i++) cells.push(pair(x0 - 1, y0 + i, x0, y0 + i));
+    else for (i = 0; i < CH; i++) cells.push(pair(x0 + CH - 1, y0 + i, x0 + CH, y0 + i));
+    return { key: cx + ',' + cy, side: side, cells: cells };
+  };
+
+  // 区块布局哈希：该区块范围内的 tiles + 门 + POI 落点。
+  // 同一种子、同一区块坐标 → 相同哈希，不受加载顺序影响（乱序/顺序加载一致性测试用）。
+  BR.Gen.chunkLayoutHash = function (map, cx, cy) {
+    var CH = BR.Gen.CHUNK;
+    var parts = [map.level, map.seed, cx, cy];
+    var x0 = cx * CH, y0 = cy * CH, x, y, i;
+    var th = 2166136261 >>> 0;
+    for (y = y0; y < y0 + CH && y < map.h; y++)
+      for (x = x0; x < x0 + CH && x < map.w; x++) {
+        th ^= map.tiles[y * map.w + x]; th = Math.imul(th, 16777619);
+      }
+    parts.push('T' + (th >>> 0).toString(16));
+    for (i = 0; i < map.doors.length; i++) {
+      var d = map.doors[i];
+      if (d.tx >= x0 && d.tx < x0 + CH && d.ty >= y0 && d.ty < y0 + CH)
+        parts.push('D' + [d.id, d.tx, d.ty, d.axis, d.locked ? 1 : 0, d.exitTo || ''].join(','));
+    }
+    for (i = 0; i < map.pois.length; i++) {
+      var p = map.pois[i];
+      if (p.tx >= x0 && p.tx < x0 + CH && p.ty >= y0 && p.ty < y0 + CH)
+        parts.push('P' + [p.id, p.type, p.tx, p.ty, JSON.stringify(p.data || {})].join(','));
+    }
+    var s = parts.join('|');
+    var h2 = 2166136261 >>> 0;
+    for (var m = 0; m < s.length; m++) { h2 ^= s.charCodeAt(m); h2 = Math.imul(h2, 16777619); }
+    return (h2 >>> 0).toString(16).padStart(8, '0');
+  };
+
+  // v1.5 W1：某区块范围内的 POI + 门（供各关 builder 按区块组织内容）。
+  // 契约（跨区块大建筑）：整体布局在 gen 阶段已一次性定好（seed → map），区块只负责
+  // "显示自己范围内的那部分"——大建筑（如 L37 泳池、L7 深海区）天然跨区块连续，
+  // builder 按本查询把每部分挂到对应区块的 addChunkContent 即可（lv_l37.js:408-449 已是此模式）。
+  BR.Gen.chunkPOIs = function (map, cx, cy) {
+    var CH = BR.Gen.CHUNK, x0 = cx * CH, y0 = cy * CH, i, p, d;
+    var pois = [], doors = [];
+    for (i = 0; i < map.pois.length; i++) {
+      p = map.pois[i];
+      if (p.tx >= x0 && p.tx < x0 + CH && p.ty >= y0 && p.ty < y0 + CH) pois.push(p);
+    }
+    for (i = 0; i < map.doors.length; i++) {
+      d = map.doors[i];
+      if (d.tx >= x0 && d.tx < x0 + CH && d.ty >= y0 && d.ty < y0 + CH) doors.push(d);
+    }
+    return { pois: pois, doors: doors };
+  };
+
+  // 跨区块缝线总验证。返回 {ok, issues: []}。
+  //  (a) 共享缝线一致：相邻两区块对同一条缝线的描述深相等（同一份边界描述）；
+  //  (b) 开口连通：缝线两侧的每个开口 tile 都从 spawn 可达（开口连接实际可走区域，
+  //      用既有 BR.Gen.reachable 的底层 BFS 验证；门 tile 在 BFS 中视为可通过）；
+  //  (c) 地图外缘：外缘缝线的内侧 tile 恒为墙（开口不开到虚空里）；
+  //  (d) 门洞有效：每个门 tile 从 spawn 可达、且至少一侧邻接可走 tile（门洞连着可走区域）。
+  // 不连通则由 ensureConnected 在生成阶段修（整图级最后兜底，见下；不是逐墙拼接）。
+  BR.Gen.assertChunkSeams = function (map) {
+    var issues = [];
+    var CH = BR.Gen.CHUNK;
+    var ncx = Math.ceil(map.w / CH), ncy = Math.ceil(map.h / CH);
+    var cx, cy, i, k;
+    function seamEq(a, b) {
+      if (a.cells.length !== b.cells.length) return false;
+      for (var k = 0; k < a.cells.length; k++) {
+        var x = a.cells[k], y = b.cells[k];
+        if (x.atx !== y.atx || x.aty !== y.aty || x.aopen !== y.aopen || x.adoor !== y.adoor ||
+            x.btx !== y.btx || x.bty !== y.bty || x.bopen !== y.bopen || x.bdoor !== y.bdoor) return false;
+      }
+      return true;
+    }
+    // (a) 共享缝线：E/W 与 N/S 相邻对的描述必须深相等
+    for (cy = 0; cy < ncy; cy++)
+      for (cx = 0; cx < ncx - 1; cx++) {
+        if (!seamEq(BR.Gen.chunkSeam(map, cx, cy, 'E'), BR.Gen.chunkSeam(map, cx + 1, cy, 'W')))
+          issues.push('seam mismatch E/W at chunk ' + cx + ',' + cy);
+      }
+    for (cy = 0; cy < ncy - 1; cy++)
+      for (cx = 0; cx < ncx; cx++) {
+        if (!seamEq(BR.Gen.chunkSeam(map, cx, cy, 'S'), BR.Gen.chunkSeam(map, cx, cy + 1, 'N')))
+          issues.push('seam mismatch N/S at chunk ' + cx + ',' + cy);
+      }
+    // (b) 缝线两侧开口可达（一次 BFS，供全部开口 tile 查）
+    var spawn = null;
+    for (var pi = 0; pi < map.pois.length; pi++)
+      if (map.pois[pi].type === 'spawn') { spawn = map.pois[pi]; break; }
+    if (!spawn) return { ok: false, issues: ['no spawn POI'] };
+    var dist = bfsDist(map, spawn.tx, spawn.ty);
+    var seen = {}; // 去重：同一 tile 可能出现在多条缝线描述里
+    function checkOpenTile(tx, ty, isDoor) {
+      if (tx < 1 || ty < 1 || tx >= map.w - 1 || ty >= map.h - 1) return; // 外缘/外侧：(c) 另行断言
+      var kk = tx + ',' + ty;
+      if (seen[kk]) return; seen[kk] = 1;
+      if (!isDoor && map.tiles[ty * map.w + tx] !== 1) return;
+      if (dist[ty * map.w + tx] < 0)
+        issues.push((isDoor ? 'door' : 'seam opening') + ' unreachable @' + tx + ',' + ty);
+    }
+    for (cy = 0; cy < ncy; cy++)
+      for (cx = 0; cx < ncx; cx++) {
+        var sides = ['N', 'S', 'W', 'E'];
+        for (var si = 0; si < 4; si++) {
+          var seam = BR.Gen.chunkSeam(map, cx, cy, sides[si]);
+          for (i = 0; i < seam.cells.length; i++) {
+            var c = seam.cells[i];
+            if (c.aopen) checkOpenTile(c.atx, c.aty, !!c.adoor);
+            if (c.bopen) checkOpenTile(c.btx, c.bty, !!c.bdoor);
+          }
+        }
+      }
+    // (c) 地图外缘恒为墙：外缘缝线的内侧 tile 不得 open
+    for (cx = 0; cx < ncx; cx++) {
+      var seN = BR.Gen.chunkSeam(map, cx, 0, 'N'), seS = BR.Gen.chunkSeam(map, cx, ncy - 1, 'S');
+      for (i = 0; i < seN.cells.length; i++) {
+        if (seN.cells[i].bopen) issues.push('open cell on north map border @' + seN.cells[i].btx + ',' + seN.cells[i].bty);
+        if (seS.cells[i].aopen) issues.push('open cell on south map border @' + seS.cells[i].atx + ',' + seS.cells[i].aty);
+      }
+    }
+    for (cy = 0; cy < ncy; cy++) {
+      var seW = BR.Gen.chunkSeam(map, 0, cy, 'W'), seE = BR.Gen.chunkSeam(map, ncx - 1, cy, 'E');
+      for (i = 0; i < seW.cells.length; i++) {
+        if (seW.cells[i].bopen) issues.push('open cell on west map border @' + seW.cells[i].btx + ',' + seW.cells[i].bty);
+        if (seE.cells[i].aopen) issues.push('open cell on east map border @' + seE.cells[i].atx + ',' + seE.cells[i].aty);
+      }
+    }
+    // (d) 门洞有效：每个门至少一侧邻接可走 tile（可达性已在 (b) 按门 tile 检查）
+    for (var di = 0; di < map.doors.length; di++) {
+      var d = map.doors[di], didx = d.ty * map.w + d.tx;
+      var adj = map.tiles[didx + 1] === 1 || map.tiles[didx - 1] === 1 ||
+                map.tiles[didx + map.w] === 1 || map.tiles[didx - map.w] === 1;
+      if (!adj) issues.push('door has no adjacent floor @' + d.tx + ',' + d.ty + ' id=' + d.id);
+    }
+    return { ok: issues.length === 0, issues: issues };
   };
 
   // 扩建钩子：新关卡在独立文件里注册（避免多人同时改 gen.js 冲突）
