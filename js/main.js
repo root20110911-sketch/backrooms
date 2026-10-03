@@ -91,15 +91,20 @@
       q = (BR.Input.isTouch && small) ? 'medium' : 'high';
     }
     const cfgs = {
-      high: { fogScale: 1.15, maxLights: 7, pr: 2, grain: 1 },
-      medium: { fogScale: 1.0, maxLights: 5, pr: 1.5, grain: 1 },
-      low: { fogScale: 0.8, maxLights: 3, pr: 1, grain: 0 }
+      // H 路 v1.4：画质档扩展——分辨率(pr)/雾(fogScale)/灯光数(maxLights)/灯距(lightDist)/
+      // 粒子(particles)/胶片颗粒(grain)/接触阴影(blobShadow)。实时阴影灯恒为 0（见 world.js
+      // W.shadowLightCount 说明），shadow 字段保留供将来扩展。
+      high:   { fogScale: 1.15, maxLights: 7, pr: 2,   grain: 1, particles: 1.0, lightDist: 24, blobShadow: 1, shadow: 0 },
+      medium: { fogScale: 1.0,  maxLights: 5, pr: 1.5, grain: 1, particles: 0.7, lightDist: 20, blobShadow: 1, shadow: 0 },
+      low:    { fogScale: 0.8,  maxLights: 3, pr: 1,   grain: 0, particles: 0.4, lightDist: 16, blobShadow: 1, shadow: 0 }
     };
     BR.QUALITY = cfgs[q] || cfgs.medium;
     this._pr = BR.QUALITY.pr;
     // 低画质：关掉胶片颗粒 overlay
     document.body.classList.toggle('fx-low', !BR.QUALITY.grain);
     if (this.renderer) this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._pr));
+    // H 路：灯池已存在（换关/设置页切画质）则立即按档重调灯距与粒子
+    if (BR.World && BR.World.scene && BR.World.applyLightTuning) BR.World.applyLightTuning();
     BR.log('quality', q);
   };
 
@@ -110,8 +115,9 @@
     this.inv = {};
     this.flags = { clues: 0, gens: 0, riftCount: 0, berryCount: 0 };
     BR.Save.clearSave();
+    if (BR.Items) BR.Items.resetState(); // W9：新开局清道具运行时态
     BR.Input.ensureImmersive(); // 触屏：尝试全屏 + 锁横屏
-    this.loadLevel('L0', { intro: true, drop: true });
+    this.loadLevel('L0', { intro: true, drop: true, fresh: true });
   };
 
   G.continueGame = function () {
@@ -133,6 +139,9 @@
     this.state = 'loading';
     this.level = level;
     BR.Input.setLocked(true);
+    // v1.5 W8：层级切换清理全部持续输入（按住 W/下潜切关不残留）+ 玩家进 transition 态
+    if (BR.Input.clearAll) BR.Input.clearAll();
+    if (BR.Player && BR.Player.setState) BR.Player.setState('transition');
     BR.UI.show('screen-loading');
     BR.$('loading-text').textContent = '正在生成 ' + (BR.Levels[level] ? BR.Levels[level].name : level) + '……';
 
@@ -142,13 +151,42 @@
         const map = BR.Gen.generate(level, this.seed);
         const ws = opts.saved ? opts.saved.ws : { openedDoors: [], picked: [], openedCrates: [], events: [] };
         BR.World.build(map, ws).then(() => {
+          // H 路：灯池刚重建，按当前画质档调灯距/粒子（applyQuality 在开局已跑过，
+          // 但那时灯池还不存在；设置页切画质则走 applyQuality 里的即时重调）
+          if (BR.World.applyLightTuning) BR.World.applyLightTuning();
+          // W9：恢复本关已部署道具（荧光棒/粉笔/丢弃物），读档与跨关共用
+          if (BR.Items) BR.Items.onLevelBuilt();
           // 从事件恢复计数器
           this.flags.gens = ws.events.filter(e => e.indexOf('gen_') === 0).length;
           this.flags.clues = ws.events.filter(e => e.indexOf('clue_') === 0).length;
           const sp = BR.World.spawnOf(map);
           let px = sp.x, pz = sp.z, yaw = sp.yaw;
           if (opts.saved) { px = opts.saved.px; pz = opts.saved.pz; yaw = opts.saved.yaw; }
+          // W9：跨关保留 diveLight（P.reset 会清掉；读档走 loadState 恢复）
+          const keepDive = (!opts.saved && !opts.fresh && BR.Player.diveLight) ? BR.Player.diveLight : null;
           BR.Player.reset(px, pz, yaw);
+          // v1.5 W8：读档恢复坐骑（工厂未注册/存档无坐骑时静默跳过）
+          // 世界实例（W5 鸭子）：buildContent 已按存档生成同 id 实例，直接骑它，不新建
+          if (opts.saved && opts.saved.mount && opts.saved.mount.kind && BR.Mounts) {
+            try {
+              let mh = null;
+              const md = opts.saved.mount.data;
+              if (md && md.id != null && BR.Mounts._instances) {
+                mh = BR.Mounts._instances.find(h => {
+                  try { const s = (h.getSave) ? h.getSave() : null; return s && s.id === md.id; }
+                  catch (e) { return false; }
+                }) || null;
+                if (mh && mh.applySave) { try { mh.applySave(md); } catch (e) {} }
+              }
+              if (!mh) {
+                mh = BR.Mounts.create(opts.saved.mount.kind, opts.saved.mount);
+                if (mh && md && mh.applySave) { try { mh.applySave(md); } catch (e) {} }
+              }
+              if (mh) BR.Player.mount(mh);
+            } catch (e) { BR.warn('mount restore failed', e); }
+          }
+          // Systems C-A：清理上一关的幻觉事件 + 画布模糊
+          if (BR.SanityEvents) BR.SanityEvents.reset();
           if (opts.saved) {
             BR.Player.hp = opts.saved.hp != null ? opts.saved.hp : 100;
             BR.Player.sanity = opts.saved.sanity != null ? opts.saved.sanity : 100; // 存档读档恢复理智
@@ -161,9 +199,20 @@
               BR.Player.hasFlashlight = true;
             }
           }
+          // W9：道具运行时态——读档恢复电量/装备/耐力/照明灯/已部署物；
+          // 跨关则保留当前运行时态（autosave 已把旧关部署物写入 _savedDeployed）
+          if (BR.Items) {
+            if (opts.saved) BR.Items.loadState(opts.saved);
+            else { BR.Items.onTravel(); if (keepDive) BR.Player.diveLight = keepDive; }
+          }
           BR.Player.camera.aspect = innerWidth / innerHeight;
           BR.Player.camera.updateProjectionMatrix();
           BR.Levels[level].onEnter();
+          // W10：室内外曝光分开（theme.exposure；无则默认 0.85；室外关卡可设 1.0 提亮）
+          if (this.renderer) {
+            const thx = BR.Levels[level] && BR.Levels[level].theme;
+            this.renderer.toneMappingExposure = (thx && thx.exposure != null) ? thx.exposure : 0.85;
+          }
           BR.UI.updateInv();
           BR.UI.setPrompt(null);
           this.state = 'playing';
@@ -177,7 +226,7 @@
           const afterEnter = () => {
             if (opts.intro && level === 'L0') {
               BR.Trans.play('intro');
-              setTimeout(() => BR.UI.toast('WASD / 左摇杆移动，E / 交互键使用物品', 4000), 6000);
+              // v1.5 W2：开场操作提示改由首次动作触发（input.js firstHint），此处不再定时弹
             }
           };
           // 入场掉落感：新游戏 / 读档 / 重生（已有转场进行中时不叠加）
@@ -207,6 +256,10 @@
 
   G.snapshot = function () {
     const ws = BR.World.state || { openedDoors: [], picked: [], openedCrates: [], events: [] };
+    const wsCopy = JSON.parse(JSON.stringify(ws));
+    // v1.5 W8：坐骑实例位置（W5 鸭子：buildDucks 经 BR.Mounts.savedFor 恢复）
+    try { wsCopy.mounts = (BR.Mounts && BR.Mounts.getLevelSave) ? BR.Mounts.getLevelSave() : {}; }
+    catch (e) { wsCopy.mounts = {}; }
     return {
       v: 1, t: Date.now(),
       seed: this.seed, level: this.level,
@@ -218,11 +271,37 @@
       hasFlashlight: BR.Player.hasFlashlight,
       inv: Object.assign({}, this.inv),
       flags: Object.assign({}, this.flags),
-      ws: JSON.parse(JSON.stringify(ws)),
+      ws: wsCopy,
       riftCount: this.flags.riftCount != null ? this.flags.riftCount : BR.Save.countEvents(ws.events, 'rift_'),
-      berryCount: this.flags.berryCount != null ? this.flags.berryCount : BR.Save.countEvents(ws.events, 'berry_')
+      berryCount: this.flags.berryCount != null ? this.flags.berryCount : BR.Save.countEvents(ws.events, 'berry_'),
+      // v1.5 W8：坐骑运行时态（无坐骑时 null；handle.getSave 可选）
+      mount: (function () {
+        const h = BR.Player && BR.Player.mountHandle;
+        if (!h) return null;
+        let data = null;
+        try { data = (typeof h.getSave === 'function') ? h.getSave() : null; } catch (e) {}
+        return { kind: h.kind, data: data };
+      })(),
+      // W9：新道具运行时态（独立电量/装备/耐力/照明灯/已部署物；与 save.js 顶层字段对齐）
+      itemCharges: null, equipped: null, stamina: null, diveLight: null, deployed: null
     };
   };
+  // W9：snapshot 返回后补道具字段（保持上面字面量可读；autosave/checkpoint 共用）
+  (function () {
+    const _snap = G.snapshot;
+    G.snapshot = function () {
+      const out = _snap.call(this);
+      if (BR.Items && BR.Items.saveState) {
+        const ist = BR.Items.saveState();
+        out.itemCharges = ist.itemCharges;
+        out.equipped = ist.equipped;
+        out.stamina = ist.stamina;
+        out.diveLight = ist.diveLight;
+        out.deployed = ist.deployed;
+      }
+      return out;
+    };
+  })();
 
   G.autosave = function () {
     if (this.state !== 'playing' && this.state !== 'paused') return;
@@ -282,6 +361,10 @@
         if (L && L.tick) L.tick(dt);
         // Systems A：随机裂隙（关卡 tick 里不要再调，主循环统一调用，内部按帧去重）
         if (BR.Rifts) BR.Rifts.tick(dt);
+        // Systems C-A：低理智特殊事件（运行时态，不进存档）
+        if (BR.SanityEvents) BR.SanityEvents.tick(dt);
+        // W9：新道具运行时 tick（急救包读条/荧光棒过期/照明灯耗电/浸水损坏/氧气瓶消耗）
+        if (BR.Items) BR.Items.tick(dt);
         BR.Audio.updateListener(BR.Player.pos.x, BR.Player.pos.z, BR.Player.yaw);
         // 血条/理智条节流刷新
         this._barT = (this._barT || 0) + dt;

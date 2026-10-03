@@ -151,12 +151,38 @@
       var W = BR.World, P = BR.Player;
       if (!W || !W.map || W.map.level !== 'L94') return;
       if (!P || BR.Game.state !== 'playing') return;
+      BR.thinWallTick(dt); // "布景裂缝"挤压检测（跨关切出走统一状态机）
       // 推进昼夜
       this._dayT += dt / DAY_LEN;
       if (this._dayT >= 1) this._dayT -= 1;
       var ph = phaseOf(this._dayT);
       if (ph !== this._phase) this.setPhase(ph);
       this.applyVisual(dt, false);
+      // 卡通剪影：上下浮动 + 缓慢漂移 + billboard 朝向；材质按昼夜淡入淡出
+      var LW = W._l94;
+      if (LW) {
+        if (LW.fmat) {
+          var nk = (this._phase === 'night' || this._phase === 'dusk') ? 1 : 0;
+          for (var fk in LW.fmat) {
+            if (!LW.fmat.hasOwnProperty(fk)) continue;
+            var fe = LW.fmat[fk];
+            var tgt = nk ? fe.nightOp : fe.dayOp;
+            fe.mat.opacity += (tgt - fe.mat.opacity) * Math.min(1, dt * 1.5);
+          }
+        }
+        if (LW.floaters) {
+          for (var q = 0; q < LW.floaters.length; q++) {
+            var f = LW.floaters[q];
+            if (!f || !f.m || !f.m.parent) continue; // 区块未加载时跳过
+            f.m.position.y = f.by + Math.sin(W.time * f.sp + f.ph) * f.amp;
+            f.m.position.x = f.bx + Math.sin(W.time * f.sp * 0.35 + f.ph * 1.3) * f.drift;
+            // billboard 朝向玩家；头顶正上方时防 lookAt 退化（否则 plane 侧对相机成一条线）
+            var bdx = P.pos.x - f.m.position.x, bdz = P.pos.z - f.m.position.z;
+            if (bdx * bdx + bdz * bdz < 0.25) { bdx = 0.5; bdz = 0; }
+            f.m.lookAt(f.m.position.x + bdx, f.m.position.y, f.m.position.z + bdz);
+          }
+        }
+      }
       // 城堡吊桥动画：白天收起 / 夜晚放下
       var c = W._l94 && W._l94.castle;
       if (c && c.hinge) {
@@ -177,7 +203,7 @@
     },
 
     buildContent: function (map, W) {
-      W._l94 = { hideouts: [], winMat: null, castle: null, numTex: {} };
+      W._l94 = { hideouts: [], winMat: null, castle: null, numTex: {}, floaters: [], fmat: {} };
       // 露天小镇：全部地板格去掉天花板（用公开 API，无跨关泄漏）
       for (var ty = 0; ty < map.h; ty++) {
         for (var tx = 0; tx < map.w; tx++) {
@@ -199,10 +225,18 @@
       poiList(map, 'note').forEach(function (p, i) { addNoteL94(W, p, notes[i % notes.length]); });
       poiList(map, 'crate').forEach(function (p) { addCrateL94(W, p); });
       // watcher POI：实体由 entities.js 集成（Systems B），此处不建模
+      /* ---------- 卡通剪影：飘动的云 / 星星 / 月亮 / 小鸟（2D plane，轻量） ---------- */
+      buildFloaters(map, W);
+      /* ---------- 卡通高饱和色块：小屋旁的色块灌木 ---------- */
+      buildColorBlobs(map, W);
+      /* ---------- 薄墙（"布景裂缝"）：贴墙挤压后跨关切出（走统一切出状态机） ---------- */
+      BR.buildThinWalls(map, W, { cross: ['L0', 'L11', 'L188'] });
       W.objective = '白天：开走老式汽车前往 Level 11；夜晚：可冒险登上城堡吊桥（→Level 188，高风险）。天黑前找藏身点躲好';
     }
   };
-  BR.Levels.L94 = L;
+  // v1.5 W6：Level 94「动画」退役 —— 被 Level !「不想死就快跑！」(id 'bang') 替换。
+  // 注册已摘除（index.html 的 script 标签已移除）；老存档 level='l94' 由 js/save.js 迁移到 'bang'。
+  // BR.Levels.L94 = L;  // RETIRED 2026-10-03
 
   /* ================= 工具 ================= */
   function poiList(map, type) {
@@ -455,6 +489,119 @@
     });
   }
 
+  // 卡通剪影 canvas 纹理（云 / 星星 / 月亮 / 小鸟），关卡级共用 4 张
+  function floaterTexture(W, kind) {
+    var c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    var x = c.getContext('2d');
+    x.clearRect(0, 0, 128, 128);
+    var i, a, r, px2, py2;
+    if (kind === 'cloud') {
+      var blobs = [[44, 78, 26], [72, 68, 32], [98, 80, 22], [60, 88, 24], [86, 90, 24]];
+      x.beginPath();
+      for (i = 0; i < blobs.length; i++) {
+        x.moveTo(blobs[i][0] + blobs[i][2], blobs[i][1]);
+        x.arc(blobs[i][0], blobs[i][1], blobs[i][2], 0, 6.2832);
+      }
+      x.fillStyle = '#ffffff'; x.fill();
+      x.strokeStyle = '#3a5a8a'; x.lineWidth = 5; x.stroke();
+    } else if (kind === 'star') {
+      x.beginPath();
+      for (i = 0; i < 10; i++) {
+        a = -Math.PI / 2 + i * Math.PI / 5; r = (i % 2 === 0) ? 44 : 19;
+        px2 = 64 + Math.cos(a) * r; py2 = 64 + Math.sin(a) * r;
+        if (i === 0) x.moveTo(px2, py2); else x.lineTo(px2, py2);
+      }
+      x.closePath();
+      x.fillStyle = '#ffd94d'; x.fill();
+      x.strokeStyle = '#c87818'; x.lineWidth = 5; x.stroke();
+    } else if (kind === 'moon') {
+      x.fillStyle = '#fdf6d8';
+      x.beginPath(); x.arc(58, 64, 40, 0, 6.2832); x.fill();
+      x.globalCompositeOperation = 'destination-out'; // 咬出月牙（透明，与昼夜天空色无关）
+      x.beginPath(); x.arc(78, 50, 32, 0, 6.2832); x.fill();
+      x.globalCompositeOperation = 'source-over';
+    } else { // bird：卡通"m"形小鸟剪影
+      x.strokeStyle = '#2a3a5a'; x.lineWidth = 7; x.lineCap = 'round';
+      x.beginPath(); x.arc(44, 70, 22, Math.PI * 1.15, Math.PI * 1.85); x.stroke();
+      x.beginPath(); x.arc(84, 70, 22, Math.PI * 1.15, Math.PI * 1.85); x.stroke();
+    }
+    return trackMat(W, new THREE.CanvasTexture(c));
+  }
+  // 飘动的 2D 卡通剪影：云（白天）/ 星星+月亮（夜晚）/ 小鸟（白天）
+  // 随区块加载/卸载（与城堡 billboard 一致）；tick 里做上下浮动 + 缓慢漂移 +  billboard 朝向
+  function buildFloaters(map, W) {
+    var T = BR.TILE;
+    var spawnP = null;
+    for (var spi = 0; spi < map.pois.length; spi++)
+      if (map.pois[spi].type === 'spawn') { spawnP = map.pois[spi]; break; }
+    var defs = [
+      { kind: 'cloud', n: 5, y0: 9, y1: 13, w: 7.0, amp: 0.9, drift: 2.5, night: 0, op: 0.95 },
+      { kind: 'star', n: 7, y0: 11, y1: 16, w: 1.8, amp: 0.35, drift: 0.5, night: 1, op: 1.0 },
+      { kind: 'moon', n: 1, y0: 15, y1: 15, w: 4.5, amp: 0.25, drift: 0.3, night: 1, op: 1.0 },
+      { kind: 'bird', n: 3, y0: 8, y1: 11, w: 2.2, amp: 0.7, drift: 7.0, night: 0, op: 0.95 }
+    ];
+    var idx = 0;
+    defs.forEach(function (d) {
+      // 每种剪影一个共享材质（不挂 _ownMat，随关卡释放；tick 按昼夜整体淡入淡出）
+      var mat = trackMat(W, new THREE.MeshBasicMaterial({
+        map: floaterTexture(W, d.kind), transparent: true, depthWrite: false, opacity: d.night ? 0 : d.op
+      }));
+      W._l94.fmat[d.kind] = { mat: mat, dayOp: d.night ? 0 : d.op, nightOp: d.night ? d.op : 0 };
+      for (var i = 0; i < d.n; i++, idx++) {
+        (function (fi2, dd) {
+          var frng = new BR.RNG(BR.hashSeed(map.seed + ':l94float:' + fi2));
+          // 前两朵云锚定在出生点附近（进关抬头即见，定死卡通风格第一印象）
+          var anchor = (dd.kind === 'cloud' && fi2 < 2 && spawnP) ? [[7, 4], [-6, 8]][fi2] : null;
+          var fx = anchor
+            ? Math.max(2, Math.min(map.w - 3, spawnP.tx + anchor[0])) * T
+            : (2 + frng.next() * (map.w - 4)) * T;
+          var fz = anchor
+            ? Math.max(2, Math.min(map.h - 3, spawnP.ty + anchor[1])) * T
+            : (2 + frng.next() * (map.h - 4)) * T;
+          var fy = dd.y0 + frng.next() * Math.max(0.01, dd.y1 - dd.y0);
+          var ftx = Math.max(1, Math.min(map.w - 2, Math.round(fx / T)));
+          var fty = Math.max(1, Math.min(map.h - 2, Math.round(fz / T)));
+          W.addChunkContent(ftx, fty, function (group) {
+            var m = new THREE.Mesh(new THREE.PlaneGeometry(dd.w, dd.w * 0.75), mat);
+            m.position.set(fx, fy, fz);
+            m.userData.f2 = 'floater';
+            W.reg(group, m); // mesh 不挂 _ownMat：材质关卡级共用，不随区块释放
+            W._l94.floaters[fi2] = {
+              m: m, kind: dd.kind, bx: fx, by: fy, bz: fz, ph: frng.next() * 6.2832,
+              sp: 0.5 + frng.next() * 0.7, amp: dd.amp, drift: dd.drift
+            };
+          });
+        })(idx, d);
+      }
+    });
+  }
+  // 卡通高饱和色块：每间小屋旁一丛三色灌木球
+  function buildColorBlobs(map, W) {
+    var cols = [0xe74c3c, 0xf1c40f, 0x2ecc71, 0x3498db, 0x9b59b6, 0xe67e22];
+    var mats = cols.map(function (cc) {
+      return trackMat(W, new THREE.MeshLambertMaterial({ color: cc }));
+    });
+    poiList(map, 'house').forEach(function (p, hi) {
+      W.addChunkContent(p.tx, p.ty, function (group) {
+        var brng = new BR.RNG(BR.hashSeed('l94blob:' + p.id));
+        var g = new THREE.Group();
+        g.position.set(BR.tileCX(p.tx) + (brng.next() - 0.5) * 3.4, 0,
+          BR.tileCZ(p.ty) + (brng.next() - 0.5) * 3.4);
+        for (var b = 0; b < 3; b++) {
+          var s = new THREE.Mesh(new THREE.SphereGeometry(0.42 + brng.next() * 0.3, 10, 8),
+            mats[(hi + b) % mats.length]);
+          var a = brng.next() * 6.2832, rr = 0.3 + brng.next() * 0.5;
+          s.position.set(Math.cos(a) * rr, 0.35, Math.sin(a) * rr);
+          s.scale.y = 0.8;
+          g.add(s);
+        }
+        g.userData.f2 = 'colorblob';
+        W.reg(group, g);
+      });
+    });
+  }
+
   function L94_NOTES() {
     return [
       ['褪色的镇民告示',
@@ -494,41 +641,16 @@
     });
   }
 
-  // 板条箱（本关独立实现）
+  // 板条箱（两段式：开盖 → 瞄准拿取；与 L0/L1 共用接线，id 不变）
   var CRATE_NAMES = { almond: '杏仁水', bandage: '绷带', flashlight: '手电筒' };
   function addCrateL94(W, p) {
     var tx = p.tx, ty = p.ty;
     var id = 'crate_L94_' + tx + '_' + ty;
     W.addChunkContent(tx, ty, function (group) {
-      var g = new THREE.Group();
-      g.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
-      var wood = W.mat('crate');
-      var box = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.8, 1.05), wood);
-      box.position.y = 0.4; g.add(box);
-      var lid = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.12, 1.05), wood);
-      lid.position.y = 0.86; g.add(lid);
-      W.reg(group, g);
-      if (W.state.openedCrates.indexOf(id) >= 0) { lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0); }
-      W.addInteractable({
-        id: id, kind: 'crate', chunkKey: W.chunkKeyOf(tx, ty),
-        meshes: [box, lid], pos: g.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
-        prompt: function () {
-          return W.state.openedCrates.indexOf(id) >= 0 ? '空板条箱' : '打开板条箱';
-        },
-        canUse: function () { return W.state.openedCrates.indexOf(id) < 0; },
-        use: function () {
-          if (W.state.openedCrates.indexOf(id) >= 0) return;
-          lid.rotation.z = 1.9; lid.position.set(-0.5, 1.1, 0);
-          BR.Audio.doorCreak();
-          W.state.openedCrates.push(id);
-          BR.bus.emit('crate:opened', { id: id });
-          var item = p.data.item || 'almond';
-          BR.Game.inv[item] = (BR.Game.inv[item] || 0) + 1;
-          BR.UI.toast('找到了' + (CRATE_NAMES[item] || item) + '！');
-          BR.Audio.pickup();
-          BR.UI.updateInv();
-        }
-      });
+      var cm = BR.buildCrateMesh(W);
+      cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
+      W.reg(group, cm.group);
+      BR.wireCrateTwoStage(W, group, cm, { id: id, tx: tx, ty: ty, item: p.data.item || 'almond' });
     });
   }
 })();

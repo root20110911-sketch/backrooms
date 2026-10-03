@@ -12,10 +12,12 @@
  *   落点 RNG 由 seed+':riftspot:'+level+':'+count 派生。同一种子同 count 落点一致。
  *   每关每 90 秒最多显形 1 次；显形前 3~5 秒按关卡主题给视听征兆。
  *   目的地权重（排除当前关与未加载关卡）：
- *     L0:15 L1:15 L11:12 L37:12 L188:10 L94:10 L7:8 L2:8 L3:6 FUN:4
+ *     L0:15 L1:15 L11:12 L37:12 L188:10 bang:10 L7:8 L2:8 L3:6 FUN:4
+ *   （v1.5 W6：L94→bang 替换；flags.bangEscaped 置位后裂隙不再随机送回 bang）
  *
  * 七色滑梯固定映射（本游戏原创机制——后室原作中 Level Fun 没有滑梯出口）：
- *   红→L0 / 橙→L37 / 黄→L11 / 绿→L1 / 青→L7 / 蓝→L94(夜间) / 紫→L188
+ *   红→L0 / 橙→L37 / 黄→L11 / 绿→L1 / 青→L7 / 蓝→bang / 紫→L188
+ *   （v1.5 W6：蓝滑梯 94→! 替换；已逃脱时重抽其他已完成层级，见 levels.js 滑梯交互）
  *   映射写死在 BR.Cutout.SLIDE_MAP，滑梯实体见 levels.js FUN buildContent 末尾追加区，
  *   游戏内用海报/字条/痕迹留线索。
  */
@@ -30,7 +32,7 @@
     yellow: { to: 'L11',  name: '黄', clue: '梯口城市明信片' },
     green:  { to: 'L1',   name: '绿', clue: '梯口绿色荧光标记' },
     cyan:   { to: 'L7',   name: '青', clue: '梯口咸腥水渍+贝壳' },
-    blue:   { to: 'L94',  name: '蓝', clue: '梯口星空贴纸', night: true }, // 危险落点（夜间抵达）
+    blue:   { to: 'bang',  name: '蓝', clue: '梯口"跑"字涂鸦' }, // v1.5 W6：94→! 替换，蓝滑梯改送 Level !
     purple: { to: 'L188', name: '紫', clue: '梯口窗框碎片' }
   };
   const SLIDE_ORDER = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple'];
@@ -106,15 +108,94 @@
     }, 30000);
 
     try {
-      await this._pre(kind, opts);          // ① kind 专属前段
+      if (kind !== 'none') await this._pre(kind, opts); // ① kind 专属前段（none 跳过）
       await BR.Game.gotoLevel(to, opts);    // ② 跨关（gotoLevel 已修 opts 透传；resolve 时已 playing）
-      BR.Input.setLocked(true);             // loadLevel 末尾解过锁，抵达演出期间重新锁定
-      await this._arrival(to, kind, opts);  // ③ 抵达演出（核心）
+      if (kind !== 'none') {
+        BR.Input.setLocked(true);             // loadLevel 末尾解过锁，抵达演出期间重新锁定
+        await this._arrival(to, kind, opts);  // ③ 抵达演出（核心）
+      }
       BR.Game.autosave();                   // gotoLevel 内部 loadLevel 已存过一次；这里补一次保证事件落盘
     } catch (e) {
       BR.warn('Cutout.travel failed', e);
     }
     finish();
+  };
+
+  /* ================= BR.Cutout.travelTo：W10 统一跨关接口 =================
+   * travelTo(levelId, opts)：所有跨关出口的统一入口（各路出口 use() 里调用，
+   *   如 W4 的 L11 井盖→L2 调 travelTo('L2', {mode:'door'})）。
+   *   opts.mode: 'fall'（切出坠落，默认）| 'door'（穿门）| 'swim'（水下）| 'none'（无过渡）
+   *   opts.dropText: 抵达后提示文字（透传给 travel）
+   * mode→kind 映射：fall→'drop' / door→'door' / swim→'water' / none→'none'。
+   * 旧 BR.Cutout.travel(to, {kind}) 保留兼容（各关现有调用不动）。
+   * 返回 Promise<boolean>：成功开始跨关 true；被 busy/未知关卡拒绝 false。
+   */
+  Cutout.MODE_MAP = { fall: 'drop', door: 'door', swim: 'water', none: 'none' };
+  Cutout.travelTo = function (levelId, opts) {
+    opts = opts || {};
+    const mode = opts.mode || 'fall';
+    const kind = Cutout.MODE_MAP[mode] || 'drop';
+    if (!BR.Levels[levelId]) {
+      BR.UI.toast('前方一片黑暗……（该楼层尚未开放）');
+      return Promise.resolve(false);
+    }
+    if (this.busy) { BR.warn('Cutout.travelTo busy, ignored:', levelId, mode); return Promise.resolve(false); }
+    return Cutout.travel(levelId, { kind: kind, dropText: opts.dropText }).then(() => true);
+  };
+
+  /* ---------- 固定 / 条件连接登记（文档即契约；各路出口 use() 调 travelTo） ---------- */
+  Cutout.CONNECTIONS = [
+    { from: 'L11',  via: 'manhole',      to: 'L2',   mode: 'door', label: '井盖', note: 'W4 固定连接：调 travelTo("L2",{mode:"door"})' },
+    { from: 'L7',   via: 'deep_exit',    to: 'L37',  mode: 'swim', cond: 'deep', label: '深处出口（水→水）' },
+    { from: 'L37',  via: 'deep_channel', to: 'L7',   mode: 'swim', cond: 'deep', label: '深水区水下通道（水→水）' },
+    { from: 'L37',  via: 'arch',         to: 'L0',   mode: 'swim', cond: 'shallow', label: '浅水区拱洞' },
+    { from: 'L188', via: 'odd_window',   to: 'L1',   mode: 'fall', cond: 'observed', label: '异常窗（需观察发现）' },
+    { from: 'L188', via: 'stairwell',    to: 'L11',  mode: 'door', label: '员工室楼梯间（稳定路线）' },
+    { from: 'L188', via: 'radio',        to: 'L0',   mode: 'fall', label: '休息室收音机（静电线索）' },
+    // v1.5 W6：L94「动画」退役（被 Level ! 'bang' 替换），其 car/castle 连接一并移除
+    { from: 'L7',   via: 'entry_door',   to: null,   mode: 'door', cond: 'return', label: '入口房间（返回来处，可逆）' },
+    { from: 'L7',   via: 'anomaly_exit', to: 'L0',   mode: 'fall', cond: 'observed', label: '异常切出点' },
+    { from: 'L11',  via: 'meg',          to: 'L1',   mode: 'door', cond: 'talked', label: 'MEG 指引（对话后）' },
+    { from: 'L11',  via: 'subway',       to: 'L2',   mode: 'door', label: '地铁' },
+    { from: 'L11',  via: 'wanderer',     to: 'bang', mode: 'door', cond: 'traded', label: '流浪者信息（信息交换，v1.5 W6：94→! 替换）' }
+  ];
+
+  /* ---------- Level ! 屏蔽与随机候选池 ---------- */
+  // Level !（"!"）为只出不进的特殊层：一旦 flags.bangEscaped 置位（玩家已逃脱），
+  // 随机系统（裂隙/浆果）不再把玩家送回 Level !。
+  // Level ! 建造者接入时：BR.Levels 注册关卡，并在主题或关卡对象上标记 bang:true；
+  // 若关卡 id 不是 'BANG'，设置 BR.Cutout.BANG_ID 为实际 id。
+  Cutout.BANG_ID = 'BANG';
+  Cutout._extraRiftDests = []; // [id, weight]：后续新关卡登记随机候选
+  Cutout.registerRiftDest = function (id, weight) {
+    Cutout._extraRiftDests.push([id, weight == null ? 5 : weight]);
+  };
+  // 随机目的地候选池（裂隙/浆果共用）：仅"已完成"（BR.Levels 已注册）且合规
+  Cutout.destPool = function (from) {
+    const bang = Cutout.BANG_ID;
+    const escaped = !!(BR.Game && BR.Game.flags && BR.Game.flags.bangEscaped);
+    const pool = [];
+    const push = (lv, w) => {
+      if (lv === from) return;                    // 排除当前关
+      const L = BR.Levels && BR.Levels[lv];
+      if (!L) return;                             // 未完成/未注册不进
+      if (L.noRift) return;                       // 关卡主动退出随机池
+      if (escaped && (lv === bang || L.bang === true)) return; // 已逃脱不再送回 Level !
+      pool.push([lv, w]);
+    };
+    for (const [lv, w] of RIFT_WEIGHTS) push(lv, w);
+    for (const [lv, w] of Cutout._extraRiftDests) push(lv, w);
+    return pool;
+  };
+  // 按权重抽取（rng 需有 next()；调用方保证种子派生可复现）
+  Cutout.pickRandomDest = function (from, rng) {
+    const pool = Cutout.destPool(from);
+    let total = 0;
+    for (const pw of pool) total += pw[1];
+    if (!pool.length || total <= 0) return 'L0';
+    let r = rng.next() * total, dest = pool[0][0];
+    for (const pw of pool) { r -= pw[1]; if (r <= 0) { dest = pw[0]; break; } }
+    return dest;
   };
 
   /* ---------- ① kind 专属前段 ---------- */
@@ -191,7 +272,33 @@
         await setOv(1, 300);
         break;
       }
-      default: { // walk / drop / water：短暂黑边
+      case 'drop': {
+        // W10 切出坠落前段：短暂异常 → 失重下沉（对应 travelTo mode:'fall'）
+        BR.Audio.glitch();
+        BR.Audio.dropRumble(0.9);
+        const t0d = performance.now(), durd = 900;
+        await new Promise((res) => {
+          const iv = setInterval(() => {
+            if (skipped() || performance.now() - t0d >= durd) { clearInterval(iv); res(); return; }
+            const t = Math.min(1, (performance.now() - t0d) / durd);
+            p.extDipY = -0.5 * t * t;
+            p.extRoll = Math.sin(t * 7) * 0.04 * t;
+            ovEl.style.opacity = Math.max(0.25, 1 - t * 0.75);
+          }, 33);
+        });
+        p.extDipY = 0; p.extRoll = 0;
+        await setOv(1, 300);
+        break;
+      }
+      case 'door': {
+        // W10 穿门前段：门轴声 + 渐暗（无坠落，门后是平地；对应 travelTo mode:'door'）
+        BR.Audio.doorCreak();
+        await waitMs(500);
+        await setOv(1, 600);
+        break;
+      }
+      case 'none': break; // W10 无过渡：直接黑场切关（travel 里跳过 _pre/_arrival）
+      default: { // walk / water / manila：短暂黑边
         if (kind === 'water') BR.Audio.splash(); else BR.Audio.glitch();
         await waitMs(450);
         await setOv(1, 350);
@@ -204,6 +311,7 @@
   /* ---------- ③ 抵达演出 ---------- */
   Cutout._arrival = async function (to, kind, opts) {
     const ovEl = ov();
+    if (kind === 'door') { await this._arrivalDoor(ovEl, opts); return; } // W10 穿门：淡入，无坠落
     const dropcam = (BR.Input.settings && BR.Input.settings.dropcam) || 'full';
     const watery = kind.indexOf('water') !== -1 ||
       !!(BR.Levels[to] && BR.Levels[to].theme && BR.Levels[to].theme.waterArrival);
@@ -289,6 +397,17 @@
     this._hideOv(ovEl);
   };
 
+  // 穿门抵达（W10）：淡入（门后是平地，无坠落演出）+ 身后门合上声
+  Cutout._arrivalDoor = async function (ovEl, opts) {
+    await waitMs(400);
+    ovEl.style.transition = 'opacity 900ms linear';
+    ovEl.style.opacity = 0;
+    await waitMs(950);
+    BR.Audio.doorCreak();
+    if (opts && opts.dropText) BR.UI.toast(opts.dropText, 2200);
+    this._hideOv(ovEl);
+  };
+
   Cutout._hideOv = function (ovEl) {
     if (BR.Trans.active) return; // 外层转场自己收尾
     ovEl = ovEl || ov();
@@ -302,12 +421,14 @@
   // LORE：随机裂隙为本游戏原创机制。
   const RIFT_WEIGHTS = [
     ['L0', 15], ['L1', 15], ['L11', 12], ['L37', 12], ['L188', 10],
-    ['L94', 10], ['L7', 8], ['L2', 8], ['L3', 6], ['FUN', 4]
+    ['L7', 8], ['L2', 8], ['L3', 6], ['FUN', 4]
   ];
+  // v1.5 W6：L94 从随机池移除；Level !（id 'bang'）由 lv_bang.js 经
+  // BR.Cutout.registerRiftDest('bang', 10) 登记（见本文件 _extraRiftDests）。
   // 按关卡空间特性选显形形式：crack=墙角裂缝(主动进) / hole=地板洞(踩空) / door=回头变的门
   const RIFT_FORM = {
     L0: 'crack', L1: 'hole', L2: 'hole', L3: 'door', FUN: 'door',
-    L188: 'crack', L37: 'hole', L94: 'door', L7: 'crack', L11: 'crack'
+    L188: 'crack', L37: 'hole', bang: 'door', L7: 'crack', L11: 'crack'
   };
   const RIFT_OMEN_TEXT = {
     L0: '墙缝里渗出微光，还伴着低鸣……',
@@ -323,7 +444,19 @@
     _pending: null, // {t, form, tx, ty, nx, nz, to, count, marker}
     _manifest: null,// {form, tx, ty, nx, nz, to, count, group, itId, ttl}
     _frameT: undefined,
-    RIFT_WEIGHTS: RIFT_WEIGHTS
+    _visitCount: 0, // 本关本次停留已显形次数（上限用，重载不无限刷）
+    RIFT_WEIGHTS: RIFT_WEIGHTS,
+    // W10：随机规则配置——概率（showChance/权重表）+ 上限（冷却/每关显形上限）均可调；
+    // 不许每帧抽（tick 按帧去重 + 冷却），重载不无限刷（riftCount 跨关单调 + 本关上限）。
+    config: {
+      showChance: 0.55,   // 每次判定显形的概率
+      cdSec: 90,          // 显形冷却（秒）：每关每 90s 最多显形 1 次
+      firstMin: 55, firstMax: 90,   // 进关后首次判定延迟区间
+      noShowMin: 45, noShowMax: 90, // 判定未显形后的退避
+      omenMin: 3, omenMax: 5,       // 显形前征兆秒数
+      maxPerVisit: 4,     // 每关每次停留最多显形次数
+      manifestTtl: 30     // 显形持续秒数
+    }
   };
   BR.Rifts = Rifts;
 
@@ -338,8 +471,10 @@
     if (level !== this._level) {
       this._level = level;
       // 进关后 55~90s 首次判定（种子派生，保证同一种子行为一致）
-      this._cd = 55 + (BR.hashSeed(BR.Game.seed + ':riftcd:' + level) % 35);
+      const cfg = this.config;
+      this._cd = cfg.firstMin + (BR.hashSeed(BR.Game.seed + ':riftcd:' + level) % (cfg.firstMax - cfg.firstMin));
       this._pending = null;
+      this._visitCount = 0; // 换关重置本关显形计数
       this._clearManifest();
     }
     this._cd -= dt;
@@ -349,18 +484,14 @@
   };
 
   // 纯派生：同一种子 + 同关卡 + 同 count → 同落点（可复现，供测试与判定共用）
+  // W10：候选池走 Cutout.destPool（仅已完成且合规；尊重 flags.bangEscaped）
   Rifts._derive = function (seed, level, count, W) {
+    const cfg = this.config;
     const rng = new BR.RNG(BR.hashSeed(seed + ':rift:' + count));
-    if (rng.next() > 0.55) return { show: false };
-    const pool = [];
-    let total = 0;
-    for (const [lv, w] of RIFT_WEIGHTS) {
-      if (lv === level || !BR.Levels[lv]) continue;
-      pool.push([lv, w]); total += w;
-    }
+    if (rng.next() > cfg.showChance) return { show: false };
+    const pool = Cutout.destPool(level);
     if (!pool.length) return { show: false };
-    let r = rng.next() * total, to = pool[0][0];
-    for (const [lv, w] of pool) { r -= w; if (r <= 0) { to = lv; break; } }
+    const to = Cutout.pickRandomDest(level, rng);
     const srng = new BR.RNG(BR.hashSeed(seed + ':riftspot:' + level + ':' + count));
     const spot = this._pickSpot(W, srng);
     if (!spot) return { show: false };
@@ -386,17 +517,24 @@
 
   Rifts._roll = function () {
     const W = BR.World, level = BR.Game.level;
+    const cfg = this.config;
+    // 本关显形上限：达到后不再判定（防无限刷）
+    if (this._visitCount >= cfg.maxPerVisit) { this._cd = cfg.cdSec; return; }
     // 跨关单调计数：flags.riftCount 在进入裂隙后递增、存档保留。
     // （修 bug：原来按本关 ws.events 计数，跨关后新关 events 为空，count 永远从 0 开始）
     const count = (BR.Game.flags && BR.Game.flags.riftCount) || 0;
     const d = this._derive(BR.Game.seed, level, count, W);
-    if (!d.show) { this._cd = 45 + (BR.hashSeed(BR.Game.seed + ':riftnoshow:' + level + count) % 45); return; }
+    if (!d.show) {
+      this._cd = cfg.noShowMin + (BR.hashSeed(BR.Game.seed + ':riftnoshow:' + level + count) % (cfg.noShowMax - cfg.noShowMin));
+      return;
+    }
+    const omenSpan = cfg.omenMax - cfg.omenMin;
     this._pending = {
-      t: 3 + (BR.hashSeed(BR.Game.seed + ':riftomen:' + level + count) % 200) / 100, // 3~5s
+      t: cfg.omenMin + (BR.hashSeed(BR.Game.seed + ':riftomen:' + level + count) % Math.round(omenSpan * 100)) / 100, // 3~5s
       form: d.form, tx: d.tx, ty: d.ty, nx: d.nx, nz: d.nz, to: d.to, count: count, marker: null, shakeT: 0
     };
     this._omen(level, d.form, d);
-    this._cd = 90; // 本轮进入冷却：每关每 90s 最多显形 1 次
+    this._cd = cfg.cdSec; // 本轮进入冷却：每关每 90s 最多显形 1 次
   };
 
   // 显形前 3~5 秒视听征兆（按关卡主题）
@@ -501,7 +639,8 @@
       use: () => Rifts._enterRift(m)
     };
     W.addInteractable(it);
-    m.group = g; m.itId = it.id; m.ttl = 30;
+    m.group = g; m.itId = it.id; m.ttl = this.config.manifestTtl;
+    this._visitCount++; // 本关显形计数（上限见 config.maxPerVisit）
     this._manifest = m;
     if (m.form === 'door') BR.UI.toast('你身后好像多了扇门……', 2600);
     else if (m.form === 'hole') BR.UI.toast('地板上裂开了一个洞……', 2600);
@@ -512,10 +651,19 @@
     const m = this._manifest;
     m.ttl -= dt;
     // 地板洞：走上去踩空
+    // W10：垂直贴合判定——脚底必须贴近洞所在 tile 的地面（±0.6m）才算踩进。
+    // 修隐患：L37 游泳时脚底 pos.y≈-0.82，旧的 pos.y<0.45 守卫会被游过池底裂隙误触发；
+    // 新判定下：陆面行走（脚≈地面）✓ / 跳跃穿过（脚高于地面）✗ / 水面游泳（脚悬于深水）✗ /
+    // 下潜到池底（脚≈池底）✓。原有 busy 防重复触发保留。
     if (m.form === 'hole' && !Cutout.busy) {
       const p = P();
       const dx = p.pos.x - BR.tileCX(m.tx), dz = p.pos.z - BR.tileCZ(m.ty);
-      if (Math.hypot(dx, dz) < 0.9) { this._enterRift(m); return; }
+      if (Math.hypot(dx, dz) < 0.9) {
+        let gy = 0;
+        try { gy = (typeof p._groundYAt === 'function') ? p._groundYAt(BR.tileCX(m.tx), BR.tileCZ(m.ty)) : 0; }
+        catch (e) { gy = 0; }
+        if (isFinite(gy) && Math.abs(p.pos.y - gy) < 0.6) { this._enterRift(m); return; }
+      }
     }
     if (m.ttl <= 0) {
       this._clearManifest();
