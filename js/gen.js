@@ -775,6 +775,31 @@
     addPOI(map, 'anomaly_wall', spot.tx, spot.ty, {
       dirx: Math.sign(spot.fx - spot.tx), dirz: Math.sign(spot.fy - spot.ty)
     });
+    // v1.5.1：L0 主出口（游戏性改编，LORE 标注）——farRoom 外墙上一扇金属门，
+    // 绿色 EXIT 灯牌 + 门缝透光 → Level 1「宜居地带」。原 lore 出口（noclip/马尼拉/薄墙）保留不动。
+    (function placeL0MainExit() {
+      var r = exit, cands = [], x, y;
+      var usedDoor = function (tx, ty) {
+        for (var i = 0; i < map.doors.length; i++) if (map.doors[i].tx === tx && map.doors[i].ty === ty) return true;
+        return false;
+      };
+      for (x = r.x; x < r.x + r.w; x++) {
+        if (r.y - 1 >= 1 && !usedDoor(x, r.y - 1) && map.tiles[T(x, r.y - 1)] === 0 && map.tiles[T(x, r.y)] === 1)
+          cands.push({ tx: x, ty: r.y - 1, fx: x, fy: r.y, axis: 'x' });
+        if (r.y + r.h < map.h - 1 && !usedDoor(x, r.y + r.h) && map.tiles[T(x, r.y + r.h)] === 0 && map.tiles[T(x, r.y + r.h - 1)] === 1)
+          cands.push({ tx: x, ty: r.y + r.h, fx: x, fy: r.y + r.h - 1, axis: 'x' });
+      }
+      for (y = r.y; y < r.y + r.h; y++) {
+        if (r.x - 1 >= 1 && !usedDoor(r.x - 1, y) && map.tiles[T(r.x - 1, y)] === 0 && map.tiles[T(r.x, y)] === 1)
+          cands.push({ tx: r.x - 1, ty: y, fx: r.x, fy: y, axis: 'z' });
+        if (r.x + r.w < map.w - 1 && !usedDoor(r.x + r.w, y) && map.tiles[T(r.x + r.w, y)] === 0 && map.tiles[T(r.x + r.w - 1, y)] === 1)
+          cands.push({ tx: r.x + r.w, ty: y, fx: r.x + r.w - 1, fy: y, axis: 'z' });
+      }
+      if (!cands.length) return;
+      var s = cands[rng.int(0, cands.length - 1)];
+      addDoor(map, s.tx, s.ty, s.axis, false, 'EXIT 出口', 'L0_EXIT');
+      addPOI(map, 'main_exit', s.tx, s.ty, { fx: s.fx, fy: s.fy });
+    })();
     // 红房间：另一处异常点（厅中心；若中心恰被遮挡，取最近的地板格）
     var rr = pickRoom(rng, map, [map.rooms[0], exit]); rr.tag = 'red';
     var rcx = Math.round(rr.cx), rcy = Math.round(rr.cy), rrt = [rcx, rcy];
@@ -803,20 +828,159 @@
     });
     // Systems A：FUN 涂鸦洞口（本游戏原创机制）——8% 概率出现墙上涂鸦 + 附近可爬洞口 → FUN
     if (rng.next() < 0.08) {
-      var gr = pickRoom(rng, map, [map.rooms[0], exit]);
-      var gt = randTileInRoom(rng, map, gr);
-      addPOI(map, 'fun_graffiti', gt[0], gt[1], {});
-      var gdirs = [[1, 0], [-1, 0], [0, 1], [0, -1]], ghole = null;
-      for (var gi = 0; gi < 4 && !ghole; gi++) {
-        var gx = gt[0] + gdirs[gi][0], gy = gt[1] + gdirs[gi][1];
-        if (gx > 0 && gy > 0 && gx < map.w - 1 && gy < map.h - 1 && map.tiles[T(gx, gy)] === 1) ghole = [gx, gy];
+      // v1.5.1：必须落在有墙的 tile 上（否则涂鸦浮空）；10 次随机都找不到就放弃
+      var gt = null, gnx = 0, gnz = 1;
+      for (var gtry = 0; gtry < 10 && !gt; gtry++) {
+        var gr = pickRoom(rng, map, [map.rooms[0], exit]);
+        var cand = randTileInRoom(rng, map, gr);
+        var gds = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var gdi = 0; gdi < 4; gdi++) {
+          var gwx = cand[0] + gds[gdi][0], gwy = cand[1] + gds[gdi][1];
+          if (gwx > 0 && gwy > 0 && gwx < map.w - 1 && gwy < map.h - 1 && map.tiles[T(gwx, gwy)] === 0) {
+            gt = cand; gnx = -gds[gdi][0]; gnz = -gds[gdi][1]; break;
+          }
+        }
       }
-      if (ghole) addPOI(map, 'fun_hole2', ghole[0], ghole[1], {});
+      if (!gt) { gt = null; }
+      if (gt) {
+        addPOI(map, 'fun_graffiti', gt[0], gt[1], { nx: gnx, nz: gnz });
+        var gdirs = [[1, 0], [-1, 0], [0, 1], [0, -1]], ghole = null;
+        for (var gi = 0; gi < 4 && !ghole; gi++) {
+          var gx = gt[0] + gdirs[gi][0], gy = gt[1] + gdirs[gi][1];
+          if (gx > 0 && gy > 0 && gx < map.w - 1 && gy < map.h - 1 && map.tiles[T(gx, gy)] === 1) ghole = [gx, gy];
+        }
+        if (ghole) addPOI(map, 'fun_hole2', ghole[0], ghole[1], {});
+      }
     }
     // 薄墙：不稳定切出点（L0 的不确定性来源之一：数量 6，位置随机且互相远离；
     // 开阔地形专用放置：大厅边缘 / 半墙旁）
     placeThinWallsOpen(map, rng, 6);
+    // v1.5.1：L0 无限延伸——边界开豁口（每边 2 个，共 8 个），通向程序化无限区。
+    // 豁口选在"内侧已是地板"的位置，保证与内部连通；位置存 map.meta.l0BorderDoors。
+    openL0Borders(map, rng);
   }
+
+  function openL0Borders(map, rng) {
+    // v1.5.1：L0 内圈（1/54 环）本就没有地板，豁口需主动向内挖 3 宽通道直到连上现有地板。
+    // 通道 tiles 记入 meta.l0BorderCorr，levels.js recarveMap 会保护它们不被重写。
+    // 避让：马尼拉矩形（+1 外圈）——候选位置若直线路径穿过则直接排除；
+    //       门 tile / POI tile 不挖（留空，3 宽通道由其余两 lane 绕行保持连通）。
+    var doors = [], corr = [];
+    var sides = [
+      { b: function (i) { return [55, i]; }, dir: [-1, 0] }, // 东：向内 -x
+      { b: function (i) { return [0, i]; },  dir: [1, 0] },  // 西：向内 +x
+      { b: function (i) { return [i, 0]; },  dir: [0, 1] },  // 北：向内 +y
+      { b: function (i) { return [i, 55]; }, dir: [0, -1] }  // 南：向内 -y
+    ];
+    var skip = {};
+    if (map._manila) {
+      for (var sy = map._manila.y0 - 1; sy <= map._manila.y1 + 1; sy++)
+        for (var sx = map._manila.x0 - 1; sx <= map._manila.x1 + 1; sx++) skip[T(sx, sy)] = 1;
+    }
+    for (var di = 0; di < map.doors.length; di++) skip[T(map.doors[di].tx, map.doors[di].ty)] = 1;
+    for (var qi = 0; qi < map.pois.length; qi++) skip[T(map.pois[qi].tx, map.pois[qi].ty)] = 1;
+    // 路径是否穿过马尼拉禁区
+    function hitsManila(bt, dir) {
+      if (!map._manila) return false;
+      var x = bt[0], y = bt[1];
+      for (var st = 0; st < 50; st++) {
+        x += dir[0]; y += dir[1];
+        if (x < 1 || y < 1 || x > 54 || y > 54) break;
+        for (var w = -1; w <= 1; w++) {
+          var px = x + (dir[0] === 0 ? w : 0), py = y + (dir[1] === 0 ? w : 0);
+          if (skip[T(px, py)] && px >= map._manila.x0 - 1 && px <= map._manila.x1 + 1 &&
+              py >= map._manila.y0 - 1 && py <= map._manila.y1 + 1) return true;
+        }
+      }
+      return false;
+    }
+    sides.forEach(function (s) {
+      var candIdx = [];
+      for (var ci = 8; ci <= 47; ci++) {
+        var bt0 = s.b(ci);
+        if (!hitsManila(bt0, s.dir)) candIdx.push(ci);
+      }
+      var order = rng.shuffle(candIdx);
+      var picks = [];
+      for (var k = 0; k < order.length && picks.length < 2; k++) {
+        var ok = true;
+        for (var j = 0; j < picks.length; j++) if (Math.abs(order[k] - picks[j]) < 12) { ok = false; break; }
+        if (ok) picks.push(order[k]);
+      }
+      picks.forEach(function (i) {
+        var bt = s.b(i);
+        var myTiles = [], carved = {};
+        var ci2 = T(bt[0], bt[1]);
+        if (map.tiles[ci2] !== 1) { map.tiles[ci2] = 1; myTiles.push(ci2); }
+        carved[ci2] = 1;
+        var cx = bt[0], cy = bt[1], linked = false;
+        // myTiles 只记"由通道新挖开"的 tile（原本就是地板的不记，回滚时不碰）
+        for (var step = 0; step < 50 && !linked; step++) {
+          var fx = cx + s.dir[0], fy = cy + s.dir[1];
+          if (fx < 1 || fy < 1 || fx > 54 || fy > 54) break;
+          // 前方 3 宽行有"非通道、非避让"的地板 → 已连上（当前位置是地板，相邻即连通）
+          var found = false;
+          for (var w = -1; w <= 1; w++) {
+            var qx = fx + (s.dir[0] === 0 ? w : 0), qy = fy + (s.dir[1] === 0 ? w : 0);
+            var qii = T(qx, qy);
+            if (!carved[qii] && !skip[qii] && map.tiles[qii] === 1) { found = true; break; }
+          }
+          if (found) { linked = true; break; }
+          cx = fx; cy = fy;
+          for (var w2 = -1; w2 <= 1; w2++) {
+            var px = cx + (s.dir[0] === 0 ? w2 : 0), py = cy + (s.dir[1] === 0 ? w2 : 0);
+            var pi = T(px, py);
+            if (skip[pi] || carved[pi]) continue;
+            if (map.tiles[pi] !== 1) { map.tiles[pi] = 1; myTiles.push(pi); }
+            carved[pi] = 1;
+          }
+        }
+        if (!linked) {
+          // 50 步都没连上：回滚，不留不可达通道
+          for (var ri = 0; ri < myTiles.length; ri++) map.tiles[myTiles[ri]] = 0;
+          return;
+        }
+        for (var ai = 0; ai < myTiles.length; ai++) corr.push(myTiles[ai]);
+        doors.push({ tx: bt[0], ty: bt[1] });
+      });
+    });
+    map.meta.l0BorderDoors = doors;
+    map.meta.l0BorderCorr = corr;
+  }
+
+  // v1.5.1：L0 无限区程序化 tile。超出 56×56 的部分按"种子+tile 坐标"确定性生成，
+  // 与加载顺序/次数无关。风格与 L0 一致：大面积地板 + 12×12 超块内的隔墙段/柱子/小广场。
+  // doors: map.meta.l0BorderDoors（豁口列表），豁口外 3 格强制地板，保证进出顺畅。
+  BR.Gen.l0InfiniteTile = function (seed, tx, ty, doors) {
+    var i, d, ox, oy, along, perp;
+    if (doors) for (i = 0; i < doors.length; i++) {
+      d = doors[i];
+      ox = d.tx === 55 ? 1 : (d.tx === 0 ? -1 : 0);
+      oy = d.ty === 55 ? 1 : (d.ty === 0 ? -1 : 0);
+      along = (tx - d.tx) * ox + (ty - d.ty) * oy;
+      perp = Math.abs((tx - d.tx) * oy + (ty - d.ty) * ox);
+      if (along >= 1 && along <= 3 && perp <= 1) return 1;
+    }
+    var bx = Math.floor(tx / 12), by = Math.floor(ty / 12);
+    var lx = tx - bx * 12, ly = ty - by * 12;
+    var rng = new BR.RNG(BR.hashSeed(seed + ':l0inf:' + bx + ',' + by));
+    var hasPlaza = rng.chance(0.3), px = 0, py = 0;
+    if (hasPlaza) { px = rng.int(0, 9); py = rng.int(0, 9); }
+    var walls = {};
+    var nSeg = 2 + rng.int(0, 2), s, horiz, sx, sy, len, k, wx, wy;
+    for (s = 0; s < nSeg; s++) {
+      horiz = rng.chance(0.5);
+      sx = rng.int(0, 11); sy = rng.int(0, 11);
+      len = 3 + rng.int(0, 5);
+      for (k = 0; k < len; k++) {
+        wx = horiz ? sx + k : sx; wy = horiz ? sy : sy + k;
+        if (wx <= 11 && wy <= 11) walls[wx + ',' + wy] = 1;
+      }
+    }
+    for (var c = 0; c < 2; c++) walls[rng.int(0, 11) + ',' + rng.int(0, 11)] = 1;
+    if (hasPlaza && lx >= px && lx < px + 3 && ly >= py && ly < py + 3) return 1;
+    return walls[lx + ',' + ly] ? 0 : 1;
+  };
 
   // L1 出口长走廊：从靠边的远房间向地图边缘打一条 10~14 格直走廊
   function makeExitCorridor(map, rng) {
@@ -1161,6 +1325,8 @@
 
   var G_TRUE_EXIT = ['EXIT', 'this way', 'follow the lights', 'keep going', 'almost out', 'RUN'];
   var G_TRUE_SAFE = ['SAFE ROOM', 'safe here', 'rest here'];
+  // v1.5.1：L0 指引类涂鸦优先——钢琴声/暖光指引马尼拉房间
+  var G_TRUE_SAFE_L0 = ['follow the piano', 'listen for the piano', 'warm light is safe', 'SAFE ROOM'];
   var G_FAKE = ["it's a lie", "DON'T MOVE", 'turn back', 'NO EXIT', 'trust no one', 'GO BACK', 'wrong way', 'no one leaves'];
   var G_CALM = ['the end is near', 'level !', "don't count the lights", 'it hears you', 'the humming never stops', 'day 143', 'stay quiet', 'nothing is real'];
   var G_COLORS = ['#d8d2c0', '#1b1b1d', '#a02723', '#c08a1e', '#3d6b8e'];
@@ -1191,8 +1357,9 @@
       }
     if (!cands.length) return;
     // 散布取点：随机顺序 + 最小间距（先 7 格再 4 格，仍不够按序补足）
+    // v1.5.1：砍到稀疏 3~6 处（原 6~12，用户反馈"全都是涂鸦"）
     var order = rng.shuffle(cands.slice()), picked = [];
-    var want = Math.min(cands.length, 6 + rng.int(0, 6));
+    var want = Math.min(cands.length, 3 + rng.int(0, 3));
     for (var pass = 0; pass < 2 && picked.length < want; pass++) {
       var md = pass === 0 ? 7 : 4;
       for (var k = 0; k < order.length && picked.length < want; k++) {
@@ -1220,7 +1387,15 @@
         if (kinds[i] === from) { kinds[i] = to; n2--; }
     }
     if (!exit) kindConvert('true', 'calm', 99); // 无出口目标的关不写真提示
-    if (exit) kindConvert('calm', 'true', Math.max(0, 2 - kindCount('true'))); // 保真：只从 calm 取
+    // 保真：先从 calm 取，不够再从 fake 借（给 fake 至少留 2 个；涂鸦稀疏化后 calm 可能为 0）
+    if (exit) {
+      var needTrue = Math.max(0, 2 - kindCount('true'));
+      var fromCalmT = Math.min(needTrue, kindCount('calm'));
+      kindConvert('calm', 'true', fromCalmT);
+      needTrue -= fromCalmT;
+      if (needTrue > 0 && kindCount('fake') > 2)
+        kindConvert('fake', 'true', Math.min(needTrue, kindCount('fake') - 2));
+    }
     // 保假：先从 calm 取，不够再从 true 借（给 true 至少留 1 个）
     var needFake = Math.max(0, 2 - kindCount('fake'));
     var fromCalm = Math.min(needFake, kindCount('calm'));
@@ -1236,21 +1411,35 @@
       if (kind === 'true' && exit) {
         var useSafe = safe && rng.chance(0.3);
         var tgt = useSafe ? safe : exit;
-        var dx = tgt[0] - c[0], dy = tgt[1] - c[1];
-        // 墙切向两候选：a=(nz,-nx)，b=-a；取与出口方向点积大者
-        var dotA = dx * nz + dy * (-nx);
-        var ax = dotA >= 0 ? nz : -nz, ay = dotA >= 0 ? -nx : nx;
-        var tComp = Math.abs(dotA), nComp = dx * nx + dy * nz;
-        if (tComp >= 1.2) {
-          // 画布 →（local +x）在世界系为 (cosθ,-sinθ)，θ=atan2(nx,nz)；点积定左右
-          var th = Math.atan2(nx, nz);
-          arrow = (ax * Math.cos(th) + ay * (-Math.sin(th))) >= 0 ? 'right' : 'left';
-          text = rng.pick(useSafe ? G_TRUE_SAFE : G_TRUE_EXIT);
-        } else if (nComp > 0) {
-          arrow = 'back'; // 出口在看涂鸦者的身后（房间一侧）
-          text = useSafe ? 'SAFE ROOM' : 'EXIT'; sub = 'behind you';
+        // v1.5.1：对该 tile 的每面墙都试算，选最优（优先切向箭头，其次"身后"）——
+        // 涂鸦稀疏化（3~6 处）后，单面墙不合适就降级会导致真提示归零
+        var bestScore = -1, bestW = null, bestArrow = null, bestText = null, bestSub = null;
+        for (var tw = 0; tw < c[2].length; tw++) {
+          var tnx = -c[2][tw][0], tnz = -c[2][tw][1];
+          var tdx = tgt[0] - c[0], tdy = tgt[1] - c[1];
+          var tDotA = tdx * tnz + tdy * (-tnx);
+          var tAx = tDotA >= 0 ? tnz : -tnz, tAy = tDotA >= 0 ? -tnx : tnx;
+          var tTC = Math.abs(tDotA), tNC = tdx * tnx + tdy * tnz;
+          var tTh = Math.atan2(tnx, tnz);
+          var tArr = (tAx * Math.cos(tTh) + tAy * (-Math.sin(tTh))) >= 0 ? 'right' : 'left';
+          var tScore = tTC >= 1.2 ? 2 : (tNC > 0 ? 1 : -1);
+          if (tScore > bestScore) {
+            bestScore = tScore; bestW = [tnx, tnz];
+            if (tScore === 2) {
+              bestArrow = tArr; bestSub = null;
+              // v1.5.1：L0 安全指引（马尼拉）优先用钢琴/暖光文案
+              bestText = rng.pick(useSafe ? (map.level === 'L0' ? G_TRUE_SAFE_L0 : G_TRUE_SAFE) : G_TRUE_EXIT);
+            } else if (tScore === 1) {
+              bestArrow = 'back'; bestSub = 'behind you';
+              bestText = useSafe ? 'SAFE ROOM' : 'EXIT';
+            }
+          }
+        }
+        if (bestW) {
+          nx = bestW[0]; nz = bestW[1];
+          arrow = bestArrow; text = bestText; sub = bestSub;
         } else {
-          kind = 'calm'; // 出口在墙另一侧：无真话可说，降级为氛围
+          kind = 'calm'; // 四面墙都不合适：降级为氛围
         }
       }
       if (kind === 'fake') {
@@ -1259,6 +1448,20 @@
         arrow = fr < 0.4 ? 'left' : (fr < 0.8 ? 'right' : null);
       }
       if (kind === 'calm') { text = rng.pick(G_CALM); arrow = null; }
+      // v1.5.1：法线显式校验——法线方向相邻 tile 必须是墙；不是则换方向，
+      // 4 个方向都没墙就换位置（跳过这处，不放浮空涂鸦）
+      var wallOk = map.tiles[T(c[0] - nx, c[1] - nz)] === 0 && !doorSet[T(c[0] - nx, c[1] - nz)];
+      if (!wallOk) {
+        var fixed = false;
+        for (var wi = 0; wi < c[2].length && !fixed; wi++) {
+          var w2x = -c[2][wi][0], w2z = -c[2][wi][1];
+          if (w2x === nx && w2z === nz) continue;
+          if (map.tiles[T(c[0] - w2x, c[1] - w2z)] === 0 && !doorSet[T(c[0] - w2x, c[1] - w2z)]) {
+            nx = w2x; nz = w2z; fixed = true;
+          }
+        }
+        if (!fixed) continue; // 换位置：跳过
+      }
       addPOI(map, 'graffiti', c[0], c[1], {
         text: text, sub: sub, kind: kind, arrow: arrow,
         nx: nx, nz: nz,
@@ -1515,18 +1718,21 @@
         }
       }
     // (c) 地图外缘恒为墙：外缘缝线的内侧 tile 不得 open
+    // v1.5.1 例外：L0 边界豁口（meta.l0BorderDoors）是故意开的无限延伸出口
+    var borderDoorSet = {};
+    (map.meta.l0BorderDoors || []).forEach(function (bd) { borderDoorSet[bd.tx + ',' + bd.ty] = 1; });
     for (cx = 0; cx < ncx; cx++) {
       var seN = BR.Gen.chunkSeam(map, cx, 0, 'N'), seS = BR.Gen.chunkSeam(map, cx, ncy - 1, 'S');
       for (i = 0; i < seN.cells.length; i++) {
-        if (seN.cells[i].bopen) issues.push('open cell on north map border @' + seN.cells[i].btx + ',' + seN.cells[i].bty);
-        if (seS.cells[i].aopen) issues.push('open cell on south map border @' + seS.cells[i].atx + ',' + seS.cells[i].aty);
+        if (seN.cells[i].bopen && !borderDoorSet[seN.cells[i].btx + ',' + seN.cells[i].bty]) issues.push('open cell on north map border @' + seN.cells[i].btx + ',' + seN.cells[i].bty);
+        if (seS.cells[i].aopen && !borderDoorSet[seS.cells[i].atx + ',' + seS.cells[i].aty]) issues.push('open cell on south map border @' + seS.cells[i].atx + ',' + seS.cells[i].aty);
       }
     }
     for (cy = 0; cy < ncy; cy++) {
       var seW = BR.Gen.chunkSeam(map, 0, cy, 'W'), seE = BR.Gen.chunkSeam(map, ncx - 1, cy, 'E');
       for (i = 0; i < seW.cells.length; i++) {
-        if (seW.cells[i].bopen) issues.push('open cell on west map border @' + seW.cells[i].btx + ',' + seW.cells[i].bty);
-        if (seE.cells[i].aopen) issues.push('open cell on east map border @' + seE.cells[i].atx + ',' + seE.cells[i].aty);
+        if (seW.cells[i].bopen && !borderDoorSet[seW.cells[i].btx + ',' + seW.cells[i].bty]) issues.push('open cell on west map border @' + seW.cells[i].btx + ',' + seW.cells[i].bty);
+        if (seE.cells[i].aopen && !borderDoorSet[seE.cells[i].atx + ',' + seE.cells[i].aty]) issues.push('open cell on east map border @' + seE.cells[i].atx + ',' + seE.cells[i].aty);
       }
     }
     // (d) 门洞有效：每个门至少一侧邻接可走 tile（可达性已在 (b) 按门 tile 检查）
