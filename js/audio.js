@@ -770,8 +770,7 @@
       this._piano = { on: true, step: 0, next: 0, gain: mg, lp: lp, delay: dly, timer: null };
       this._piano.timer = setInterval(function () { self._pianoTick(); }, 180);
     },
-    manilaPianoStop: function () {
-      var Pc = this._piano;
+    manilaPianoStop: function () {      var Pc = this._piano;
       if (!Pc || !Pc.on) return;
       Pc.on = false;
       if (Pc.timer) { clearInterval(Pc.timer); Pc.timer = null; }
@@ -781,6 +780,12 @@
       setTimeout(function () {
         try { Pc.lp.disconnect(); Pc.delay.disconnect(); Pc.gain.disconnect(); } catch (e) {}
       }, 2500);
+    },
+    // v1.5.1：按距离调节钢琴音量（1=正常，0.35=远处隐约可闻）
+    manilaPianoLevel: function (v) {
+      var Pc = this._piano;
+      if (!Pc || !Pc.on || !this._ok || !this._ctx) return;
+      try { Pc.gain.gain.setTargetAtTime(0.38 * v, this._t(), 1.0); } catch (e) {}
     },
     // 音序器心跳：向前 0.45s 预定音符（仿 _partyTick 写法）
     _pianoTick: function () {

@@ -149,9 +149,9 @@
   U.cacheEls = function () {
     ['screen-title', 'screen-how', 'screen-loading', 'hud', 'screen-pause',
      'screen-note', 'screen-death', 'screen-ending', 'screen-trans',
-     'screen-backpack', 'bp-grid', 'bp-detail', 'btn-bp-close', 'bp-key-hint',
+     'screen-backpack', 'bp-grid', 'btn-bp-close', 'bp-key-hint',
      'screen-shop', 'shop-list', 'shop-almond', 'btn-shop-close', 'shop-sub',
-     'prompt', 'objective', 'inv-bar', 'toasts', 'debug',
+     'prompt', 'objective', 'toasts', 'debug',
      'note-title', 'note-body', 'death-cause', 'ending-title', 'ending-body',
      'trans-text', 'seed-line', 'btn-continue', 'set-sens', 'set-vol',
      'set-joysize', 'set-joyside', 'set-quality', 'sens-val', 'vol-val', 'joysize-val',
@@ -207,56 +207,9 @@
     setTimeout(() => d.remove(), ms || 2400);
     while (this.$toasts.children.length > 4) this.$toasts.firstChild.remove();
   };
+  // v1.5.1：HUD 快捷栏已移除（使用只走背包）。updateInv 仅刷新血条/理智条/饥饿条。
   U.updateInv = function () {
-    const inv = BR.Game.inv || {};
-    let html = '';
-    const keys = ['almond', 'bandage', 'flashlight', 'berry', 'food'];
-    keys.forEach((id) => {
-      const n = inv[id] || 0;
-      const info = ITEM_INFO[id];
-      const active = id === 'flashlight' && BR.Player.flashlightOn;
-      // 手电筒不显示数量，显示电池百分比（新电池机制）
-      const ct = id === 'flashlight'
-        ? `<span class="ct">${Math.round(BR.Player.flashBat != null ? BR.Player.flashBat : 100)}%</span>`
-        : `<span class="ct">${n}</span>`;
-      // 手电筒按持有状态决定是否半透明（它不占 inv 数量）
-      const dim = id === 'flashlight' ? !BR.Player.hasFlashlight : !n;
-      // v1.5 W8：快捷栏选中高亮（数字键 1-5 / 点选）
-      const sel = this._slotSel === id ? ' sel' : '';
-      html += `<div class="inv-item${dim ? ' empty' : ''}${active ? ' on' : ''}${sel}" data-id="${id}">` +
-        `<span class="ic">${info.icon}</span><span class="nm">${info.name}</span>` + ct + `</div>`;
-    });
-    this.$inv_bar.innerHTML = html;
-    const self = this;
-    this.$inv_bar.querySelectorAll('.inv-item').forEach(el => {
-      // v1.5 W8：点 HUD 物品栏 = 选中（再按 Q/道具按钮使用）；原来是点即用，
-      // 改为"选中"语义，与数字键快捷栏选择统一。选中后再点一次 = 直接使用。
-      const tap = () => {
-        if (self._slotSel === el.dataset.id) self.useItem(el.dataset.id);
-        else self.selectSlot(U.INV_ORDER.indexOf(el.dataset.id) + 1);
-      };
-      el.addEventListener('click', tap);
-      // 触屏：touchstart 直接消费并阻止合成 click，避免同一次点击消耗两个道具
-      el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); tap(); }, { passive: false });
-    });
-    // 血条 / 理智条 / 饥饿条
     this.updateBars();
-  };
-  // v1.5 W8：快捷栏（HUD 物品栏）顺序 + 选中态。数字键 1-5 / 点物品栏 调用。
-  U.INV_ORDER = ['almond', 'bandage', 'flashlight', 'berry', 'food'];
-  U._slotSel = null; // 快捷栏当前选中的道具 id（Q/道具按钮使用它）
-  U.selectSlot = function (n) {
-    const id = U.INV_ORDER[n - 1];
-    if (!id || !ITEM_INFO[id]) return;
-    const inv = (BR.Game && BR.Game.inv) || {};
-    const P = BR.Player;
-    const has = id === 'flashlight' ? !!(P && P.hasFlashlight) : (inv[id] || 0) > 0;
-    if (!has) { this.toast('没有' + ITEM_INFO[id].name); return; }
-    // 再按一次已选中的 = 取消选中
-    this._slotSel = (this._slotSel === id) ? null : id;
-    if (this._slotSel) this.toast(ITEM_INFO[id].name + '已选中，按 ' +
-      (BR.Input ? BR.Input.bindingLabel('useItem') : 'Q') + ' 使用');
-    this.updateInv();
   };
   // 轻量血条/理智条/饥饿条刷新（主循环节流调用，updateInv 里复用）
   U.updateBars = function () {
@@ -472,7 +425,7 @@
     const rest = [
       ['run', '疾跑'], ['dive', '蹲/潜'], ['interact', '交互'],
       ['jump', '跳/浮'], ['flashlight', '手电'], ['backpack', '背包'],
-      ['thirdperson', '视角'], ['useItem', '道具'], ['pause', '暂停']
+      ['thirdperson', '视角'], ['pause', '暂停']
     ];
     for (const [a, name] of rest) {
       const label = I.bindingLabel(a);
@@ -490,7 +443,7 @@
     crouch: '蹲下按钮（仅陆地）', interact: '交互按钮', flashlight: '手电筒按钮',
     backpack: '背包按钮', thirdperson: '视角按钮（右列）',
     jump: '跳跃按钮（水中按住=上浮）', dive: '下潜按钮（按住）',
-    slot: '点 HUD 物品栏 / 数字键选择', useItem: '道具按钮', pause: '右上角暂停按钮',
+    pause: '右上角暂停按钮',
     dismount: '下坐骑按钮（坐骑时出现）'
   };
   U.renderKeysTable = function () {
@@ -510,12 +463,10 @@
       row('蹲下 / 下潜', k(I.bindingLabel('dive')) + '<span class="dim">（陆地按一下=蹲/起身；深水区按住=下潜）</span>', U.TOUCH_OP.crouch + ' / ' + U.TOUCH_OP.dive) +
       row('交互', k(I.bindingLabel('interact')) + '<span class="dim">（坐骑上按=下坐骑）</span>', U.TOUCH_OP.interact) +
       row('手电筒', k(I.bindingLabel('flashlight')), U.TOUCH_OP.flashlight) +
-      row('背包', k(I.bindingLabel('backpack')) + ' 打开背包，点选道具查看说明并使用（HUD 物品栏点物品也可直接使用）',
-        U.TOUCH_OP.backpack + '打开背包，触摸点选道具查看说明并使用') +
+      row('背包', k(I.bindingLabel('backpack')) + ' 打开背包，点击道具直接使用',
+        U.TOUCH_OP.backpack + '打开背包，点道具直接使用') +
       row('第三人称', k(I.bindingLabel('thirdperson')), U.TOUCH_OP.thirdperson) +
       row('跳跃 / 上浮', k(I.bindingLabel('jump')) + '<span class="dim">（陆地跳跃；深水区按住=上浮）</span>', U.TOUCH_OP.jump) +
-      row('快捷栏选择', ['slot1', 'slot2', 'slot3', 'slot4', 'slot5'].map(a => k(I.bindingLabel(a))).join(''), U.TOUCH_OP.slot) +
-      row('使用快捷道具', k(I.bindingLabel('useItem')), U.TOUCH_OP.useItem) +
       row('下坐骑', k(I.bindingLabel('interact')) + '<span class="dim">（坐骑上按交互键）</span>', U.TOUCH_OP.dismount) +
       row('暂停', k(I.bindingLabel('pause')), U.TOUCH_OP.pause) +
       '</tbody>';
@@ -571,7 +522,6 @@
 
   /* ---------- 背包（B 键） ---------- */
   U._bpOpen = false; // 背包是否打开
-  U._bpSel = null;   // 背包内当前选中的道具 id
   // 开/关背包：暂停语义（state 置 paused，关闭恢复 playing），参考 togglePause
   U.toggleBackpack = function (force) {
     const G = BR.Game;
@@ -579,7 +529,6 @@
     if (open) {
       if (!G || G.state !== 'playing' || this._bpOpen) return;
       this._bpOpen = true;
-      this._bpSel = null;
       G.state = 'paused';
       BR.Input.setLocked(true);
       this.renderBackpack();
@@ -588,18 +537,18 @@
     } else {
       if (!this._bpOpen) return;
       this._bpOpen = false;
-      this._bpSel = null;
       G.state = 'playing';
       BR.Input.setLocked(false);
       this.show(null);
       BR.Audio.setPaused(false);
-      this.updateInv(); // 同步 HUD（使用道具后数量/电量变化）
     }
   };
-  // 背包面板：网格列出所有有数量的道具（手电筒按持有显示电量），点击看说明+使用
+  // 背包面板：网格列出所有有数量的道具（手电筒按持有显示电量）。
+  // v1.5.1 简化：单击道具直接使用（按 kind 走 useItem 统一逻辑），取消"选中再点使用按钮"两步流程。
+  // 空背包显示空白面板（无多余文案）。桌面/手机共用同一套 click 逻辑（touchstart 阻止合成 click 防双触发）。
   U.renderBackpack = function () {
-    const grid = this.$bp_grid, det = this.$bp_detail;
-    if (!grid || !det) return;
+    const grid = this.$bp_grid;
+    if (!grid) return;
     const inv = (BR.Game && BR.Game.inv) || {};
     const P = BR.Player;
     const ids = Object.keys(ITEM_INFO).filter(id => {
@@ -616,59 +565,22 @@
         : id === 'dive_light'
           ? Math.round(P.diveLight.charge) + '%'
           : (inv[id] || 0);
-      html += `<div class="bp-cell${this._bpSel === id ? ' sel' : ''}" data-id="${id}">` +
+      html += `<div class="bp-cell" data-id="${id}">` +
         `<span class="ic">${info.icon}</span><span class="nm">${info.name}</span>` +
         `<span class="ct">${ct}</span></div>`;
     });
-    grid.innerHTML = html || '<div class="bp-none">背包空空如也</div>';
+    grid.innerHTML = html; // 空背包：空白面板（无文案）
     grid.querySelectorAll('.bp-cell').forEach(el => {
-      const sel = () => { this._bpSel = el.dataset.id; this.renderBackpack(); };
-      el.addEventListener('click', sel);
-      // 触屏：直接消费并阻止合成 click，避免一次点选触发两次选中渲染
-      el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); sel(); }, { passive: false });
+      const use = () => {
+        const id = el.dataset.id;
+        // 先关背包（恢复 playing），再走正常使用流程（useItem 内含各类 guard）
+        this.toggleBackpack(false);
+        this.useItem(id);
+      };
+      el.addEventListener('click', use);
+      // 触屏：直接消费并阻止合成 click，避免一次点击消耗两个道具
+      el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); use(); }, { passive: false });
     });
-    const id = this._bpSel;
-    if (id && ITEM_INFO[id] && ids.indexOf(id) >= 0) {
-      const info = ITEM_INFO[id];
-      // G（v1.4）：选中物品显示 名称 / 数量 / 简短用途 / 可用操作（使用按钮）
-      const dct = id === 'flashlight'
-        ? '电量 ' + Math.round(P.flashBat != null ? P.flashBat : 100) + '%'
-        : id === 'dive_light'
-          ? '电量 ' + Math.round(P.diveLight.charge) + '%'
-          : '持有 ×' + (inv[id] || 0);
-      // W9：新道具显示装备态/剩余资源（BR.Items.detailStatus）
-      const dstatus = (BR.Items && BR.Items.DEFS && BR.Items.DEFS[id])
-        ? BR.Items.detailStatus(id) : '';
-      det.innerHTML = `<div class="bp-dname">${info.name}</div>` +
-        `<div class="bp-dcount">${dct}</div>` +
-        `<div class="bp-ddesc">${info.desc || ''}</div>` +
-        dstatus +
-        `<button id="btn-bp-use" class="big">使用</button>` +
-        `<button id="btn-bp-drop" class="ghost" style="margin-top:8px">丢弃</button>`;
-      const b = det.querySelector('#btn-bp-use');
-      if (b) {
-        const use = () => {
-          // 先关背包（恢复 playing），再走正常使用流程
-          this.toggleBackpack(false);
-          this.useItem(id);
-        };
-        b.addEventListener('click', use);
-        // 触屏：阻止合成 click，避免一次点击消耗两个道具
-        b.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); use(); }, { passive: false });
-      }
-      const dp = det.querySelector('#btn-bp-drop');
-      if (dp) {
-        const drop = () => {
-          // W9：丢弃——背包扣 1，在面前生成真实拾取（不复制；背包保持打开，刷新显示）
-          if (BR.Items) BR.Items.drop(id);
-        };
-        dp.addEventListener('click', drop);
-        // 触屏：阻止合成 click，避免一次点击丢两个
-        dp.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); drop(); }, { passive: false });
-      }
-    } else {
-      det.innerHTML = '<div class="bp-empty">选择一件道具查看说明</div>';
-    }
     if (this.$bp_key_hint && BR.Input)
       this.$bp_key_hint.textContent = '（' + BR.Input.bindingLabel('backpack') + ' / Esc 关闭）';
   };
@@ -878,6 +790,7 @@
       BR.$('seed-input').value = '';
     };
     BR.$('btn-resume').onclick = () => this.togglePause(false);
+    BR.$('btn-dev') && (BR.$('btn-dev').onclick = () => { if (BR.Dev) BR.Dev.openPassword(); });
     BR.$('btn-settings-back') && (BR.$('btn-settings-back').onclick = () => this.togglePause(false));
     BR.$('btn-quit-title').onclick = () => {
       BR.Save.saveGame();
