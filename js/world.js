@@ -50,7 +50,12 @@
 
   W.tile = function (tx, ty) {
     const m = this.map;
-    if (!m || tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return 0;
+    if (!m) return 0;
+    if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) {
+      // v1.5.1：L0 无限区——超出 56×56 按"种子+tile 坐标"程序化生成（与加载顺序无关）
+      if (m.level === 'L0' && BR.Gen.l0InfiniteTile) return BR.Gen.l0InfiniteTile(m.seed, tx, ty, m.meta && m.meta.l0BorderDoors);
+      return 0;
+    }
     return m.tiles[ty * m.w + tx];
   };
   W.isWall = function (tx, ty) { return this.tile(tx, ty) === 0; };
@@ -73,9 +78,10 @@
     return (this.theme && this.theme.surface) || 'concrete';
   };
   // 该点黑暗度 0(亮)..1(黑)：最近灯具距离 + 手电 + 断电
+  // v1.5.1 修：手电/灯下必须能回理智（之前最低 0.15 导致全图只掉不回）
   W.darknessAt = function (x, z) {
     if (this.blackout) return 1;
-    if (BR.Player && BR.Player.flashlightOn && BR.Player.hasFlashlight) return 0.25;
+    if (BR.Player && BR.Player.flashlightOn && BR.Player.hasFlashlight) return 0.08;
     let best = 1e9;
     for (const f of this.fixtures) {
       const dx = f.x - x, dz = f.z - z, d2 = dx * dx + dz * dz;
@@ -83,7 +89,7 @@
       if (best < 36) break;
     }
     const d = Math.sqrt(best);
-    if (d < 5) return 0.15;
+    if (d < 5) return 0.08;
     return Math.min(1, 0.15 + (d - 5) / 9);
   };
   // 安全屋判定（马尼拉房间等）
@@ -263,9 +269,12 @@
     const dummy = new THREE.Object3D();
     const x0 = cx * CH, y0 = cy * CH;
     const rngH = new BR.RNG(BR.hashSeed(this.map.seed + ':' + k)); // 灯具分布确定性
+    // v1.5.1：L0 无限区——区块循环不再被 56×56 截断
+    const _infL0 = this.map.level === 'L0';
+    const _limW = _infL0 ? Infinity : this.map.w, _limH = _infL0 ? Infinity : this.map.h;
 
-    for (let ty = y0; ty < y0 + CH && ty < this.map.h; ty++) {
-      for (let tx = x0; tx < x0 + CH && tx < this.map.w; tx++) {
+    for (let ty = y0; ty < y0 + CH && ty < _limH; ty++) {
+      for (let tx = x0; tx < x0 + CH && tx < _limW; tx++) {
         const t = this.tile(tx, ty);
         const wx = BR.tileCX(tx), wz = BR.tileCZ(ty);
         // tile=2：二层地板（L188）：渲染/灯具与 1 相同；gen 侧 BFS/缝线只认 1
@@ -488,7 +497,7 @@
     for (let cy = pcy - R; cy <= pcy + R; cy++)
       for (let cx = pcx - R; cx <= pcx + R; cx++) {
         // C 路 v1.4：完全落在地图外的区块不建（56×56 恰为 7×8 区块，无半包区块）
-        if (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h) continue;
+        if (this.map.level !== 'L0' && (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h)) continue; // v1.5.1：L0 无限区不跳过越界区块
         const k = key2(cx, cy);
         if (!this.chunks.has(k)) this.buildQueue.push({ cx, cy, d: Math.abs(cx - pcx) + Math.abs(cy - pcy) });
       }
@@ -507,7 +516,7 @@
           if (rad <= R || rad > R + 1) continue; // 方阵已覆盖 / 超出预载圈
           const len = Math.hypot(ox, oy) || 1;
           if ((ox * fx + oy * fz) / len < 0.6) continue; // 只预载前进扇区
-          if (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h) continue;
+          if (this.map.level !== 'L0' && (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h)) continue; // v1.5.1：L0 无限区不跳过越界区块
           const k = key2(cx, cy);
           if (!this.chunks.has(k)) this.buildQueue.push({ cx, cy, d: rad - 0.5 });
         }
@@ -528,7 +537,7 @@
     // 与区块是否建成无关（circleFree/blocked 不依赖 meshes），这里保的是视觉连续。
     for (let cy = pcy - 1; cy <= pcy + 1; cy++)
       for (let cx = pcx - 1; cx <= pcx + 1; cx++) {
-        if (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h) continue;
+        if (this.map.level !== 'L0' && (cx < 0 || cy < 0 || cx * CH >= this.map.w || cy * CH >= this.map.h)) continue; // v1.5.1：L0 无限区不跳过越界区块
         if (!this.chunks.has(key2(cx, cy))) this.buildChunk(cx, cy);
       }
     // 卸载过远区块（每帧 ≤2）
@@ -906,7 +915,7 @@
    *    断电时手电是唯一可靠光源（toast 里明示）。
    * 3. 实体：断电期间移速 ×1.25、索敌半径 ×1.30 —— 实现在 entities.js（moveToward / entView），
    *    按 W.blackout 实时加成，断电结束自动恢复，无需手动还原。
-   * 4. 理智：走 player.js 现有的 world.blackout 分支（3.5/s 侵蚀），不另写逻辑。
+   * 4. 理智：走 player.js 现有的 world.blackout 分支（2.5/s 侵蚀），不另写逻辑。
    * 5. 与 L1 闪烁风暴：断电期间暂停风暴的"下一次"计时 _stormT（levels.js 里 !W.blackout 才递减）；
    *    若断电开始时风暴正好在进行中，flickerStorm.t 照常衰减（不冻结），但灯光层面断电优先
    *    （updateLights 里 blackout 分支直接 intensity=0 并 continue，风暴闪烁代码不可达），

@@ -436,6 +436,7 @@
   };
   // —— 理智 ——
   P.drainSanity = function (n) {
+    if (BR.Dev && BR.Dev.infSanity) return; // 开发者模式：无限理智
     if (BR.Game.state !== 'playing') return;
     this.sanity = Math.max(0, this.sanity - n);
   };
@@ -745,7 +746,10 @@
     const adrenOn = this.adrenalineT > 0;
     if (adrenOn) this.adrenalineT = Math.max(0, this.adrenalineT - dt);
     if (stamCfg && !adrenOn) {
-      if (wantRun) {
+      if (BR.Dev && BR.Dev.infStamina) {
+        // 开发者模式：无限体力——不扣且回满
+        this.stamina = stamCfg.max; this._staminaOut = false;
+      } else if (wantRun) {
         // 注意：moving 在下面才算出；这里用输入强度近似（疾跑要求 mv.z>0.1 已保证在动）
         // v1.5 W6：staminaDrainMul 钩子（默认 1；Level ! 追逐时置 0，肾上腺素爆发不耗耐力）
         const drainMul = (this.staminaDrainMul != null) ? this.staminaDrainMul : 1;
@@ -799,18 +803,17 @@
     }
 
     // —— 理智：黑暗/断电侵蚀，明亮处与安全屋恢复 ——
-    // v1.3 修 Bug A：灯具太密导致 dark 恒 <0.3、玩家持续回理智。
-    // 新规则：安全屋 +5/s；断电 -3.5/s；真黑区（dark>0.55）按 -(1.2+dark*2.2)/s；
-    // dim 区（0.1<=dark<=0.55，有灯但较暗）-0.5/s 缓慢掉；
-    // 明亮区（dark<0.1）才 +0.5/s 缓慢回（darknessAt 最低 0.15，实际到不了，条件苛刻）。
+    // v1.5.1 修：手电开/灯下（dark<0.1）缓慢回 +0.3/s；dim 区（0.1–0.55）-0.25/s；
+    // 真黑区（dark>0.55）-(1.2+dark*2.2)/s；断电 -2.5/s；安全屋 +5/s。
+    // 目标：会用手电、靠灯走能探索 10 分钟以上；黑区/断电硬扛仍会掉。
     // 实体 proximity 侵蚀在 entities.js 里，保留不动。
     const dark = world.darknessAt ? world.darknessAt(this.pos.x, this.pos.z) : 0;
     const inSafe = world.safeZoneAt ? world.safeZoneAt(this.pos.x, this.pos.z) : false;
     if (inSafe) this.restoreSanity(dt * 5);
-    else if (world.blackout) this.drainSanity(dt * 3.5);
+    else if (world.blackout) this.drainSanity(dt * 2.5);
     else if (dark > 0.55) this.drainSanity(dt * (1.2 + dark * 2.2));
-    else if (dark >= 0.1) this.drainSanity(dt * 0.5);
-    else this.restoreSanity(dt * 0.5);
+    else if (dark >= 0.1) this.drainSanity(dt * 0.25);
+    else this.restoreSanity(dt * 0.3);
     // —— 低理智幻觉：耳语/惊吓/视线晃动 ——
     // Systems C-A：<30 用立体声飘忽耳语并加密（4~9s），<15 再加密（2.5~5.5s）
     if (this.sanity < 38) {
