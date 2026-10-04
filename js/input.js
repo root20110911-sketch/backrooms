@@ -68,8 +68,6 @@
     fwd: '前移', back: '后退', left: '左移', right: '右移',
     run: '疾跑', dive: '蹲下 / 下潜', jump: '跳跃 / 上浮', interact: '交互',
     backpack: '背包',
-    slot1: '快捷栏 1', slot2: '快捷栏 2', slot3: '快捷栏 3', slot4: '快捷栏 4', slot5: '快捷栏 5',
-    useItem: '使用快捷道具',
     flashlight: '手电筒', thirdperson: '第三人称', pause: '暂停'
   };
   // 默认绑定（v2）
@@ -83,8 +81,6 @@
     jump: ['Space'],
     interact: ['KeyE', 'MouseLeft'],
     backpack: ['Tab', 'KeyI'],
-    slot1: ['Digit1'], slot2: ['Digit2'], slot3: ['Digit3'], slot4: ['Digit4'], slot5: ['Digit5'],
-    useItem: ['KeyQ'],
     flashlight: ['KeyF'],
     thirdperson: ['KeyV'],
     pause: ['Escape']
@@ -180,18 +176,6 @@
     else if (action === 'pause') BR.UI.togglePause();
     else if (action === 'backpack') { if (BR.UI.toggleBackpack) BR.UI.toggleBackpack(); }
     else if (action === 'thirdperson') { if (P.toggleThirdPerson) P.toggleThirdPerson(); }
-    else if (action && action.indexOf('slot') === 0) {
-      // v1.5 W8：数字键=快捷栏选择（1-5 对应 HUD 物品栏）
-      const n = parseInt(action.slice(4), 10);
-      if (U && U.selectSlot) U.selectSlot(n);
-    }
-    else if (action === 'useItem') { // v1.5 W8：Q=使用快捷道具（独立可绑定）
-      if (U && U.useItem) {
-        const sel = U._slotSel || U._bpSel; // 快捷栏选中优先，其次背包内选中
-        if (sel) { if (U._bpOpen) U.toggleBackpack(false); U.useItem(sel); }
-        else U.toast('先选择一件道具（数字键 1-5 / 点 HUD 物品栏 / 背包点选）');
-      }
-    }
     // v1.5 W2：首次动作提示（键盘/触屏按钮走同一分发，在此统一钩入）
     if (action === 'interact' || action === 'flashlight' || action === 'dive' ||
         action === 'backpack' || action === 'thirdperson' || action === 'jump') {
@@ -494,7 +478,6 @@
       '<button id="btn-thirdperson" class="tbtn" aria-label="第三人称" title="第三人称">' + ICONS.thirdperson + '</button>' +
       '<button id="btn-use" class="tbtn" aria-label="手电筒" title="手电筒">' + ICONS.flashlight + '</button>' +
       '<button id="btn-crouch" class="tbtn land-only" aria-label="蹲下" title="蹲下（陆地）">' + ICONS.crouch + '</button>' +
-      '<button id="btn-item" class="tbtn" aria-label="使用道具" title="使用快捷道具">' + ICONS.item + '</button>' +
       '<button id="btn-dismount" class="tbtn mount-only" aria-label="下坐骑" title="下坐骑">' + ICONS.dismount + '</button>' +
       '<button id="btn-run" class="tbtn" aria-label="奔跑" title="疾跑">' + ICONS.run + '</button>' +
       '<button id="btn-interact" class="tbtn big" aria-label="交互" title="交互">' + ICONS.interact + '</button>' +
@@ -516,28 +499,7 @@
       e.preventDefault();
       if (this.joyId !== null || this.locked || BR.Game.state !== 'playing') return;
       const t = e.changedTouches[0];
-      // W9 修：HUD 快捷栏（#inv-bar，左下角）在 #joy-zone 的触摸区域内，
-      // 且 #touch-ui（z-index 25）盖在 #hud（z-index 20）上面——
-      // 触摸点落在快捷栏物品上时，直接走统一道具使用逻辑，不启动摇杆，
-      // 否则手机上永远点不到快捷栏的绷带/杏仁水（触摸被摇杆吞掉）。
-      // （joy-zone 已 preventDefault，不会合成 click，一次只触发一次。）
-      const invBar = document.getElementById('inv-bar');
-      if (invBar && BR.UI && BR.UI.useItem) {
-        const r = invBar.getBoundingClientRect();
-        if (t.clientX >= r.left && t.clientX <= r.right &&
-            t.clientY >= r.top && t.clientY <= r.bottom) {
-          const cells = invBar.querySelectorAll('.inv-item');
-          for (let i = 0; i < cells.length; i++) {
-            const er = cells[i].getBoundingClientRect();
-            if (t.clientX >= er.left && t.clientX <= er.right &&
-                t.clientY >= er.top && t.clientY <= er.bottom) {
-              BR.UI.useItem(cells[i].dataset.id);
-              return;
-            }
-          }
-          return; // 落在栏内空白处：吞掉，不启动摇杆
-        }
-      }
+      // v1.5.1：HUD 快捷栏已移除（使用只走背包），此处不再拦截
       this.joyId = t.identifier; this.joyOX = t.clientX; this.joyOY = t.clientY;
       this.joyX = 0; this.joyY = 0;
       base.style.display = 'block';
@@ -618,8 +580,6 @@
     bind('btn-crouch', () => { if (!this.locked) this.dispatchAction('dive'); }); // v1.5 W8：C=陆地蹲/水中下潜，走同一动作
     bind('btn-use', () => { if (!this.locked) this.dispatchAction('flashlight'); });
     bind('btn-backpack', () => { if (!this.locked) this.dispatchAction('backpack'); });
-    // v1.5 W8：道具按钮（=Q 使用快捷道具）/ 下坐骑按钮（仅坐骑时显示）
-    bind('btn-item', () => { if (!this.locked) this.dispatchAction('useItem'); });
     bind('btn-dismount', () => { if (!this.locked && BR.Player) BR.Player.dismount(); });
     bind('btn-thirdperson', () => {
       if (this.locked) return;

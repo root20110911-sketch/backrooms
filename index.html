@@ -50,7 +50,7 @@ window.addEventListener('unhandledrejection', function (e) {
   <div id="crosshair">+</div>
   <div id="objective"></div>
   <div id="prompt"></div>
-  <div id="inv-bar"></div>
+  <!-- v1.5.1：HUD 快捷栏已移除（使用只走背包） -->
   <div id="key-hint"></div>
   <div id="hp-wrap"><div id="hp-fill"></div></div>
   <div id="san-wrap"><div id="san-fill"></div></div>
@@ -149,6 +149,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <div class="binding-note">浏览器可能拦截部分 Ctrl 组合键（如 Ctrl+W），可自行改键。</div>
     <button id="btn-bindings-reset" class="ghost wide">恢复默认按键</button>
     <div class="pause-note">手机建议横屏 + 全屏游玩。<br>画质更改在下次进入关卡时生效。</div>
+    <button id="btn-dev" class="ghost wide" style="opacity:.5;font-size:12px;margin-top:12px">开发者选项</button>
   </div>
 </div>
 
@@ -158,7 +159,6 @@ window.addEventListener('unhandledrejection', function (e) {
     <h2>背包 <span class="bp-key-hint" id="bp-key-hint"></span></h2>
     <div class="bp-body">
       <div id="bp-grid"></div>
-      <div id="bp-detail"><div class="bp-empty">选择一件道具查看说明</div></div>
     </div>
     <button id="btn-bp-close" class="big">关闭</button>
   </div>
@@ -229,6 +229,7 @@ window.addEventListener('unhandledrejection', function (e) {
 <script src="js/lv_bang.js?v=1.5.0"></script>
 <script src="js/sanityEvents.js?v=1.5.0"></script>
 <script src="js/ui.js?v=1.5.0"></script>
+<script src="js/dev.js?v=1.5.1"></script>
 <script src="js/save.js?v=1.5.0"></script>
 <script src="js/main.js?v=1.5.0"></script>
 </body>

@@ -145,6 +145,7 @@
 
   /* ---------- 固定 / 条件连接登记（文档即契约；各路出口 use() 调 travelTo） ---------- */
   Cutout.CONNECTIONS = [
+    { from: 'L0',   via: 'main_exit',      to: 'L1',   mode: 'door', label: '主出口金属门（v1.5.1 游戏性改编）' },
     { from: 'L11',  via: 'manhole',      to: 'L2',   mode: 'door', label: '井盖', note: 'W4 固定连接：调 travelTo("L2",{mode:"door"})' },
     { from: 'L7',   via: 'deep_exit',    to: 'L37',  mode: 'swim', cond: 'deep', label: '深处出口（水→水）' },
     { from: 'L37',  via: 'deep_channel', to: 'L7',   mode: 'swim', cond: 'deep', label: '深水区水下通道（水→水）' },
