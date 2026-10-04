@@ -118,12 +118,26 @@
     const list = (map.pois || []).filter(p => p.type === 'graffiti');
     for (const p of list) {
       const d = p.data || {};
-      const n = { x: d.nx || 0, z: (d.nz == null ? 1 : d.nz) };
+      // v1.5.1：build 时二次校验——法线背后必须是墙（recarve 可能改了地形）；
+      // 不是墙就换方向，4 个方向都没墙直接跳过不建，杜绝浮空涂鸦
+      let n = { x: d.nx || 0, z: (d.nz == null ? 1 : d.nz) };
+      let arrow = d.arrow || null, fellBack = false;
+      const wallAt = (tx, ty) => { try { return W.isWall(tx, ty); } catch (e) { return false; } };
+      if (!wallAt(p.tx - n.x, p.ty - n.z)) {
+        fellBack = true;
+        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        n = null;
+        for (const [dx, dy] of dirs) {
+          if (wallAt(p.tx + dx, p.ty + dy)) { n = { x: -dx, z: -dy }; break; }
+        }
+        if (!n) continue; // 无墙可贴：跳过
+      }
+      if (fellBack) arrow = null; // 换了方向：箭头可能指错，丢掉只留文字
       W.addChunkContent(p.tx, p.ty, (group) => {
         const w = d.w || 2.0;
         const m = new THREE.Mesh(
           new THREE.PlaneGeometry(w, w * 0.5),
-          BR.Textures.graffitiMaterial(d.text || '?', d.sub || null, d.color || '#d8d2c0', d.arrow || null)
+          BR.Textures.graffitiMaterial(d.text || '?', d.sub || null, d.color || '#d8d2c0', arrow)
         );
         m.position.set(BR.tileCX(p.tx) - n.x * (T / 2 - 0.04), d.y || 1.5, BR.tileCZ(p.ty) - n.z * (T / 2 - 0.04));
         m.rotation.y = Math.atan2(n.x, n.z);
@@ -1181,6 +1195,15 @@
             BR.UI.toast('门纹丝不动。派对里一定藏着离开的线索……（' + c + '/2）');
           }
         };
+      } else if (d.exitTo === 'L0_EXIT') {
+        // v1.5.1：L0 主出口（游戏性改编）——金属门 + 绿色 EXIT 灯牌 → Level 1「宜居地带」
+        def.prompt = () => '推开门，前往 Level 1「宜居地带」';
+        def.use = () => {
+          W.setDoor(d.id, true, true);
+          BR.Audio.doorCreak();
+          BR.UI.toast('门后透出不一样的光……');
+          setTimeout(() => { if (BR.Game.state === 'playing') BR.Cutout.travelTo('L1', { mode: 'door' }); }, 700);
+        };
       }
       W.addDoor(def);
     }
@@ -1229,7 +1252,12 @@
       }
       if (p.type === 'thin_wall' && p.data) protect(p.tx + (p.data.dx || 0), p.ty + (p.data.dz || 0));
       if (p.type === 'anomaly_wall' && p.data) protect(p.tx + (p.data.dirx || 0), p.ty + (p.data.dirz || 0));
+      // v1.5.1：涂鸦背后的墙也保护——防止 recarve 挖掉导致贴花浮空（data 存墙→房间法线，墙在 tile-n 方向）
+      if ((p.type === 'graffiti' || p.type === 'fun_graffiti') && p.data && (p.data.nx || p.data.nz))
+        protect(p.tx - p.data.nx, p.ty - p.data.nz);
     });
+    // v1.5.1：L0 边界豁口通道（gen.js openL0Borders 挖的）不受分区施工重写
+    (map.meta.l0BorderCorr || []).forEach(function (i) { prot[i] = 1; });
     map.doors.forEach(function (d) { protect(d.tx, d.ty); });
     (map.rooms || []).forEach(function (r) { protect(Math.round(r.cx), Math.round(r.cy)); });
 
@@ -1572,6 +1600,36 @@
         });
       });
     });
+    // v1.5.1：L0 主出口（游戏性改编）——金属门 + 绿色 EXIT 灯牌 + 门缝透光
+    poiList(map, 'main_exit').forEach(p => {
+      const dx = (p.data.fx - p.tx), dz = (p.data.fy - p.ty); // 门 → 房间内方向
+      const nx = Math.sign(dx), nz = Math.sign(dz);
+      W.addChunkContent(p.tx, p.ty, (group) => {
+        const wx = BR.tileCX(p.tx), wz = BR.tileCZ(p.ty);
+        const faceA = Math.atan2(nx, nz);
+        // 绿色 EXIT 灯牌（canvas 手绘）
+        const cv = document.createElement('canvas'); cv.width = 256; cv.height = 96;
+        const g2 = cv.getContext('2d');
+        g2.fillStyle = '#061206'; g2.fillRect(0, 0, 256, 96);
+        g2.strokeStyle = '#39ff6a'; g2.lineWidth = 6; g2.strokeRect(4, 4, 248, 88);
+        g2.fillStyle = '#39ff6a'; g2.font = 'bold 56px sans-serif';
+        g2.textAlign = 'center'; g2.textBaseline = 'middle';
+        g2.fillText('EXIT', 128, 52);
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.56),
+          new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }));
+        sign.position.set(wx + nx * 0.35, 2.35, wz + nz * 0.35);
+        sign.rotation.y = faceA; W.reg(group, sign);
+        // 门缝透光：门底一条冷白色光带（房间内侧）
+        const slit = new THREE.Mesh(new THREE.PlaneGeometry(T * 0.8, 0.09),
+          new THREE.MeshBasicMaterial({ color: 0xd8f4ff }));
+        slit.position.set(wx + nx * (T / 2 - 0.06), 0.055, wz + nz * (T / 2 - 0.06));
+        slit.rotation.y = faceA; W.reg(group, slit);
+        // 绿色小点光：远处可见
+        const gl = new THREE.PointLight(0x39ff6a, 0.9, 14, 2);
+        gl.position.set(wx + nx * 1.2, 2.3, wz + nz * 1.2); W.reg(group, gl);
+        // 交互走门自带的 door 交互（推门 → L1），牌子只做视觉指引
+      });
+    });
     // 红房间：红色灯光
     poiList(map, 'red_room').forEach(p => {
       W.addChunkContent(p.tx, p.ty, (group) => {
@@ -1587,9 +1645,10 @@
     });
     // 笔记
     const L0_NOTES = [
-      ['前人的字条', '如果你看到这张字条，说明你也切出来了。\n\n别慌。跟着荧光灯走，找墙纸颜色不对的那面墙。\n\n——M.'],
+      ['前人的字条', '如果你看到这张字条，说明你也切出来了。\n\n别慌。跟着荧光灯走，找墙纸颜色不对的那面墙。\n\n对了：夜里如果隐约听见钢琴声，顺着走——暖光的地方是安全的，有个叫"马尼拉房间"的地方，待在里面能缓过来。\n\n——M.'],
       ['皱巴巴的字条', '第 47 天。地毯还是潮的。\n\n我发现这些房间没有两间是一样的，但出口……出口一直在"最不对劲"的地方。\n\n相信你的直觉。'],
-      ['发黄的字条', '第 61 天。\n\n隔墙的位置好像和昨天不一样了。走过的路，回头就不一样。\n\n别相信记忆。跟着灯走。\n\n——M.']
+      ['发黄的字条', '第 61 天。\n\n隔墙的位置好像和昨天不一样了。走过的路，回头就不一样。\n\n别相信记忆。跟着灯走。\n\n——M.'],
+      ['潦草的字条', '别在没灯的地方待太久，脑子会坏掉。\n\n手电筒是最有用的东西——开着它，找有灯的地方走。\n\n绿色 EXIT 灯牌下面有扇门，推开能离开这里。']
     ];
     poiList(map, 'note').forEach((p, i) => {
       const n = L0_NOTES[i % L0_NOTES.length];
@@ -1724,11 +1783,40 @@
         '如果你读到这个，说明你找到了马尼拉房间。\n\n这里没有实体。灯是暖的，补给是真的。\n\n待到理智恢复再走。记住它的位置——后室里这样的地方不多。\n\n——M.');
       W._manila = { x: cx, z: cz };
       (W._safeZones = W._safeZones || []).push({ x: cx, z: cz, r: 6.5 });
+      // v1.5.1：门缝透出暖光——门外一条暖色光带，远处可见，subtle 指引
+      if (door) {
+        const rcx2 = (x0 + x1) / 2, rcy2 = (y0 + y1) / 2;
+        let ox = 0, oz = 0;
+        if (door.x < x0) ox = -1; else if (door.x > x1) ox = 1;
+        else if (door.y < y0) oz = -1; else if (door.y > y1) oz = 1;
+        W.addChunkContent(door.x, door.y, (group) => {
+          const strip = new THREE.Mesh(new THREE.PlaneGeometry(T * 0.85, 0.14),
+            new THREE.MeshBasicMaterial({ color: 0xffb45e }));
+          strip.position.set(BR.tileCX(door.x) + ox * (T / 2 - 0.03), 0.075, BR.tileCZ(door.y) + oz * (T / 2 - 0.03));
+          strip.rotation.y = Math.atan2(ox, oz);
+          W.reg(group, strip);
+          // 淡光晕
+          const glow = new THREE.Mesh(new THREE.PlaneGeometry(T * 1.6, 0.5),
+            new THREE.MeshBasicMaterial({ color: 0xff9a3c, transparent: true, opacity: 0.28 }));
+          glow.position.set(BR.tileCX(door.x) + ox * (T / 2 + 0.4), 0.28, BR.tileCZ(door.y) + oz * (T / 2 + 0.4));
+          glow.rotation.y = Math.atan2(ox, oz);
+          W.reg(group, glow);
+        });
+      }
     });
     // Systems A：FUN 涂鸦（本游戏原创机制）——墙上涂鸦 "FUN =)" + 附近地板可爬洞口 → FUN
     // gen.js placeL0 以 8% 概率放 fun_graffiti / fun_hole2 POI
     poiList(map, 'fun_graffiti').forEach(p => {
-      const n = wallNormal(W, p.tx, p.ty);
+      // v1.5.1：优先用 gen 存的法线并校验背后是墙；没有就 wallNormal 找；都没有直接跳过（防浮空）
+      let n = null;
+      const pd = p.data || {};
+      const wallAtF = (tx, ty) => { try { return W.isWall(tx, ty); } catch (e) { return false; } };
+      if ((pd.nx || pd.nz) && wallAtF(p.tx - pd.nx, p.ty - pd.nz)) n = { x: pd.nx, z: pd.nz };
+      if (!n) {
+        const wn = wallNormal(W, p.tx, p.ty);
+        if (wallAtF(p.tx - wn.x, p.ty - wn.z)) n = wn;
+      }
+      if (!n) return; // 无墙可贴：跳过
       W.addChunkContent(p.tx, p.ty, (group) => {
         // 涂鸦贴图：canvas 手绘 "FUN =)"
         const cv = document.createElement('canvas');
@@ -1750,7 +1838,8 @@
         const tex = new THREE.CanvasTexture(cv);
         const m = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.95),
           new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.95 }));
-        m.position.set(BR.tileCX(p.tx) + n.x * (T / 2 - 0.04), 1.55, BR.tileCZ(p.ty) + n.z * (T / 2 - 0.04));
+        // v1.5.1：贴墙用 -n（法线 n 为墙→房间方向；旧 +n 会把贴花放到 tile 房间一侧浮空）
+        m.position.set(BR.tileCX(p.tx) - n.x * (T / 2 - 0.04), 1.55, BR.tileCZ(p.ty) - n.z * (T / 2 - 0.04));
         m.rotation.y = Math.atan2(n.x, n.z);
         W.reg(group, m);
       });
@@ -1868,16 +1957,22 @@
       BR.Audio.checkpoint();
     }
     // 马尼拉房间系统（1:1 还原）：钢琴曲+嗡鸣减弱 / 顶灯波动 / 墙内敲击+全黑 / 久留 3 分钟送往 L1
+    // v1.5.1：钢琴声传播加大——32m 外隐约可闻（音量随距离），14m 内正常音量。 subtle 指引，不破坏氛围。
     if (W._manila) {
       const dM = Math.hypot(P.pos.x - W._manila.x, P.pos.z - W._manila.z);
-      const inM = dM < 6.5, nearM = dM < 14;
+      const inM = dM < 6.5, nearM = dM < 14, hearM = dM < 32;
       // 靠近：L0 嗡鸣减弱 + 舒缓钢琴曲；离开：恢复
-      if (nearM && !W._manilaPiano) {
-        W._manilaPiano = true;
+      if (hearM && !W._manilaPiano) {
+        W._manilaPiano = true; W._manilaPianoFar = !nearM;
         BR.Audio.manilaPianoStart(); BR.Audio.manilaHumDuck(true);
-      } else if (!nearM && W._manilaPiano) {
+        if (W._manilaPianoFar) BR.Audio.manilaPianoLevel(0.35);
+      } else if (!hearM && W._manilaPiano) {
         W._manilaPiano = false;
         BR.Audio.manilaPianoStop(); BR.Audio.manilaHumDuck(false);
+      } else if (W._manilaPiano && !!W._manilaPianoFar === nearM) {
+        // 跨过 14m 边界时调整音量
+        W._manilaPianoFar = !nearM;
+        BR.Audio.manilaPianoLevel(nearM ? 1 : 0.35);
       }
       // 顶灯亮度随时间轻微波动（全黑事件期间保持熄灭）
       W._manilaT = (W._manilaT || 0) + dt;
