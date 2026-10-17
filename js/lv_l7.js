@@ -1,6 +1,15 @@
-/* lv_l7.js —— Level 7「深海恐惧症」关卡内容（v2.0 P2 四深度带 + 七层之物真 AI）
+/* lv_l7.js —— Level 7「深海恐惧症」关卡内容（v2.0 P3 海洋重制 + 七层之物真 AI）
  * Fandom 版：金属舱室入口 → 舱盖/甲板 → 露天阴天海洋（小船）→ 四深度带（七层之物/深水区/L37 门）
  * 距离/深度均为游戏尺度改编（见 LORE.md），非原著数值。
+ *
+ * v2.0 P3 海洋重制：
+ *  - 四深度带按玩家真实下潜深度划分（日光<12m/暮光12~30m/午夜30~55m/深渊≥55m），
+ *    不再是同心圆；水色/雾/生物/七层之物行为/理智侵蚀全部按深度判定；
+ *  - 连续海底地貌（浅海台地→三级断崖→深海平原→海沟），物理海床与视觉地形
+ *    用同一高度场函数（BR.L7Terrain.seabedY），游泳不穿模；
+ *  - 水上海雾三层（近/中/远）+ 阴云穹顶，海天交界融入浓雾；
+ *  - 平静海面（涟漪/涌动常态）+ 七层之物出现时大规模扰动；
+ *  - 水下：随深度变化的水色/能见度、散射颗粒（marine snow）、水面透光。
  *
  * 七层之物 AI 的原著依据（A 路研究）：
  *  - 畏光 [Wikidot]：永居黑暗的眼睛对光极敏感，可用强光压制 → 手电直射驱散
@@ -19,7 +28,7 @@
   var BR = window.BR;
   var T = BR.TILE;
 
-  /* ---- 四深度带：水面逐顶点颜色（v2.0 P2；与贴图相乘） ----
+  /* ---- 四深度带：水面逐顶点颜色（v2.0 P3；按该处海床深度，与贴图相乘） ----
    * 日光带较亮青 → 暮光带转冷 → 午夜带深暗 → 深渊带近黑 */
   var SEA_COLS = [
     [0.60, 0.83, 0.84],
@@ -27,10 +36,11 @@
     [0.22, 0.32, 0.38],
     [0.10, 0.15, 0.19]
   ];
-  /* ---- 四深度带：水下雾（颜色/距离；Swim.tick 存雾之后再覆盖） ---- */
+  /* ---- 四深度带：水下雾（颜色/距离；Swim.tick 存雾之后再覆盖；按相机下潜深度） ---- */
   var UW_FOG_COL = [0x1a4a56, 0x102e38, 0x060d12, 0x020507];
   var UW_FOG_FAR = [26, 18, 10, 7];
   var _uwTmpColor = null; // 懒初始化（Node 测试加载本文件时不碰 THREE）
+  var SURF = 0.15; // 物理/视觉海平面基准（游戏尺度；与地图生成器的 L7_SURF 一致）
 
   /* ================= BR.Mounts 最小实现（W8 完整版未加载时兜底） ================= */
   if (!BR.Mounts) {
@@ -408,15 +418,13 @@
         var k = (along + 1.5) / 3;
         return gm.deckH * Math.max(0, Math.min(1, k));
       }
-      // 开放水域：物理海床按深度带 -6/-14/-26/-44（游戏尺度）。
-      // 纯物理下限、无视觉地板（正常海域不许铺贴脚平坦地板）；潜水 _swimVertical
-      // 用 max(groundY, w.floor)，这里返回海床才能潜到底。
-      try {
-        if (BR.Swim && typeof BR.Swim.zoneAt === 'function') {
-          var wz = BR.Swim.zoneAt(x, z);
-          if (wz && isFinite(wz.floor)) return wz.floor;
-        }
-      } catch (e) {}
+      // 开放水域：连续海床（v2.0 P3 高度场）。
+      // 物理海床与视觉地形用同一函数 BR.L7Terrain.seabedY：_swimVertical 按
+      // max(groundY, w.floor) 钳制，w.floor 设为极低值后 groundY 即海床，
+      // 玩家贴着地形停住，不穿模；断崖/岩脊是高度场的一部分，同样挡得住。
+      if (L.ter) {
+        try { return BR.L7Terrain.seabedY(x, z, L.ter); } catch (e) {}
+      }
       return 0;
     },
 
@@ -426,13 +434,14 @@
         t: 0, chop: 1, chopTarget: 1, geom: null, boat: null,
         seaMesh: null, seaGeo: null, cloudTexs: [],
         gate: null, entity: null, rumble: null, rumbleTarget: 0,
-        bands: null, debris: null, plankton: null, abyssLights: null
+        bands: null, debris: null, plankton: null, abyssLights: null,
+        ter: null, ocB: null, skyDome: null, haze: null, snow: null
       });
       var meta = map.meta.l7;
       var oc = meta.ocean, entry = meta.entryRoom;
       var ox0w = oc.x0 * T, oz0w = oc.y0 * T, ox1w = (oc.x1 + 1) * T, oz1w = (oc.y1 + 1) * T;
       var ocx = (ox0w + ox1w) / 2, ocz = (oz0w + oz1w) / 2;
-      var SURF = 0.15; // 物理/视觉海平面基准（游戏尺度）
+      // SURF 为模块顶层常量（海平面基准）
 
       // 几何快照（floorYAt 用）
       L.geom = {
@@ -441,6 +450,9 @@
         stair: meta.stair, stairFlat: !!meta.stair.flat,
         dnx: meta.door.nx, dny: meta.door.ny
       };
+      // v2.0 P3：连续海床地形参数 + 海洋世界包围盒（碰撞/生成/生物共用）
+      L.ter = meta.terrain || null;
+      L.ocB = { x0: ox0w, z0: oz0w, x1: ox1w, z1: oz1w };
 
       /* ---- 海面波函数（船/海面网格/扰动环共用；单网格保证跨区块连续） ---- */
       function seaY(x, z, t) {
@@ -470,7 +482,12 @@
             var inRing = tx >= ringX0 && tx <= ringX1 && ty >= ringY0 && ty <= ringY1;
             if (inRing) continue; // 舱室外墙保留
             var tv = W.map.tiles[ty * mw + tx];
-            if (tv === 1) { W.setOpenCeil(tx, ty); continue; } // 海洋/残留房间地板：露天
+            if (tv === 1) {
+              W.setOpenCeil(tx, ty); // 海洋：露天
+              // v2.0 P3：海洋 tile 不铺 y=0 默认地板，由 buildSeabed 建造连续海床
+              W.setOpenFloor(tx, ty);
+              continue;
+            }
             if (tv === 0) {
               // 与海洋地板相邻 → 跳过（边界一圈 + 障碍物 tile 的默认墙体）；
               // 在海洋矩形之外 → 一律跳过（残留房间/地图边缘，不许出现墙/虚空穿帮）
@@ -487,18 +504,14 @@
           for (var dtx = dr.x0; dtx <= dr.x1; dtx++) W.setOpenCeil(dtx, dty);
       })();
 
-      /* ---- 海面按深度带逐顶点着色（v2.0 P2；与 sea_detail 贴图相乘） ---- */
+      /* ---- 海面按海床深度逐顶点着色（v2.0 P3；深水区水色更深，与贴图相乘） ---- */
       function bandColorAt(x, z, out) {
-        var bands = meta.bands, b0 = bands[0];
-        var dt0 = Math.hypot(x / T - b0.ccx, z / T - b0.ccy);
-        var bi = 3;
-        for (var i = 0; i < 4; i++) { if (dt0 <= bands[i].r1) { bi = i; break; } }
-        var FE = 2.5, cA = SEA_COLS[bi], cB = cA, k = 0; // 边界羽化
-        if (bi < 3 && bands[bi].r1 - dt0 < FE) { cB = SEA_COLS[bi + 1]; k = 1 - (bands[bi].r1 - dt0) / FE; }
-        if (bi > 0 && dt0 - bands[bi].r0 < FE) {
-          var k2 = 1 - (dt0 - bands[bi].r0) / FE;
-          if (k2 > k) { cB = SEA_COLS[bi - 1]; k = k2; }
-        }
+        var d = L.ter ? BR.L7Terrain.depthAt(x, z, L.ter) : 0;
+        var bi = BR.L7Terrain.bandOfDepth(d);
+        var FE = 4, cA = SEA_COLS[bi], cB = cA, k = 0; // 深度边界羽化
+        var E = BR.L7Terrain.BAND_EDGES;
+        if (bi < 3 && E[bi + 1] - d < FE) { cB = SEA_COLS[bi + 1]; k = 1 - (E[bi + 1] - d) / FE; }
+        else if (bi > 0 && d - E[bi] < FE) { cB = SEA_COLS[bi - 1]; k = 1 - (d - E[bi]) / FE; }
         out[0] = cA[0] + (cB[0] - cA[0]) * k;
         out[1] = cA[1] + (cB[1] - cA[1]) * k;
         out[2] = cA[2] + (cB[2] - cA[2]) * k;
@@ -523,7 +536,8 @@
           color: 0xffffff, specular: 0x8fa3ad, shininess: 90,
           map: BR.Textures.get('sea_detail'),
           transparent: true, opacity: 0.93, side: THREE.DoubleSide,
-          vertexColors: true
+          vertexColors: true, emissive: 0x0a1c22
+          // v2.0 P3：微弱自发光——水下向上看时水面有扭曲透光感
         });
         trackMat(W, mat);
         var mesh = new THREE.Mesh(geo, mat);
@@ -533,6 +547,52 @@
         trackScene(mesh);
         L.seaMesh = mesh; L.seaGeo = geo;
         L._seaBase = geo.attributes.position.array.slice(); // xz 基准（y 列将被覆写）
+        // v2.1：水下透光层——独立朝下网格，跟随波浪（海面 -0.22m）。
+        // 海面是 DoubleSide Phong，从水下看背光面全黑；这一层用无光照的亮青
+        // 贴图，保证水下向上能辨认水面起伏与透光（用户 v2.1 明确要求）。
+        (function buildSeaUnder() {
+          var c2 = document.createElement('canvas'); c2.width = 256; c2.height = 256;
+          var x2 = c2.getContext('2d');
+          var g2 = x2.createLinearGradient(0, 0, 0, 256);
+          g2.addColorStop(0.00, '#cfeef2');
+          g2.addColorStop(0.45, '#9fd4d8');
+          g2.addColorStop(1.00, '#5d9aa5');
+          x2.fillStyle = g2; x2.fillRect(0, 0, 256, 256);
+          // 太阳透光斑（柔和白斑，模拟波浪透光）
+          for (var bi = 0; bi < 26; bi++) {
+            var bx = Math.random() * 256, by = Math.random() * 256, br = 12 + Math.random() * 30;
+            var rg = x2.createRadialGradient(bx, by, 0, bx, by, br);
+            rg.addColorStop(0, 'rgba(255,255,255,0.55)');
+            rg.addColorStop(1, 'rgba(255,255,255,0)');
+            x2.fillStyle = rg;
+            x2.beginPath(); x2.arc(bx, by, br, 0, 6.2832); x2.fill();
+          }
+          var ute = new THREE.CanvasTexture(c2);
+          ute.wrapS = ute.wrapT = THREE.RepeatWrapping; ute.repeat.set(6, 6);
+          var ugeo = new THREE.PlaneGeometry(ox1w - ox0w, oz1w - oz0w, 72, 72);
+          ugeo.rotateX(Math.PI / 2); // 法线朝下：只从水下可见
+          ugeo.translate(ocx, 0, ocz);
+          var umat = new THREE.MeshBasicMaterial({ map: ute, transparent: true, opacity: 0.94, fog: true });
+          trackMat(W, umat);
+          var umesh = new THREE.Mesh(ugeo, umat);
+          umesh.frustumCulled = false;
+          umesh.renderOrder = 1;
+          W.scene.add(umesh);
+          trackScene(umesh);
+          L.seaUnderGeo = ugeo;
+          L._seaUnderBase = ugeo.attributes.position.array.slice();
+        })();
+        // v2.0 P3：舱室下方不铺水面——干燥安全区；水面顶点压到地板之下，
+        // 被不透明地板/地基挡住（否则 0.15m 的水面会漫过 0.02m 的舱内地板）
+        var ringX0 = (entry.x - 1) * T, ringZ0 = (entry.y - 1) * T;
+        var ringX1 = (entry.x + entry.w + 1) * T, ringZ1 = (entry.y + entry.h + 1) * T;
+        var seaMask = new Uint8Array(geo.attributes.position.count);
+        var spm = geo.attributes.position;
+        for (var mi = 0; mi < spm.count; mi++) {
+          var mx = spm.array[mi * 3], mz = spm.array[mi * 3 + 2];
+          if (mx >= ringX0 && mx <= ringX1 && mz >= ringZ0 && mz <= ringZ1) seaMask[mi] = 1;
+        }
+        L._seaMask = seaMask;
         // 海面细节贴图缓慢漂移（纹理级波动，与顶点波叠加）
         var dt2 = BR.Textures.get('sea_detail');
         if (dt2) { dt2.wrapS = dt2.wrapT = THREE.RepeatWrapping; }
@@ -577,19 +637,138 @@
           cm.renderOrder = -10;
           W.scene.add(cm);
           trackScene(cm);
-          L.cloudTexs.push({ tex: ct, sp: i ? -0.0045 : 0.003 });
+          L.cloudTexs.push({ tex: ct, sp: i ? -0.0045 : 0.003, mesh: cm });
         }
       })();
 
-      /* ---- 3. 深渊：海面下的黑暗（海水向下变暗；物理海床在其上 4m） ---- */
+      /* ---- 2b. 阴云穹顶（v2.0 P3）：大球体内壁 + 垂直渐变 + 云纹缓慢漂移 ----
+       * 地平线颜色取场景雾色（0x59616a），海天交界自然融入；水下时隐藏。 */
+      (function buildSkyDome() {
+        var dg = new THREE.SphereGeometry(190, 28, 18);
+        var pos = dg.attributes.position, n = pos.count;
+        var cols = new Float32Array(n * 3);
+        var top = [0.20, 0.23, 0.27], mid = [0.42, 0.45, 0.48], hor = [0.349, 0.380, 0.416];
+        for (var i = 0; i < n; i++) {
+          var yn = pos.array[i * 3 + 1] / 190, c;
+          if (yn >= 0.12) {
+            var k = Math.min(1, (yn - 0.12) / 0.88);
+            c = [mid[0] + (top[0] - mid[0]) * k, mid[1] + (top[1] - mid[1]) * k, mid[2] + (top[2] - mid[2]) * k];
+          } else {
+            var k2 = Math.max(0, Math.min(1, (yn + 0.05) / 0.17));
+            c = [hor[0] + (mid[0] - hor[0]) * k2, hor[1] + (mid[1] - hor[1]) * k2, hor[2] + (mid[2] - hor[2]) * k2];
+          }
+          cols[i * 3] = c[0]; cols[i * 3 + 1] = c[1]; cols[i * 3 + 2] = c[2];
+        }
+        dg.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        var ct0 = BR.Textures.get('overcast'), ct = null;
+        if (ct0 && ct0.clone) { // 克隆一份自用（云层平面另有一份 repeat，不互相覆盖）
+          ct = ct0.clone(); ct.needsUpdate = true;
+          ct.wrapS = ct.wrapT = THREE.RepeatWrapping; ct.repeat.set(3, 2);
+        }
+        var dm = new THREE.MeshBasicMaterial({
+          map: ct, vertexColors: true, side: THREE.BackSide, fog: false
+        });
+        trackMat(W, dm);
+        var dome = new THREE.Mesh(dg, dm);
+        dome.position.set(ocx, 0, ocz);
+        dome.renderOrder = -20;
+        dome.frustumCulled = false;
+        W.scene.add(dome);
+        trackScene(dome);
+        L.skyDome = dome;
+        L._skyTex = ct;
+      })();
+
+      /* ---- 2c. 水上海雾三层（v2.0 P3）：近/中/远三圈竖向渐变雾环 ----
+       * 跟随玩家，海天交界融入浓雾而非纯色雾墙；水下时隐藏（水下另有浓雾）。 */
+      (function buildHaze() {
+        var c = document.createElement('canvas'); c.width = 4; c.height = 128;
+        var x2 = c.getContext('2d');
+        var g = x2.createLinearGradient(0, 0, 0, 128);
+        g.addColorStop(0.00, 'rgba(89,97,106,0)');
+        g.addColorStop(0.45, 'rgba(89,97,106,0.42)');
+        g.addColorStop(0.62, 'rgba(89,97,106,0.55)');
+        g.addColorStop(0.80, 'rgba(89,97,106,0.30)');
+        g.addColorStop(1.00, 'rgba(89,97,106,0)');
+        x2.fillStyle = g; x2.fillRect(0, 0, 4, 128);
+        var hazeTex = new THREE.CanvasTexture(c);
+        L.haze = [];
+        var rings = [
+          { r: 55, op: 0.50 }, { r: 100, op: 0.42 }, { r: 150, op: 0.34 }
+        ];
+        for (var i = 0; i < rings.length; i++) {
+          var hm = new THREE.MeshBasicMaterial({
+            map: hazeTex, transparent: true, opacity: rings[i].op,
+            depthWrite: false, fog: false, side: THREE.DoubleSide
+          });
+          trackMat(W, hm);
+          var cyl = new THREE.Mesh(
+            new THREE.CylinderGeometry(rings[i].r, rings[i].r, 30, 48, 1, true), hm);
+          cyl.position.set(ocx, 4, ocz);
+          cyl.renderOrder = -5;
+          cyl.frustumCulled = false;
+          W.scene.add(cyl);
+          trackScene(cyl);
+          L.haze.push(cyl);
+        }
+      })();
+
+      /* ---- 2d. 连续海床（v2.0 P3）：高度场网格，物理=视觉同一函数 ----
+       * 覆盖海洋矩形及外扩 24m（含舱室下方，挡住墙底与海床之间的缝隙）；
+       * 顶点色按深度：浅部藻岩 → 深部近黑；大面积空旷水域保留（无多余装饰）。
+       * 单静态网格、约 1 万顶点，一次绘制。 */
+      (function buildSeabed() {
+        if (!L.ter) return;
+        var m = 24, step = 2;
+        var x0 = ox0w - m, x1 = ox1w + m, z0 = oz0w - m, z1 = oz1w + m;
+        var geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0,
+          Math.round((x1 - x0) / step), Math.round((z1 - z0) / step));
+        geo.rotateX(-Math.PI / 2);
+        geo.translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
+        var pos = geo.attributes.position, n = pos.count;
+        var cols = new Float32Array(n * 3);
+        var C = [
+          [0.30, 0.36, 0.31], // 浅：藻岩
+          [0.19, 0.24, 0.25], // 暮光
+          [0.09, 0.12, 0.14], // 午夜
+          [0.03, 0.045, 0.06] // 深渊
+        ];
+        var E = BR.L7Terrain.BAND_EDGES;
+        for (var i = 0; i < n; i++) {
+          var px = pos.array[i * 3], pz = pos.array[i * 3 + 2];
+          var sy = BR.L7Terrain.seabedY(px, pz, L.ter);
+          pos.array[i * 3 + 1] = sy;
+          var d = SURF - sy;
+          var bi = BR.L7Terrain.bandOfDepth(d);
+          var e0 = E[bi], e1 = Math.min(E[bi + 1], 80);
+          var kk = (d - e0) / Math.max(0.001, e1 - e0);
+          kk = kk < 0 ? 0 : (kk > 1 ? 1 : kk);
+          var nz2 = (Math.sin(px * 1.7 + pz * 2.3) * 0.5 + Math.sin(px * 0.6 - pz * 1.1) * 0.5) * 0.03;
+          var cA = C[bi], cB = C[Math.min(3, bi + 1)];
+          cols[i * 3] = cA[0] + (cB[0] - cA[0]) * kk + nz2;
+          cols[i * 3 + 1] = cA[1] + (cB[1] - cA[1]) * kk + nz2;
+          cols[i * 3 + 2] = cA[2] + (cB[2] - cA[2]) * kk + nz2;
+        }
+        geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        geo.computeVertexNormals();
+        var mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+        trackMat(W, mat);
+        var mesh = new THREE.Mesh(geo, mat);
+        mesh.frustumCulled = false;
+        W.scene.add(mesh);
+        trackScene(mesh);
+        L.seabedMesh = mesh;
+      })();
+
+      /* ---- 3. 深渊背景：海床网格之外的极深处黑暗（-85m，低于最深海沟） ---- */
       (function buildAbyss() {
         var am = new THREE.Mesh(
-          new THREE.PlaneGeometry(400, 400),
+          new THREE.PlaneGeometry(700, 700),
           new THREE.MeshBasicMaterial({ color: 0x020507 })
         );
         trackMat(W, am.material);
         am.rotation.x = -Math.PI / 2;
-        am.position.set(ocx, -30, ocz);
+        am.position.set(ocx, -85, ocz);
         W.scene.add(am);
         trackScene(am);
       })();
@@ -648,6 +827,15 @@
           fl.position.set(cx, 0.02, cz);
           W.reg(group, fl);
           W.addSurfaceZone(ex0, ez0, ex0 + ew, ez0 + eh, 'metal');
+          // v2.0 P3：舱室地基——深色金属箱体从地板延伸到海床之下，
+          // 挡住水下视角里墙底（y=0）与海床（约 -4~-6m）之间的缝隙
+          var found = new THREE.Mesh(
+            new THREE.BoxGeometry(ew + 2, 9, eh + 2),
+            new THREE.MeshLambertMaterial({ color: 0x23262a })
+          );
+          trackMat(W, found.material);
+          found.position.set(cx, -4.5, cz);
+          W.reg(group, found);
           // 暖光：安全感（灯池之外独立 1 盏，随区块释放）
           var pl = new THREE.PointLight(0xffd9a0, 1.05, 16, 2);
           pl.position.set(cx, 2.4, cz);
@@ -1131,9 +1319,12 @@
           var dcx = dX0 + dW / 2, dcz = dZ0 + dD / 2;
           bx(dW, 0.12, dD, deckMat, dcx, deckH - 0.06, dcz);
           bx(dW, deckH - 0.12, dD, steelD, dcx, (deckH - 0.12) / 2, dcz);
-          for (var pi = 0; pi < 4; pi++) { // 支撑柱
-            var post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.2, 8), steelD);
-            post.position.set(dX0 + (pi % 2 ? dW - 0.4 : 0.4), -0.6, dZ0 + (pi < 2 ? 0.4 : dD - 0.4));
+          for (var pi = 0; pi < 4; pi++) { // 支撑柱：从甲板底一直打到海床
+            var ppx = dX0 + (pi % 2 ? dW - 0.4 : 0.4), ppz = dZ0 + (pi < 2 ? 0.4 : dD - 0.4);
+            var psy = L.ter ? BR.L7Terrain.seabedY(ppx, ppz, L.ter) : -4;
+            var plen = (deckH - 0.12) - psy + 0.6;
+            var post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, plen, 8), steelD);
+            post.position.set(ppx, psy - 0.6 + plen / 2, ppz);
             W.reg(group, post);
           }
           // 栏杆：甲板三边（门侧与停船侧开口）
@@ -1265,22 +1456,36 @@
           W.INTERACT_KINDS.push('boat');
       })();
 
-      /* ---- 9. 四深度带环境（v2.0 P2）：真实环境差异 ----
-       * 日光带：较亮水色 + 漂浮物；暮光带：冷色水 + 礁石/沉船残骸；
+      /* ---- 9. 四深度带环境（v2.0 P3）：按海床深度/下潜深度的真实环境差异 ----
+       * 日光带：较亮水色 + 浅滩漂浮物；暮光带：冷色水 + 礁石/沉船残骸；
        * 午夜带：近黑水 + 岩柱/遗迹 + 发光浮游生物 + 水下浓雾（方向感干扰）；
-       * 深渊带：极黑水 + 结构残片 + 未知光源；海床 -6/-14/-26/-44m。 */
+       * 深渊带：极黑水 + 海沟 + 结构残片 + 未知光源；海床 -4m ~ -74m 连续地形。 */
       (function buildBands() {
         var bands = meta.bands;
         L.bands = bands;
         var bRng = new BR.RNG(BR.hashSeed(map.seed + ':l7bands'));
-        var ccx = bands[0].ccx * T, ccz = bands[0].ccy * T;
+        var ter = L.ter, ccx = ter ? ter.ccx : ocx, ccz = ter ? ter.ccy : ocz;
+
+        // 在海床深度≥minD 的水域随机采样世界坐标（40 次内找不到返回 null）
+        function sampleDeepWater(minD, rMin, rMax) {
+          var ob = L.ocB;
+          for (var t = 0; t < 40; t++) {
+            var a = bRng.next() * 6.2832, rr = rMin + bRng.next() * (rMax - rMin);
+            var x = ccx + Math.cos(a) * rr, z = ccz + Math.sin(a) * rr;
+            if (!ob || x < ob.x0 + 3 || x > ob.x1 - 3 || z < ob.z0 + 3 || z > ob.z1 - 3) continue;
+            if (ter && BR.L7Terrain.depthAt(x, z, ter) >= minD) return { x: x, z: z };
+          }
+          return null;
+        }
 
         // 9a. 障碍物建模（tile 级碰撞已在 gen 布好；这里按 l7_obstacle POI 建视觉）
+        // v2.0 P3：视觉基部坐在连续海床上（gy0），与物理一致
         poiList(map, 'l7_obstacle').forEach(function (p) {
           W.addChunkContent(p.tx, p.ty, function (group) {
             var kind = p.data.kind, rot = p.data.rot || 0;
             var g = new THREE.Group();
-            g.position.set(BR.tileCX(p.tx), 0, BR.tileCZ(p.ty));
+            var gy0 = L.ter ? BR.L7Terrain.seabedY(BR.tileCX(p.tx), BR.tileCZ(p.ty), L.ter) : 0;
+            g.position.set(BR.tileCX(p.tx), gy0, BR.tileCZ(p.ty));
             g.rotation.y = rot;
             var cells = p.data.cells || [[0, 0]];
             if (kind === 'rock' || kind === 'column') {
@@ -1291,7 +1496,7 @@
                 var rr = kind === 'rock' ? 1.1 + bRng.next() * 0.7 : 0.9 + bRng.next() * 0.5;
                 var rk = new THREE.Mesh(new THREE.IcosahedronGeometry(rr, 0), rockM);
                 rk.scale.y = h / (rr * 2) * 1.4;
-                rk.position.set(cc[0] * T, h / 2 - 1.5, cc[1] * T);
+                rk.position.set(cc[0] * T, h / 2 - (kind === 'rock' ? 0.6 : 1.0), cc[1] * T);
                 rk.rotation.y = bRng.next() * 6.28;
                 g.add(rk);
               });
@@ -1314,7 +1519,7 @@
               cells.forEach(function (cc) {
                 var h2 = 1.2 + bRng.next() * (kind === 'ruin' ? 2.2 : 3.2);
                 var seg = new THREE.Mesh(new THREE.BoxGeometry(2.7, h2, 0.5), conc);
-                seg.position.set(cc[0] * T, h2 / 2 - 0.8, cc[1] * T);
+                seg.position.set(cc[0] * T, h2 / 2 - 0.4, cc[1] * T);
                 seg.rotation.y = (bRng.next() - 0.5) * 0.5;
                 seg.rotation.z = (bRng.next() - 0.5) * 0.22;
                 g.add(seg);
@@ -1324,14 +1529,18 @@
           });
         });
 
-        // 9b. 日光带漂浮物（场景级，随波漂移；少量）
+        // 9b. 日光带漂浮物（场景级，随波漂移；只放在浅水台地上方，少量）
         var woodM = new THREE.MeshLambertMaterial({ color: 0x5a4a36 }); trackMat(W, woodM);
         var barM = new THREE.MeshLambertMaterial({ color: 0x6a5a48 }); trackMat(W, barM);
         L.debris = [];
         for (var di = 0; di < 9; di++) {
-          var ang = bRng.next() * 6.2832;
-          var drad = bands[0].r0 + bRng.next() * Math.max(1, (bands[0].r1 - bands[0].r0) * 0.92);
-          var dx0 = ccx + Math.cos(ang) * drad * T, dz0 = ccz + Math.sin(ang) * drad * T;
+          var ds = sampleDeepWater(-100, 8, 33); // 浅水台地：海床深度 <12m
+          var dx0, dz0;
+          if (ds && ter && BR.L7Terrain.depthAt(ds.x, ds.z, ter) < 12) { dx0 = ds.x; dz0 = ds.z; }
+          else {
+            var ang = bRng.next() * 6.2832, drad = 10 + bRng.next() * 20;
+            dx0 = ccx + Math.cos(ang) * drad; dz0 = ccz + Math.sin(ang) * drad;
+          }
           var dm;
           if (di % 3 === 0) dm = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.9, 9), barM);
           else if (di % 3 === 1) dm = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 0.35), woodM);
@@ -1343,10 +1552,9 @@
         }
 
         // 9c. 午夜带发光浮游生物（水下光点群，缓慢漂移）
-        // 分布：午夜带稀疏背景 + 围绕动静点/深处出口聚类（玩家实际到访处看得见）
+        // 分布：深水区稀疏背景 + 围绕动静点/深处出口聚类（玩家实际到访处看得见）
         (function plankton() {
           var n = 260, pp = new Float32Array(n * 3), base = [];
-          var r0 = bands[2].r0 * T, r1 = bands[2].r1 * T;
           var clusters = [];
           poiList(map, 'disturbance').forEach(function (p) {
             if ((p.data.band || 0) >= 2) clusters.push([BR.tileCX(p.tx), BR.tileCZ(p.ty)]);
@@ -1359,24 +1567,27 @@
             pp[i * 3] = px; pp[i * 3 + 1] = py; pp[i * 3 + 2] = pz;
             base.push([px, py, pz, bRng.next() * 6.28]);
           }
-          var i, a, rad, px, pz, py;
-          for (i = 0; i < 100; i++) { // 背景：午夜带环域
-            a = bRng.next() * 6.2832; rad = Math.sqrt(bRng.next()) * Math.max(1, r1 - r0) + r0;
-            px = ccx + Math.cos(a) * rad; pz = ccz + Math.sin(a) * rad;
-            pushPt(px, -1 - bRng.next() * 9, pz);
+          var i, s, px, pz;
+          for (i = 0; i < 100; i++) { // 背景：深水区（海床 30m+）
+            s = sampleDeepWater(30, 50, 100);
+            if (!s) { // 实在采不到：退到锚点聚类
+              if (clusters.length) { var cc = clusters[i % clusters.length]; pushPt(cc[0], -8 - bRng.next() * 20, cc[1]); }
+              continue;
+            }
+            pushPt(s.x, -6 - bRng.next() * 24, s.z);
           }
           var per = Math.floor((n - 100) / Math.max(1, clusters.length));
           for (var ci = 0; ci < clusters.length; ci++) { // 聚类：锚点周围 25m
             for (i = 0; i < per; i++) {
-              a = bRng.next() * 6.2832; rad = Math.sqrt(bRng.next()) * 25;
+              var a = bRng.next() * 6.2832, rad = Math.sqrt(bRng.next()) * 25;
               px = clusters[ci][0] + Math.cos(a) * rad; pz = clusters[ci][1] + Math.sin(a) * rad;
-              py = -1 - bRng.next() * 9;
-              pushPt(px, py, pz);
+              pushPt(px, -8 - bRng.next() * 20, pz);
             }
           }
-          while (base.length < n) { // 补齐
-            a = bRng.next() * 6.2832; rad = Math.sqrt(bRng.next()) * Math.max(1, r1 - r0) + r0;
-            pushPt(ccx + Math.cos(a) * rad, -1 - bRng.next() * 9, ccz + Math.sin(a) * rad);
+          var guard = 0;
+          while (base.length < n && guard++ < 400) { // 补齐
+            s = sampleDeepWater(30, 50, 100);
+            if (s) pushPt(s.x, -6 - bRng.next() * 24, s.z);
           }
           var pg = new THREE.BufferGeometry();
           pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
@@ -1388,14 +1599,14 @@
           var pts = new THREE.Points(pg, pm);
           pts.frustumCulled = false;
           W.scene.add(pts); trackScene(pts);
-          L.plankton = { pts: pts, base: base, n: n };
+          L.plankton = { pts: pts, base: base, n: base.length };
         })();
 
-        // 9d. 深渊带未知光源（远处冷光，呼吸式闪烁；精灵公告牌）
+        // 9d. 深渊带未知光源（海沟深处的冷光，呼吸式闪烁；精灵公告牌）
         L.abyssLights = [];
         for (var ai = 0; ai < 3; ai++) {
-          var aa = bRng.next() * 6.2832;
-          var arad = (bands[3].r0 + bRng.next() * Math.max(1, (bands[3].r1 - bands[3].r0) * 0.8)) * T;
+          var as = sampleDeepWater(55, 60, 105); // 海沟水域
+          var asx = as ? as.x : ccx + 70, asz = as ? as.z : ccz;
           var lsm = new THREE.SpriteMaterial({
             color: 0x9fe0ff, transparent: true, opacity: 0,
             blending: THREE.AdditiveBlending, depthWrite: false
@@ -1403,19 +1614,44 @@
           trackMat(W, lsm);
           var sp = new THREE.Sprite(lsm);
           sp.scale.set(3.2, 3.2, 1);
-          sp.position.set(ccx + Math.cos(aa) * arad, -6 - bRng.next() * 8, ccz + Math.sin(aa) * arad);
+          sp.position.set(asx, -40 - bRng.next() * 15, asz);
           W.scene.add(sp); trackScene(sp);
           L.abyssLights.push({ m: sp, ph: bRng.next() * 6.28, per: 5 + bRng.next() * 7 });
         }
       })();
 
+      /* ---- 9e. 散射颗粒 marine snow（v2.0 P3）：水下悬浮微粒 ----
+       * 380 粒，40m 立方体跟随相机循环，越深越密；只在水下可见。 */
+      (function marineSnow() {
+        var n = 380, pp = new Float32Array(n * 3), sd = [];
+        var srng = new BR.RNG(BR.hashSeed(map.seed + ':l7snow'));
+        for (var i = 0; i < n; i++) {
+          pp[i * 3] = (srng.next() - 0.5) * 40;
+          pp[i * 3 + 1] = -srng.next() * 45;
+          pp[i * 3 + 2] = (srng.next() - 0.5) * 40;
+          sd.push(srng.next() * 6.28);
+        }
+        var pg = new THREE.BufferGeometry();
+        pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
+        var pm = new THREE.PointsMaterial({
+          color: 0xbfd8de, size: 0.09, transparent: true, opacity: 0,
+          depthWrite: false
+        });
+        trackMat(W, pm);
+        var pts = new THREE.Points(pg, pm);
+        pts.frustumCulled = false;
+        pts.visible = false;
+        W.scene.add(pts); trackScene(pts);
+        L.snow = { pts: pts, mat: pm, seed: sd, n: n };
+      })();
+
       /* ---- 10. 深处出口（→L37）：瓷砖结构残片 + 光柱 + 气泡 ----
        * 触发：潜入结构内部（水平 <2.4m 且深度接近）才切换；不按高度全图传送。
-       * 位置：午夜带/深渊带交界（v2.0 P2 从最深水区搬来），深度约 -9m（游戏尺度），氧气可达。
+       * 位置：深水区（海床 40m 以下），结构中心 y=-12（暮光带上部，游戏尺度），氧气可达。
        * L7→L37 在两社区均无原著记载，本游戏改编（LORE.md 标注）。 */
       poiList(map, 'deep_exit').forEach(function (p) {
         var ex = BR.tileCX(p.tx), ez = BR.tileCZ(p.ty);
-        var gy = -9; // 结构中心深度（游戏尺度改编）
+        var gy = -12; // 结构中心深度（暮光带上部；游戏尺度改编，氧气可达）
         var eid = 'l7_deep_exit';
         L.gate = { x: ex, y: gy, z: ez, bubbles: null, glowMat: null, shaftMat: null, used: false };
         W.addChunkContent(p.tx, p.ty, function (group) {
@@ -1447,14 +1683,14 @@
           L.gate.glowMat = glow.material;
           // 上升光柱（水面可见的视觉线索）
           var shaft = new THREE.Mesh(
-            new THREE.CylinderGeometry(1.0, 1.6, 11, 12, 1, true),
+            new THREE.CylinderGeometry(1.0, 1.6, 15, 12, 1, true),
             new THREE.MeshBasicMaterial({
               color: 0x6fc4e8, transparent: true, opacity: 0.16,
               blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
             })
           );
           trackMat(W, shaft.material);
-          shaft.position.set(ex, gy + 5.5, ez);
+          shaft.position.set(ex, gy + 7.5, ez);
           W.reg(group, shaft);
           L.gate.shaftMat = shaft.material;
           // 冷光（随区块释放的独立光源）
@@ -1503,10 +1739,10 @@
         });
       });
 
-      /* ---- 12. Swim 水 zone 注册（v2.0 P2：四深度带同心圆，由内向外注册） ----
-       * zoneAt 按注册顺序返回首个命中：同心圆内层优先即得"所在带"。
-       * 每带 holes 抠掉舱室与甲板（干区）；registerZone API 不动（kind/depth/waterY/holes/形状），
-       * 物理海床 floor 按既有做法补在返回引用上（L37 未用该字段）。 */
+      /* ---- 12. Swim 水 zone 注册（v2.0 P3：整片海洋一个矩形水域） ----
+       * 深度带不再是平面分区——带按玩家下潜深度判定（_bandAt），水体只有一个。
+       * holes 抠掉舱室与甲板（干区）；zone.floor 设极低，_swimVertical 的
+       * max(groundY, w.floor) 即取 floorYAt 返回的连续海床，不穿模。 */
       if (BR.Swim) {
         if (typeof BR.Swim.clearZones === 'function') BR.Swim.clearZones();
         if (typeof BR.Swim.registerZone === 'function') {
@@ -1524,14 +1760,12 @@
             // 甲板：只抠甲板矩形本身（+0.4m 边），不向外扩一格——停靠点在甲板外 2 格，必须是水
             { x0: dr2.x0 * T - 0.4, z0: dr2.y0 * T - 0.4, x1: (dr2.x1 + 1) * T + 0.4, z1: (dr2.y1 + 1) * T + 0.4 }
           ];
-          meta.bands.forEach(function (b) {
-            var zo = BR.Swim.registerZone({
-              kind: b.kind, depth: b.depth, waterY: SURF,
-              cx: b.ccx * T, cz: b.ccy * T, r: b.r1 * T,
-              holes: holes
-            });
-            if (zo) zo.floor = b.floor; // 物理海床：-6/-14/-26/-44（游戏尺度）
+          var zo = BR.Swim.registerZone({
+            kind: 'ocean', depth: 3, waterY: SURF,
+            x0: ox0w, z0: oz0w, x1: ox1w, z1: oz1w,
+            holes: holes
           });
+          if (zo) zo.floor = -400; // 极低：物理下限由 floorYAt 的连续海床决定
         }
         BR.Swim.speedMul = 1; // 出生点干燥：复位
       }
@@ -1600,7 +1834,7 @@
             }
             if (dp7) {
               var ex7 = BR.tileCX(dp7.tx), ez7 = BR.tileCZ(dp7.ty);
-              P7.pos.set(ex7 + 3.5, -8, ez7); // 结构旁 3.5m，水下（结构中心 y=-9）
+              P7.pos.set(ex7 + 3.5, -11, ez7); // 结构旁 3.5m，水下（结构中心 y=-12）
               P7.vel.set(0, 0, 0);
               P7.yaw = Math.atan2(3.5, 0); // 面向结构
               setTimeout(function () {
@@ -1613,21 +1847,21 @@
       } catch (e) { if (BR.warn) BR.warn('[L7] deep arrival failed', e); }
     },
 
-    /* ---------- 七层之物：带判定 ---------- */
-    _bandAt: function (L, x, z) {
-      var bands = (L && L.bands) || [];
-      if (!bands.length) return 0;
-      var b0 = bands[0];
-      var d = Math.hypot(x / T - b0.ccx, z / T - b0.ccy);
-      for (var i = 0; i < bands.length; i++) if (d <= bands[i].r1) return i;
-      return bands.length - 1;
+    /* ---------- 深度带判定（v2.0 P3）：按真实下潜深度，不再是同心圆 ---------- */
+    _bandAt: function (L, y) {
+      return BR.L7Terrain.bandOfDepth(SURF - y);
     },
     _pickLurkPoint: function (L) {
-      var E = L.entity, bands = L.bands, r = E.crng;
-      var b = r.next() < 0.45 ? bands[3] : bands[2]; // 午夜带为主，深渊带上部为辅
-      var rr = b.r0 + 1 + r.next() * Math.max(1, b.r1 - b.r0 - 2);
-      var a = r.next() * 6.2832;
-      return { x: b.ccx * T + Math.cos(a) * rr * T, z: b.ccy * T + Math.sin(a) * rr * T };
+      var E = L.entity, r = E.crng, ter = L && L.ter, ob = L && L.ocB;
+      if (ter && ob) {
+        for (var t = 0; t < 40; t++) { // 深水区（海床 30m+）：午夜带为主
+          var a = r.next() * 6.2832, rr = 45 + r.next() * 55;
+          var x = ter.ccx + Math.cos(a) * rr, z = ter.ccy + Math.sin(a) * rr;
+          if (x < ob.x0 + 4 || x > ob.x1 - 4 || z < ob.z0 + 4 || z > ob.z1 - 4) continue;
+          if (BR.L7Terrain.depthAt(x, z, ter) >= 30) return { x: x, z: z };
+        }
+      }
+      return { x: E.x, z: E.z }; // 实在找不到：留在原地
     },
     _moveCreature: function (E, dt, spd) {
       var dx = E.wx - E.x, dz = E.wz - E.z;
@@ -1852,7 +2086,7 @@
       E.splashT += dt;
       if (spd > 3.2 || boatSpd > 3.0) E.noise = Math.min(1, E.noise + 0.55 * dt);
       else E.noise = Math.max(0, E.noise - 0.30 * dt);
-      var band = this._bandAt(L, px, pz);
+      var band = this._bandAt(L, P.pos.y); // v2.0 P3：按玩家下潜深度
       if (band >= 2) E.deepTime += dt; else E.deepTime = 0;
       if (spd < 0.4 && boatSpd < 0.6 && E.splashT > 2) E.stillTime += dt; else E.stillTime = 0;
       var cdist = Math.hypot(E.x - px, E.z - pz);
@@ -2004,21 +2238,48 @@
       // Swim：水 zone / 闭气（头部浸没才耗氧：BR.Swim.tick 按 headUnder 判定）
       if (BR.Swim && typeof BR.Swim.tick === 'function') BR.Swim.tick(dt);
 
-      // 海面顶点波（单网格；法线隔帧重算）
+      // 海面顶点波（单网格；法线隔帧重算；舱室掩膜区压到地板下）
       if (L.seaGeo) {
         var pos = L.seaGeo.attributes.position, arr = pos.array, base = L._seaBase;
+        var smask = L._seaMask;
         for (var vi = 0; vi < pos.count; vi++) {
           var bx0 = base[vi * 3], bz0 = base[vi * 3 + 2];
-          arr[vi * 3 + 1] = this._seaYAt(L, bx0, bz0, t);
+          arr[vi * 3 + 1] = (smask && smask[vi]) ? -0.5 : this._seaYAt(L, bx0, bz0, t);
         }
         pos.needsUpdate = true;
         L._nrmTick = (L._nrmTick || 0) + 1;
         if (L._nrmTick % 2 === 0) L.seaGeo.computeVertexNormals();
+        // v2.1：透光层跟随波浪（海面 -0.22m；舱室掩膜区同样压下）
+        if (L.seaUnderGeo) {
+          var upos = L.seaUnderGeo.attributes.position, uarr = upos.array, ubase = L._seaUnderBase;
+          for (var ui = 0; ui < upos.count; ui++) {
+            uarr[ui * 3 + 1] = (smask && smask[ui] ? -0.72 : this._seaYAt(L, ubase[ui * 3], ubase[ui * 3 + 2], t) - 0.22);
+          }
+          upos.needsUpdate = true;
+        }
       }
       // 云层漂移
       for (var ci = 0; ci < L.cloudTexs.length; ci++) {
         var c = L.cloudTexs[ci];
         if (c.tex) { c.tex.offset.x = (t * c.sp) % 1; }
+      }
+      // v2.0 P3：穹顶云纹漂移 + 雾环跟随玩家；水下隐藏天空层（水下另有浓雾）
+      var headUnderNow = !!(BR.Swim && BR.Swim.headUnder);
+      if (L._skyTex) L._skyTex.offset.x = (t * 0.0022) % 1;
+      if (L.skyDome) {
+        L.skyDome.visible = !headUnderNow;
+        L.skyDome.position.x = P.pos.x; // 跟随玩家：穹顶半径 190 < 相机 far 220，永不裁剪
+        L.skyDome.position.z = P.pos.z;
+      }
+      for (var cqi = 0; cqi < L.cloudTexs.length; cqi++) {
+        if (L.cloudTexs[cqi].mesh) L.cloudTexs[cqi].mesh.visible = !headUnderNow;
+      }
+      if (L.haze) {
+        for (var hi = 0; hi < L.haze.length; hi++) {
+          L.haze[hi].position.x = P.pos.x;
+          L.haze[hi].position.z = P.pos.z;
+          L.haze[hi].visible = !headUnderNow;
+        }
       }
       // 浪涌系数回归
       L.chop += (L.chopTarget - L.chop) * Math.min(1, dt * 0.5);
@@ -2068,21 +2329,48 @@
         } catch (e) {}
       }
 
-      // 水下视觉：按深度带调整透光（Swim.tick 存雾之后覆盖；出水由 Swim 恢复）
+      // 水下视觉：按相机真实下潜深度调整透光（Swim.tick 存雾之后覆盖；出水由 Swim 恢复）
       var hu = !!(BR.Swim && BR.Swim.headUnder);
+      var camYw = (P.camera && P.camera.position) ? P.camera.position.y : P.pos.y;
       if (W.scene && W.scene.fog && hu && BR.Swim._fogSaved) {
-        var ub = this._bandAt(L, P.pos.x, P.pos.z); // 0 日光 … 3 深渊
+        var ub = this._bandAt(L, camYw); // 0 日光 … 3 深渊（按真实深度）
         if (!_uwTmpColor) _uwTmpColor = new THREE.Color();
         W.scene.fog.color.lerp(_uwTmpColor.setHex(UW_FOG_COL[ub]), Math.min(1, dt * 2));
         W.scene.fog.far += (UW_FOG_FAR[ub] - W.scene.fog.far) * Math.min(1, dt * 2);
       }
+      // v2.1：水下压暗按真实深度分档——日光带（<12m）保持透光，
+      // 让水下透光层可见；暮光带及以下才用深海压暗。之前任何深度全开，
+      // 导致浅水仰视水面一片死黑（W-verify 实机确认）。
+      var uwb = this._bandAt(L, camYw); // 0 日光 … 3 深渊（按真实深度）
       if (typeof document !== 'undefined')
-        document.body.classList.toggle('l7deep', hu);
+        document.body.classList.toggle('l7deep', hu && uwb >= 1);
 
-      // 深水理智侵蚀（叠加在黑暗侵蚀之上；午夜带约 2.35/s，深渊带约 3.05/s）
-      if (BR.Swim && typeof BR.Swim.zoneAt === 'function') {
-        var szn = BR.Swim.zoneAt(P.pos.x, P.pos.z);
-        if (szn && szn.kind === 'deep') P.drainSanity(dt * (0.6 + 0.7 * (szn.depth || 1)));
+      // 深水理智侵蚀（叠加在黑暗侵蚀之上；按真实下潜深度：午夜带约 2.35/s，深渊带约 3.05/s）
+      var pdb = this._bandAt(L, P.pos.y);
+      if (pdb >= 2) P.drainSanity(dt * (0.6 + 0.7 * (pdb + 0.5)));
+
+      // 散射颗粒 marine snow：跟随相机（40m 盒内循环），越深越密；只在水下可见
+      if (L.snow) {
+        var sn = L.snow;
+        sn.pts.visible = hu;
+        if (hu) {
+          var cxp = P.camera ? P.camera.position.x : P.pos.x;
+          var cyp = camYw;
+          var czp = P.camera ? P.camera.position.z : P.pos.z;
+          sn.mat.opacity = 0.22 + this._bandAt(L, cyp) * 0.16;
+          var spa = sn.pts.geometry.attributes.position;
+          for (var sni = 0; sni < sn.n; sni++) {
+            var bxs = sn.seed[sni];
+            var ox = spa.array[sni * 3] + Math.sin(t * 0.3 + bxs) * dt * 0.35;
+            var oy = spa.array[sni * 3 + 1] - dt * (0.12 + (sni % 5) * 0.03);
+            var oz = spa.array[sni * 3 + 2] + Math.cos(t * 0.23 + bxs * 1.7) * dt * 0.35;
+            while (ox < cxp - 20) ox += 40; while (ox > cxp + 20) ox -= 40;
+            while (oz < czp - 20) oz += 40; while (oz > czp + 20) oz -= 40;
+            while (oy < cyp - 30) oy += 45; while (oy > cyp + 15) oy -= 45;
+            spa.array[sni * 3] = ox; spa.array[sni * 3 + 1] = oy; spa.array[sni * 3 + 2] = oz;
+          }
+          spa.needsUpdate = true;
+        }
       }
 
       // 四带环境演出更新：漂浮物随波 / 浮游生物漂移 / 未知光源呼吸闪烁
