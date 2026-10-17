@@ -1,7 +1,11 @@
-/* lv_l188.js —— Level 188「百窗庭」内容构建（v1.5 W7 重构）
+/* lv_l188.js —— Level 188「百窗庭」内容构建（v2.0 P5 建筑完整性重制）
  * 原型：Fandom Backrooms Wiki Level 188 "The Windows"（酒店版）[本游戏改编]。
- *   中央中庭 + 四周四层窗户（104 扇） + 环绕走廊 + 10 间 1F 客房 + 真二层（环廊 + 6 间客房，
- *   楼梯间淡入淡出换层） + 休息室 + 员工室。与 Wikidot Level 881 无关。
+ *   中央中庭 + 四周四层窗户（104 扇） + 环绕走廊 + 10 间 1F 客房
+ *   + 真垂直二层（与 1F 同 footprint：二层楼板 3.57m + 可行走楼梯坡道
+ *   + 6 间客房 + 走廊 + 楼梯间；经 floorYAt 真实上下连通）
+ *   + 休息室 + 员工室。与 Wikidot Level 881 无关。
+ * 楼层系统：W._l188floor（0/1，存档 W.state.l188floor）被碰撞/地面高度/
+ *   交互遮挡真实读取；W._l188onF2 为兼容别名。老存档非法位置在 onEnter 安全回落。
  *
  * 美术改编（参考用户提供的参考图4：Bilibili 后室 vlog 夜间庭院截图，只取场景本身）：
  *   四面高大深色住宅楼（wallH=12，四层窗，抬头有压迫感）围中央庭院；
@@ -23,9 +27,10 @@
  * POI 类型（gen_l188.js 放置）：
  *   spawn / balcony / hotel_room{num,winKind,locked,w,h,x0,y0} / room_door{doorId,num,locked} /
  *   lounge / staff_room / radio / odd_window(→L1) / stairwell(→L11) /
- *   stair_up（1F 楼梯间→2F，真连楼层） / return_door（出生房北墙→来源层级） /
+ *   return_door（出生房北墙→来源层级） /
  *   emergency_exit{dx,dz,dest}（位置随机→已完成层级池） / note / crate / thin_wall
- *   2F 内容不走 POI（可达性抽查要求全部 POI 从 spawn 可达），经 map.meta.l188f2 构建。
+ *   2F 内容不走 POI（可达性抽查要求全部 POI 从 spawn 可达），
+ *   经 map.meta.l188f2 = {tiles, rooms, doors, stair} 构建。
  *
  * v2.0 P5（百窗亭质量升级，特色全部保留）：
  *   建筑：裙座+三道层间腰线+柱间壁柱+转角柱+顶部檐口/女儿墙，四面屋顶体量各异
@@ -38,9 +43,11 @@
  *   二楼楼梯间加"通往三楼"水泥封门（带解释）。
  *
  * interactable kind 清单：
- *   'radio'/'odd_window'/'stairwell'（旧）/ 'stair_up' / 'stair_down' /
+ *   'radio'/'odd_window'/'stairwell'（旧）/
  *   'return_door' / 'emergency_exit' / 'event_window' / 'travel_window' /
  *   'magic_curtain' / 'cabinet'（客房衣柜，拾取）/ 'sealed_door'（三楼封门，纯解释）
+ *   （注：world.js 登记的 'stair_up'/'stair_down' 在真垂直二层后不再使用，
+ *    上下楼改为可行走的真实坡道）
  */
 (function () {
   var BR = window.BR;
@@ -221,6 +228,116 @@
     return c;
   });
 
+  /* ============ v2.0 P5 真垂直二层：楼层系统（纯函数 + 引擎包装） ============ */
+  // 1F 吊顶 3.4m（单一吊顶；引擎 12m 顶用 W.setOpenCeil 取消）；
+  // 二层楼板 3.42..3.57m；二层地面 F2Y=3.57m；二层吊顶 6.97m。
+  var F1C = 3.4, SLAB_B = 3.42, F2Y = 3.57, F2C = 6.97;
+  // 页面级共享几何体（永不释放，随页面；材质走 W._l188matCache，随关卡 dispose）
+  var GEO188 = {
+    slab: new THREE.BoxGeometry(3, 0.15, 3),
+    step: new THREE.BoxGeometry(2.9, 0.22, 0.75),
+    baluster: new THREE.BoxGeometry(0.07, 1.0, 0.07)
+  };
+  // 楼梯坡道高度（纯函数；z0/z1 由 meta.l188f2.stair 给出）
+  function l188StairY(z, z0, z1) {
+    var t = (z - z0) / (z1 - z0);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return t * F2Y;
+  }
+  // tile 阻挡判定（纯函数；doorFn(tx,ty,floor)→{open,solidWhenOpen}|null；
+  // t1/t2 为 1F/2F tile 查询；供冒烟测试直接调用）
+  function l188TileBlocked(tx, ty, floor, doorFn, t1, t2) {
+    var d = doorFn(tx, ty, floor);
+    if (d) return !(d.open && !d.solidWhenOpen);
+    var v = (floor === 1) ? t2(tx, ty) : t1(tx, ty);
+    return v === 0;
+  }
+  function l188T2(W, tx, ty) {
+    var t = W._l188f2tiles, m = W.map;
+    if (!t || !m || tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return 0;
+    return t[ty * m.w + tx];
+  }
+  // 关卡共享材质（按颜色缓存，随 W._levelMats 在关卡 dispose 时释放；
+  // 不再每盒一个材质；_ownMat 不打，避免区块卸载时误释放共享材质）
+  function l188mat(W, color) {
+    W._l188matCache = W._l188matCache || {};
+    var m = W._l188matCache[color];
+    if (!m) {
+      m = new THREE.MeshLambertMaterial({ color: color });
+      W._l188matCache[color] = m;
+      W._levelMats = W._levelMats || [];
+      W._levelMats.push(m);
+    }
+    return m;
+  }
+  // InstancedMesh 注册：进 chunk.meshes（卸载时 inst.dispose() 只释放实例缓冲，
+  // 共享几何/材质保留）；raycast 置空——不参与交互遮挡射线。
+  function regInstanced(group, im) {
+    im.raycast = function () {};
+    group.add(im);
+    var c = group.userData.chunk;
+    if (c) c.meshes.push(im);
+    return im;
+  }
+  // 一次性安装 L188 专用的碰撞/地面材质包装（自守卫：非 L188 关卡直接走原版）
+  function l188InstallWraps(W) {
+    if (W._l188wraps) return;
+    W._l188wraps = true;
+    var _blocked = W.blocked, _circleFree = W.circleFree, _surfaceAt = W.surfaceAt;
+    W.blocked = function (tx, ty) {
+      if (this.map && this.map.level === 'L188' && this._l188f2tiles) {
+        var self = this, fl = this._l188floor | 0;
+        return l188TileBlocked(tx, ty, fl,
+          function (x, y, f) {
+            var flat = self._l188doorFlat || [];
+            for (var i = 0; i < flat.length; i++) {
+              var e = flat[i];
+              if (e.tx === x && e.ty === y && e.floor === f) {
+                var dd = self.doors[e.id];
+                return dd ? { open: dd.open, solidWhenOpen: !!dd.def.solidWhenOpen } : null;
+              }
+            }
+            return null;
+          },
+          function (x, y) { return self.tile(x, y); },
+          function (x, y) { return l188T2(self, x, y); });
+      }
+      return _blocked.call(this, tx, ty);
+    };
+    W.circleFree = function (nx, nz, radius) {
+      if (!this.map || this.map.level !== 'L188' || !this._l188f2tiles) {
+        return _circleFree.call(this, nx, nz, radius);
+      }
+      // 原版 tile 碰撞（内部调 this.blocked，已是楼层感知的）
+      if (!_circleFree.call(this, nx, nz, radius)) return false;
+      // 本层 AABB 碰撞体（阳台栏杆/水池沿/楼梯弦杆/平台护栏）
+      var cs = this._l188colliders, fl = this._l188floor | 0;
+      if (cs) for (var i = 0; i < cs.length; i++) {
+        var c = cs[i];
+        if ((c.floor | 0) !== fl) continue;
+        var qx = nx < c.x0 ? c.x0 : (nx > c.x1 ? c.x1 : nx);
+        var qz = nz < c.z0 ? c.z0 : (nz > c.z1 ? c.z1 : nz);
+        var dx = nx - qx, dz = nz - qz;
+        if (dx * dx + dz * dz < radius * radius) return false;
+      }
+      return true;
+    };
+    W.surfaceAt = function (x, z) {
+      var s = _surfaceAt.call(this, x, z);
+      // 2F 客房内为木地板脚步声（1F 同坐标是地毯/草地，不受影响）
+      if (this.map && this.map.level === 'L188' && (this._l188floor | 0) === 1 &&
+          this._l188f2rooms) {
+        var tx = Math.floor(x / T), ty = Math.floor(z / T);
+        var rs = this._l188f2rooms;
+        for (var i = 0; i < rs.length; i++) {
+          var r = rs[i];
+          if (tx >= r.x && tx < r.x + r.w && ty >= r.y && ty < r.y + r.h) return 'wood';
+        }
+      }
+      return s;
+    };
+  }
+
   function px(tx) { return BR.tileCX(tx); }
   function pz(ty) { return BR.tileCZ(ty); }
 
@@ -252,21 +369,7 @@
            side === 'W' ? { x: 1, z: 0 } : { x: -1, z: 0 };
   }
 
-  // 楼梯换层黑场（关内换层，不走切出状态机）
-  function stairFade(cb) {
-    var f = document.getElementById('l188-stairfade');
-    if (!f) {
-      f = document.createElement('div');
-      f.id = 'l188-stairfade';
-      f.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;' +
-        'pointer-events:none;transition:opacity .32s;z-index:65;';
-      document.body.appendChild(f);
-    }
-    f.style.opacity = 1;
-    setTimeout(function () {
-      try { cb(); } finally { f.style.opacity = 0; }
-    }, 340);
-  }
+  // 信号格：离异常窗越近越强
 
   var L188_NOTES = {
     L188_note0: ['住客留言',
@@ -297,6 +400,36 @@
       surface: 'carpet', fixtureEvery: 6, flickerRate: 0.18
     },
 
+    /* 地面高度（player.js _groundYAt 钩子；真垂直二层的行走面）：
+     * - 楼梯坡道（meta.l188f2.stair）：按 z 插值 0→F2Y，楼层闩在半高翻转；
+     * - 二层地板（f2t=1）：按玩家当前楼层返回 F2Y 或 0（1F 从二层区下方经过）；
+     * - 其余：0。非 L188 关卡直接返回 0（player.js 只调当前关卡的 floorYAt）。 */
+    floorYAt: function (x, z) {
+      var W = BR.World;
+      if (!W || !W.map || W.map.level !== 'L188') return 0;
+      var mw = W.map.w, mh = W.map.h;
+      var tx = Math.floor(x / T), ty = Math.floor(z / T);
+      if (tx < 0 || ty < 0 || tx >= mw || ty >= mh) return 0;
+      var st = W._l188stair || { tx: 37, ty0: 39, ty1: 42 };
+      if (tx === st.tx && ty >= st.ty0 && ty <= st.ty1) {
+        var y = l188StairY(z, st.ty0 * T, (st.ty1 + 1) * T);
+        var fl = (y > F2Y * 0.5) ? 1 : 0;
+        if (fl !== (W._l188floor | 0)) {
+          W._l188floor = fl; W._l188onF2 = !!fl;
+          if (W.state) W.state.l188floor = fl;
+        }
+        return y;
+      }
+      if (W._l188f2tiles && W._l188f2tiles[ty * mw + tx] === 1) {
+        return (W._l188floor | 0) === 1 ? F2Y : 0;
+      }
+      // 2F 门洞 tile（f2t=0）：楼上穿过开着的门时按 F2Y，否则按 0
+      // （否则站立吸附会把 2F 玩家 snap 到 1F 地面）
+      if ((W._l188floor | 0) === 1 && W._l188f2doorSet && W._l188f2doorSet[tx + ',' + ty])
+        return F2Y;
+      return 0;
+    },
+
     buildContent: function (map, W) {
       /* ---------- 存档态（W.state 即 ws，整体持久化；见 save.js 注释） ---------- */
       W.state.l188win = W.state.l188win || { wins: {}, fired: {}, curtainGone: {} };
@@ -313,6 +446,19 @@
       W._l188winPos = []; // [{x, z, vkind}] 窗景近场声用
       W._l188winIds = {}; // regVoice 去重（区块重建不重复注册）
 
+      /* ---------- v2.0 P5 真垂直二层：楼层态初始化 ---------- */
+      var f2 = map.meta.l188f2 || {};
+      W._l188f2tiles = f2.tiles || null;   // 二层 tile 层（与 1F 同坐标系）
+      W._l188f2doorSet = {};               // 2F 门洞 tile 集（floorYAt 防掉落）
+      (f2.doors || []).forEach(function (d) { W._l188f2doorSet[d.tx + ',' + d.ty] = 1; });
+      W._l188stair = f2.stair || { tx: 37, ty0: 39, ty1: 42 }; // 楼梯坡道 tile 范围
+      W._l188f2rooms = f2.rooms || [];     // 2F 客房矩形（脚步声/面片用）
+      W._l188colliders = [];               // 本层 AABB 碰撞体（栏杆/池沿/弦杆/护栏）
+      W._l188matCache = {};                // 本关共享材质（随 _levelMats 释放）
+      W._l188floor = (W.state.l188floor === 1) ? 1 : 0; // 0=1F, 1=2F（onEnter 校验回落）
+      W._l188onF2 = !!W._l188floor;        // 兼容别名（此前写而不读，现为真实楼层态）
+      l188InstallWraps(W);
+
       function byType(t) {
         var out = [];
         for (var i = 0; i < map.pois.length; i++)
@@ -320,11 +466,11 @@
         return out;
       }
       function poi1(t) { var a = byType(t); return a.length ? a[0] : null; }
-      // 简单 box：返回 mesh（未入场），调用方自行定位后 W.reg + mesh._ownMat=true
+      // 简单 box：返回 mesh（未入场），调用方自行定位后 W.reg
+      // v2.0 P5：材质按颜色共享（W._l188matCache，随关卡 dispose 释放），
+      // 不再每盒一个材质；不打 _ownMat（共享材质不随区块卸载释放）
       function box(w, h, d, color) {
-        var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
-          new THREE.MeshLambertMaterial({ color: color }));
-        m._ownMat = true;
+        var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), l188mat(W, color));
         return m;
       }
       function basicPlane(w, h, texName, color) {
@@ -340,20 +486,59 @@
         return winSave.wins[id];
       }
 
-      /* ---------- 门（1F 走 map.doors；2F 走 meta.l188f2.doors） ---------- */
-      function addDoorDef(d) { W.addDoor({ id: d.id, tx: d.tx, ty: d.ty, axis: d.axis, locked: d.locked, label: d.label }); }
-      for (var di = 0; di < map.doors.length; di++) addDoorDef(map.doors[di]);
-      var f2 = map.meta.l188f2 || { rooms: [], doors: [] };
-      for (var d2i = 0; d2i < f2.doors.length; d2i++) addDoorDef(f2.doors[d2i]);
+      /* ---------- 门（1F 走 map.doors；2F 走 meta.l188f2.doors，同 tile 上下叠放） ---------- */
+      function addDoorDef(d, floor, yBase) {
+        W.addDoor({ id: d.id, tx: d.tx, ty: d.ty, axis: d.axis, locked: d.locked,
+          label: d.label, floor: floor || 0, yBase: yBase || 0 });
+      }
+      for (var di = 0; di < map.doors.length; di++) addDoorDef(map.doors[di], 0, 0);
+      for (var d2i = 0; d2i < (f2.doors || []).length; d2i++)
+        addDoorDef(f2.doors[d2i], 1, F2Y);
+      // 碰撞包装用的扁平门表（id/tile/楼层；开关态读 W.doors 实时值）
+      W._l188doorFlat = [];
+      Object.keys(W.doors).forEach(function (id) {
+        var dd = W.doors[id];
+        W._l188doorFlat.push({ id: id, tx: dd.def.tx, ty: dd.def.ty, floor: dd.def.floor | 0 });
+      });
+      // 门头填充：门洞上方补墙（真"墙洞"关系；叠放门分两段，单门一段到顶）
+      (function doorHeadInfills() {
+        var upper = {};
+        (f2.doors || []).forEach(function (d) { upper[d.tx + ',' + d.ty] = true; });
+        function infill(tx, ty, axis, stacked) {
+          W.addChunkContent(tx, ty, function (group) {
+            var segs = stacked ? [[2.78, F2Y], [F2Y + 2.78, 12]] : [[2.78, 12]];
+            segs.forEach(function (sg) {
+              var h = sg[1] - sg[0];
+              if (h <= 0.05) return;
+              var m = box(axis === 'z' ? 0.6 : T, h, axis === 'z' ? T : 0.6, 0x4e4438);
+              m.position.set(px(tx), sg[0] + h / 2, pz(ty));
+              W.reg(group, m);
+            });
+          });
+        }
+        map.doors.forEach(function (d) { infill(d.tx, d.ty, d.axis, !!upper[d.tx + ',' + d.ty]); });
+        (f2.doors || []).forEach(function (d) {
+          W.addChunkContent(d.tx, d.ty, function (group) {
+            var h = 12 - (F2Y + 2.78);
+            var m = box(d.axis === 'z' ? 0.6 : T, h, d.axis === 'z' ? T : 0.6, 0x4e4438);
+            m.position.set(px(d.tx), F2Y + 2.78 + h / 2, pz(d.ty));
+            W.reg(group, m);
+          });
+        });
+      })();
 
-      /* ---------- 房号牌（门上/门侧黄铜牌；1F 走 POI，2F 走 meta） ---------- */
-      function doorPlate(tx, ty, num, doorId) {
+      /* ---------- 房号牌（门上/门侧黄铜牌；1F 走 POI，2F 走 meta；按楼层定朝向与高度） ---------- */
+      function doorPlate(tx, ty, num, floor) {
         W.addChunkContent(tx, ty, function (group) {
           var dirs = [[0, -1, Math.PI, 0], [0, 1, 0, 0], [-1, 0, Math.PI / 2, 0], [1, 0, -Math.PI / 2, 0]];
           var face = dirs[0];
+          function isFloorAt(x, y) {
+            if (floor === 1) return l188T2(W, x, y) === 1;
+            return W.tile(x, y) === 1; // v2.0 P5：tile=2 已废除
+          }
           for (var i = 0; i < dirs.length; i++) {
             var dd = dirs[i];
-            if (W.tile(tx + dd[0], ty + dd[1]) === 1 || W.tile(tx + dd[0], ty + dd[1]) === 2) { face = dd; break; }
+            if (isFloorAt(tx + dd[0], ty + dd[1])) { face = dd; break; }
           }
           // 房号牌贴图按房号缓存：内容只与房号有关，区块重建时复用，不重复创建
           // （之前每次重建都 new CanvasTexture 并 push 进 _levelMats，造成贴图泄漏）
@@ -376,30 +561,66 @@
             new THREE.MeshBasicMaterial({ map: tex }));
           m._ownMat = true;
           var wx = px(tx) + face[0] * (T / 2 + 0.06), wz = pz(ty) + face[1] * (T / 2 + 0.06);
-          m.position.set(wx, 2.95, wz);
+          m.position.set(wx, (floor === 1 ? F2Y : 0) + 2.95, wz);
           m.rotation.y = face[2];
           W.reg(group, m);
         });
       }
-      byType('room_door').forEach(function (p) { doorPlate(p.tx, p.ty, p.data.num); });
-      f2.doors.forEach(function (d) { doorPlate(d.tx, d.ty, d.num); });
+      byType('room_door').forEach(function (p) { doorPlate(p.tx, p.ty, p.data.num, 0); });
+      (f2.doors || []).forEach(function (d) { doorPlate(d.tx, d.ty, d.num, 1); });
 
-      /* ---------- 吊顶处理：中庭/阳台敞开（见星空）；客房内降吊顶到 3.4m ---------- */
+      /* ---------- 吊顶处理（v2.0 P5：单一合理吊顶） ----------
+       * 中庭/阳台敞开（见星空）；其余 1F 室内取消引擎 12m 吊顶（setOpenCeil），
+       * 只留 3.4m 降吊顶；2F 室内铺 6.97m 吊顶（2F 楼板 3.42..3.57m 为结构层）。
+       * 引擎灯具面板随 12m 顶一并取消，走廊/楼梯间改用内容灯具 + 内容点光源。 */
       (function () {
         var tx, ty;
+        function openCeilRect(x0, y0, x1, y1) {
+          for (var oy = y0; oy <= y1; oy++)
+            for (var ox = x0; ox <= x1; ox++) W.setOpenCeil(ox, oy);
+        }
         for (tx = 20; tx <= 35; tx++)
           for (ty = 21; ty <= 35; ty++) W.setOpenCeil(tx, ty); // 阳台 + 中庭：夜间露天
-        function dropCeil(cx, cz, w, h) {
+        // 1F 客房 / 功能房 / 出生房：取消 12m 顶
+        [[11, 23, 15, 26], [11, 28, 15, 31], [11, 33, 15, 35],
+         [40, 23, 44, 26], [40, 28, 44, 31], [40, 33, 44, 35],
+         [21, 39, 24, 42], [31, 39, 34, 42],
+         [20, 16, 23, 19], [31, 16, 34, 19],
+         [25, 39, 32, 44], [40, 39, 44, 43], [26, 16, 29, 19]
+        ].forEach(function (r) { openCeilRect(r[0], r[1], r[2], r[3]); });
+        // 1F 走廊 / 阳台连接段 / 楼梯间：取消 12m 顶（改 3.4m 吊顶；楼梯井敞开见天）
+        openCeilRect(17, 22, 17, 36); openCeilRect(38, 22, 38, 36);
+        openCeilRect(17, 37, 44, 37);
+        openCeilRect(17, 21, 19, 21); openCeilRect(36, 21, 38, 21);
+        openCeilRect(36, 38, 38, 43);
+        // 吊顶面片（共享材质，随关卡释放；不打 _ownMat）
+        W._l188ceilMat = W._l188ceilMat || new THREE.MeshLambertMaterial({
+          map: BR.Textures.get('hotel_ceil') });
+        W._levelMats = W._levelMats || [];
+        if (W._levelMats.indexOf(W._l188ceilMat) < 0) W._levelMats.push(W._l188ceilMat);
+        function dropCeil(cx, cz, w, h, y) {
           W.addChunkContent(Math.round(cx / T - 0.5), Math.round(cz / T - 0.5), function (group) {
-            var m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
-              new THREE.MeshLambertMaterial({ map: BR.Textures.get('hotel_ceil') }));
-            m._ownMat = true;
+            var m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), W._l188ceilMat);
             m.rotation.x = Math.PI / 2; // 朝下
-            m.position.set(cx, 3.4, cz);
+            m.position.set(cx, (y == null ? F1C : y), cz);
             W.reg(group, m);
           });
         }
         W._l188dropCeil = dropCeil;
+        // 1F 走廊吊顶（3.4m；与上方 2F 楼板底 3.42m 错开 2cm，防 z-fight）
+        dropCeil(52.5, 88.5, 2.7, 45, F1C);    // 西走廊
+        dropCeil(115.5, 88.5, 2.7, 45, F1C);   // 东走廊
+        dropCeil(93, 112.5, 84, 2.7, F1C);     // 南走廊
+        dropCeil(55.5, 64.5, 9, 3, F1C);       // 阳台西连接段
+        dropCeil(112.5, 64.5, 9, 3, F1C);      // 阳台东连接段
+        // 2F 吊顶（6.97m）
+        dropCeil(52.5, 88.5, 2.7, 45, F2C);    // 2F 西走廊
+        dropCeil(115.5, 88.5, 2.7, 45, F2C);   // 2F 东走廊
+        dropCeil(93, 112.5, 84, 2.7, F2C);     // 2F 南走廊
+        dropCeil(112.5, 115.5, 9, 3, F2C);     // 2F 楼梯间门厅
+        dropCeil(109.5, 123, 3, 12, F2C);      // 2F 坡道西平台
+        dropCeil(115.5, 123, 3, 12, F2C);      // 2F 坡道东平台
+        dropCeil(112.5, 130.5, 9, 3, F2C);      // 2F 坡道顶平台
       })();
 
       /* ---------- 门框：出生房 → 阳台的敞开门洞 ---------- */
@@ -441,12 +662,14 @@
         var p = poi1('return_door'); if (!p) return;
         var dx = px(p.tx), dz = pz(p.ty);
         W.addChunkContent(p.tx, p.ty, function (group) {
-          var z = (16 - 0.5) * T; // 北墙面 z=48（出生房北缘）
+          // v2.0 P5 修正：门装在北墙内侧真实墙面（z=48）上；
+          // 原先 z=46.5 把整扇门埋进了墙体内部（视觉不可见）。
+          var z = 16 * T; // 北墙内侧面 z=48（出生房北缘）
           var frame = box(1.5, 2.9, 0.18, 0x2e2018);
-          frame.position.set(dx, 1.45, z + 0.05);
+          frame.position.set(dx, 1.45, z - 0.09);
           W.reg(group, frame);
           var panel = box(1.2, 2.6, 0.1, 0x4a3a24);
-          panel.position.set(dx, 1.3, z + 0.12);
+          panel.position.set(dx, 1.3, z - 0.17);
           W.reg(group, panel);
           // "来时的路"标牌贴图同样按固定键缓存，避免区块重建时重复创建
           W._l188plateTex = W._l188plateTex || {};
@@ -466,11 +689,11 @@
           var sign = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.25),
             new THREE.MeshBasicMaterial({ map: tex }));
           sign._ownMat = true;
-          sign.position.set(dx, 2.95, z + 0.16);
+          sign.position.set(dx, 2.95, z - 0.2);
           W.reg(group, sign);
           W.addInteractable({
             id: 'return_door', kind: 'return_door', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-            meshes: [panel], pos: new THREE.Vector3(dx, 1.4, z + 0.6), radius: 2.8,
+            meshes: [panel], pos: new THREE.Vector3(dx, 1.4, z - 0.6), radius: 2.8,
             prompt: function () { return '🚪 来时的门（推门回去）'; },
             canUse: function () { return true; },
             use: function () {
@@ -520,6 +743,14 @@
         sill.position.set(84, 0.07, z);
         W.reg(group, sill);
       });
+      // v2.0 P5：栏杆碰撞（审计真问题：此前纯装饰可穿过）。
+      // 栏杆在 z=66（1F）；门洞 x 80..88 留空可通行；门厅柱另计。
+      W._l188colliders.push(
+        { x0: 60, x1: 79.9, z0: 65.85, z1: 66.15, floor: 0 },
+        { x0: 88.1, x1: 108, z0: 65.85, z1: 66.15, floor: 0 },
+        { x0: 79.8, x1: 80.2, z0: 65.8, z1: 66.2, floor: 0 },
+        { x0: 87.8, x1: 88.2, z0: 65.8, z1: 66.2, floor: 0 }
+      );
       // 北立面（阳台上方假立面，12m 高墙体感，参考图4 的高度压迫感）
       // v2.0 P5 修正：北窗窗面在 z=66.07，假立面原先 z=66.15 会盖住全部北窗；
       // 改为 65.93（窗后 14cm），北窗得以显现。
@@ -577,6 +808,17 @@
             rim.position.set(poolX + r[0], 0.25, poolZ + r[1]);
             W.reg(group, rim);
           });
+          // v2.0 P5：池沿碰撞（审计真问题：此前 0.5m 池沿纯装饰可穿过）
+          W._l188colliders.push(
+            { x0: poolX - pw / 2 - 0.25, x1: poolX + pw / 2 + 0.25,
+              z0: poolZ - pd / 2 - 0.25, z1: poolZ - pd / 2 + 0.25, floor: 0 },
+            { x0: poolX - pw / 2 - 0.25, x1: poolX + pw / 2 + 0.25,
+              z0: poolZ + pd / 2 - 0.25, z1: poolZ + pd / 2 + 0.25, floor: 0 },
+            { x0: poolX - pw / 2 - 0.25, x1: poolX - pw / 2 + 0.25,
+              z0: poolZ - pd / 2 - 0.25, z1: poolZ + pd / 2 + 0.25, floor: 0 },
+            { x0: poolX + pw / 2 - 0.25, x1: poolX + pw / 2 + 0.25,
+              z0: poolZ - pd / 2 - 0.25, z1: poolZ + pd / 2 + 0.25, floor: 0 }
+          );
           var wgeo = new THREE.PlaneGeometry(pw - 0.3, pd - 0.3, 8, 5);
           var water = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({
             color: 0x2e7f96, transparent: true, opacity: 0.88
@@ -1166,79 +1408,113 @@
         });
       })();
 
-      /* ---------- 楼梯间：1F 上楼 / 2F 下楼（关内淡入淡出换层，真连楼层） ---------- */
-      (function buildStairs() {
-        function stairSteps(group, cx, cz, up) {
-          for (var i = 0; i < 6; i++) {
-            var k = up ? i : 5 - i;
-            var st = box(1.6, 0.18, 0.5, 0x3a3230);
-            st.position.set(cx, 0.3 + k * 0.32, cz + (up ? -1.2 + i * 0.28 : 1.2 - i * 0.28));
-            W.reg(group, st);
+      /* ---------- 楼梯间：真实可行走的楼梯（v2.0 P5 真垂直二层） ----------
+       * 坡道 tile x=37（x 111..114），z 117→129（39..42 行）上行 0→3.57m；
+       * 行走面由 BR.Levels.L188.floorYAt 按 z 插值（player.js _stepVertical 吸附），
+       * 楼层闩在半高处翻转；视觉为 18 级台阶 + 弦杆 + 扶手 + 栏杆柱。
+       * 1F：南走廊 → 楼梯间门(37,38) → 门厅 → 坡道底（z=117）；
+       * 2F：坡道顶（z=129）→ 顶平台 → 东/西平台 → 2F 门厅 → 2F 门(37,38) → 2F 南走廊。
+       * 平台与坡道之间有护栏 + 碰撞体，防从平台踏空进坡道中段。 */
+      (function buildRealStair() {
+        var CX = 112.5;                 // 坡道中心 x（tile 37 中心）
+        var Z0 = 39 * T, Z1 = 43 * T;   // 117..129（行程 12m）
+        var slopeA = Math.atan2(F2Y, Z1 - Z0);
+        function rampY(z) { return l188StairY(z, Z0, Z1); }
+        W.addChunkContent(37, 40, function (group) {
+          // 台阶（InstancedMesh，18 级）
+          var N = 18, dummy = new THREE.Object3D(), im;
+          im = new THREE.InstancedMesh(GEO188.step, l188mat(W, 0x3a3230), N);
+          for (var i = 0; i < N; i++) {
+            var z = Z0 + (i + 0.5) * ((Z1 - Z0) / N);
+            dummy.position.set(CX, (i + 1) * (F2Y / N) - 0.11, z);
+            dummy.rotation.set(0, 0, 0);
+            dummy.updateMatrix();
+            im.setMatrixAt(i, dummy.matrix);
           }
-          var rail = box(0.08, 1.0, 2.4, 0x6a5a3a);
-          rail.position.set(cx + 0.9, 1.4, cz);
-          W.reg(group, rail);
-        }
-        var up = poi1('stair_up'); // (37,39)：1F 楼梯间大厅
-        if (up) {
-          W.addChunkContent(up.tx, up.ty, function (group) {
-            stairSteps(group, px(up.tx), pz(up.ty), true);
-            var mk = box(0.9, 0.5, 0.3, 0x8a7340);
-            mk.position.set(px(up.tx), 1.1, pz(up.ty) + 1.2);
-            W.reg(group, mk);
-            W.addInteractable({
-              id: 'stair_up', kind: 'stair_up', chunkKey: W.chunkKeyOf(up.tx, up.ty),
-              meshes: [mk], pos: new THREE.Vector3(px(up.tx), 1.2, pz(up.ty) + 0.6), radius: 2.6,
-              prompt: function () { return '🪜 爬上楼梯（二楼）'; },
-              canUse: function () { return true; },
-              use: function () {
-                BR.Audio.doorCreak();
-                stairFade(function () {
-                  W._l188onF2 = true;
-                  BR.Player.pos.set(px(37), 0, pz(52));
-                  BR.Player.vel.set(0, 0, 0);
-                  BR.Player.yaw = Math.PI;
-                  BR.UI.toast('二楼走廊。空气更冷了。', 2600);
-                });
-              }
-            });
+          im.instanceMatrix.needsUpdate = true;
+          regInstanced(group, im);
+          // 弦杆（两侧斜梁，防从侧面看到坡道下空洞）
+          [111.06, 113.94].forEach(function (sx) {
+            var str = box(0.18, 1.15, 12.7, 0x2e2620);
+            str.position.set(sx, F2Y / 2 - 0.3, (Z0 + Z1) / 2);
+            str.rotation.x = -slopeA;
+            W.reg(group, str);
+            // 扶手
+            var hr = box(0.09, 0.09, 12.7, 0x6a5a3a);
+            hr.position.set(sx < 112 ? 111.3 : 113.7, F2Y / 2 + 1.0, (Z0 + Z1) / 2);
+            hr.rotation.x = -slopeA;
+            W.reg(group, hr);
           });
-        }
-        // 2F 楼梯间大厅（meta.l188f2.stairDown = {tx:37, ty:52}）
-        W.addChunkContent(37, 52, function (group) {
-          stairSteps(group, px(37), pz(52), false);
-          var mk = box(0.9, 0.5, 0.3, 0x8a7340);
-          mk.position.set(px(37), 1.1, pz(52) - 1.2);
-          W.reg(group, mk);
-          W.addInteractable({
-            id: 'stair_down', kind: 'stair_down', chunkKey: W.chunkKeyOf(37, 52),
-            meshes: [mk], pos: new THREE.Vector3(px(37), 1.2, pz(52) - 0.6), radius: 2.6,
-            prompt: function () { return '🪜 走下楼梯（一楼）'; },
-            canUse: function () { return true; },
-            use: function () {
-              BR.Audio.doorCreak();
-              stairFade(function () {
-                W._l188onF2 = false;
-                BR.Player.pos.set(px(37), 0, pz(39));
-                BR.Player.vel.set(0, 0, 0);
-                BR.Player.yaw = 0;
-                BR.UI.toast('一楼楼梯间。', 2200);
-              });
+          // 栏杆柱（InstancedMesh，两侧各 9）
+          var bn = 18;
+          var bim = new THREE.InstancedMesh(GEO188.baluster, l188mat(W, 0x6a5a3a), bn);
+          var bi = 0;
+          [111.3, 113.7].forEach(function (bx) {
+            for (var k = 0; k < 9; k++) {
+              var bz = Z0 + 1.0 + k * 1.25;
+              dummy.position.set(bx, rampY(bz) + 0.5, bz);
+              dummy.rotation.set(0, 0, 0);
+              dummy.updateMatrix();
+              bim.setMatrixAt(bi++, dummy.matrix);
             }
           });
-          // v2.0 P5：通往三楼的门——被水泥封死（"外观多层/实际两层"的楼层封锁解释）
-          var sd = box(0.16, 2.6, 1.3, 0x3a3f44);
-          sd.position.set(39 * T - 0.08, 1.3, pz(52));
+          bim.instanceMatrix.needsUpdate = true;
+          regInstanced(group, bim);
+          // 底部起步柱
+          [111.3, 113.7].forEach(function (nx) {
+            var np = box(0.15, 1.15, 0.15, 0x4a3a24);
+            np.position.set(nx, 0.57, Z0 + 0.35);
+            W.reg(group, np);
+          });
+          // 2F 平台护栏（东西平台临坡道边，x=111/114，z 117..129）
+          [111.0, 114.0].forEach(function (rx) {
+            var pim = new THREE.InstancedMesh(GEO188.baluster, l188mat(W, 0x6a5a3a), 9);
+            for (var q = 0; q < 9; q++) {
+              dummy.position.set(rx, F2Y + 0.5, Z0 + 0.6 + q * 1.275);
+              dummy.rotation.set(0, 0, 0);
+              dummy.updateMatrix();
+              pim.setMatrixAt(q, dummy.matrix);
+            }
+            pim.instanceMatrix.needsUpdate = true;
+            regInstanced(group, pim);
+            var tr = box(0.1, 0.1, 11.6, 0x6a5a3a);
+            tr.position.set(rx, F2Y + 1.02, (Z0 + Z1) / 2);
+            W.reg(group, tr);
+            var mr = box(0.07, 0.07, 11.6, 0x5a4a30);
+            mr.position.set(rx, F2Y + 0.55, (Z0 + Z1) / 2);
+            W.reg(group, mr);
+          });
+          // 楼梯间灯（发光面 + 真实点光源）
+          var lampM = glowPlane(0.55, 0.4, 'win_warm');
+          lampM.rotation.x = Math.PI / 2;
+          lampM.position.set(CX, F2Y + 2.6, (Z0 + Z1) / 2);
+          W.reg(group, lampM);
+          var PL = new THREE.PointLight(0xffd9a0, 0.7, 16, 2);
+          PL.position.set(CX, F2Y + 2.4, (Z0 + Z1) / 2);
+          W.reg(group, PL);
+        });
+        // 碰撞体：1F 弦杆（防从侧面卡进坡道）+ 2F 平台护栏（防踏空进坡道中段）
+        W._l188colliders.push(
+          { x0: 110.85, x1: 111.15, z0: 116.8, z1: 129.2, floor: 0 },
+          { x0: 113.85, x1: 114.15, z0: 116.8, z1: 129.2, floor: 0 },
+          { x0: 110.85, x1: 111.15, z0: 116.8, z1: 129.2, floor: 1 },
+          { x0: 113.85, x1: 114.15, z0: 116.8, z1: 129.2, floor: 1 }
+        );
+        // 通往三楼的门——被水泥封死（顶平台北墙；"外观多层/实际两层"的楼层封锁解释）
+        W.addChunkContent(37, 43, function (group) {
+          var wz = 44 * T; // 北墙内侧面 z=132
+          var sd = box(1.3, 2.6, 0.16, 0x3a3f44);
+          sd.position.set(112.5, F2Y + 1.3, wz - 0.08);
           W.reg(group, sd);
-          [0.7, 1.9].forEach(function (py) { // 封门木条
-            var plank = box(0.1, 0.22, 1.5, 0x4a3a24);
-            plank.position.set(39 * T - 0.2, py, pz(52));
-            plank.rotation.x = 0.35;
+          [F2Y + 0.7, F2Y + 1.9].forEach(function (py) { // 封门木条
+            var plank = box(1.5, 0.22, 0.1, 0x4a3a24);
+            plank.position.set(112.5, py, wz - 0.2);
+            plank.rotation.z = 0.35;
             W.reg(group, plank);
           });
           W.addInteractable({
-            id: 'sealed_3f', kind: 'sealed_door', chunkKey: W.chunkKeyOf(37, 52),
-            meshes: [sd], pos: new THREE.Vector3(39 * T - 1.4, 1.4, pz(52)), radius: 2.6,
+            id: 'sealed_3f', kind: 'sealed_door', chunkKey: W.chunkKeyOf(37, 43),
+            meshes: [sd], pos: new THREE.Vector3(112.5, F2Y + 1.4, wz - 1.4), radius: 2.6,
             prompt: function () { return '🚫 通往三楼的门（封死了）'; },
             canUse: function () { return true; },
             use: function () {
@@ -1294,55 +1570,103 @@
         '209': { x: 97.5, z: 117.12, ry: Math.PI },
         '210': { x: 67.5, z: 59.88, ry: 0 },
         '211': { x: 103.5, z: 59.88, ry: 0 },
-        '301': { x: 49.5, z: 146.88, ry: Math.PI },
-        '302': { x: 70.5, z: 146.88, ry: Math.PI },
-        '303': { x: 91.5, z: 146.88, ry: Math.PI },
-        '304': { x: 49.5, z: 156.12, ry: 0 },
-        '305': { x: 70.5, z: 156.12, ry: 0 },
-        '306': { x: 91.5, z: 156.12, ry: 0 }
+        '301': { x: 47.88, z: 73.5, ry: -Math.PI / 2 },   // 在 201 正上方
+        '302': { x: 47.88, z: 91.5, ry: -Math.PI / 2 },   // 在 202 正上方
+        '303': { x: 120.12, z: 73.5, ry: Math.PI / 2 },   // 在 205 正上方
+        '304': { x: 120.12, z: 91.5, ry: Math.PI / 2 },   // 在 206 正上方
+        '305': { x: 67.5, z: 117.12, ry: Math.PI },       // 在 208 正上方
+        '306': { x: 97.5, z: 117.12, ry: Math.PI }        // 在 209 正上方
       };
       (function buildRooms() {
         // 客房木地板（v2.0 P5：不再沿用走廊地毯材质；纹理复用，repeat 统一）
         var woodT = BR.Textures.get('l188_woodfloor');
         woodT.wrapS = woodT.wrapT = THREE.RepeatWrapping;
         woodT.repeat.set(4, 3);
-        function buildOneRoom(x0, y0, w, h, num, locked, ctx, cty) {
+        // 木地板材质本关共享（随 _levelMats 释放；不再每房一个）
+        W._l188woodMat = W._l188woodMat || new THREE.MeshLambertMaterial({ map: woodT });
+        if (W._levelMats.indexOf(W._l188woodMat) < 0) W._levelMats.push(W._l188woodMat);
+        // baseY：1F=0，2F=F2Y（地板/家具/吊顶/房内窗整体抬升）
+        function buildOneRoom(x0, y0, w, h, num, locked, ctx, cty, baseY) {
+          baseY = baseY || 0;
           var cx = (x0 + w / 2) * T, cz = (y0 + h / 2) * T;
           var layout = new BR.RNG(BR.hashSeed('room:' + num)).pick(['std', 'twin', 'desk']);
-          W._l188dropCeil(cx, cz, w * T - 0.3, h * T - 0.3);
+          W._l188dropCeil(cx, cz, w * T - 0.3, h * T - 0.3, baseY + F1C);
           W.addChunkContent(ctx, cty, function (group) {
+            // baseY 感知的放盒辅助
+            function B(bw, bh, bd, color, bx, by, bz) {
+              var m = box(bw, bh, bd, color);
+              m.position.set(bx, baseY + by, bz);
+              W.reg(group, m);
+              return m;
+            }
             var fl = new THREE.Mesh(new THREE.PlaneGeometry(w * T - 0.4, h * T - 0.4),
-              new THREE.MeshLambertMaterial({ map: woodT }));
-            fl._ownMat = true;
+              W._l188woodMat);
             fl.rotation.x = -Math.PI / 2;
-            fl.position.set(cx, 0.03, cz);
+            fl.position.set(cx, baseY + 0.03, cz);
             W.reg(group, fl);
+            var rug = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.6),
+              l188mat(W, 0x4a3430)); // 地毯
+            rug.rotation.x = -Math.PI / 2;
+            rug.position.set(cx, baseY + 0.045, cz + 0.4);
+            W.reg(group, rug);
             function bed(bx, bz, bw2) {
-              var b = box(bw2, 0.4, 1.9, 0x4a3a28); b.position.set(bx, 0.2, bz); W.reg(group, b);
-              var m2 = box(bw2 - 0.1, 0.18, 1.8, 0x8a7a5c); m2.position.set(bx, 0.48, bz); W.reg(group, m2);
-              var pil = box(bw2 - 0.3, 0.14, 0.4, 0xb0a890); pil.position.set(bx, 0.6, bz - 0.6); W.reg(group, pil);
+              B(bw2, 0.4, 1.9, 0x4a3a28, bx, 0.2, bz);             // 床架
+              B(bw2 - 0.1, 0.18, 1.8, 0x8a7a5c, bx, 0.48, bz);     // 床垫
+              B(bw2 - 0.3, 0.14, 0.4, 0xb0a890, bx, 0.6, bz - 0.6); // 枕头
+              B(bw2, 0.55, 0.12, 0x3a2c1c, bx, 0.55, bz - 1.0);    // 床头板
             }
-            if (layout === 'std') bed(cx - 1.2, cz, 1.6);
-            else if (layout === 'twin') { bed(cx - 2.0, cz, 1.1); bed(cx + 0.4, cz, 1.1); }
-            else {
+            function nightstand(bx, bz, lit) {                    // 床头柜 + 台灯
+              B(0.5, 0.55, 0.45, 0x3a2c1c, bx, 0.275, bz);
+              B(0.4, 0.04, 0.35, 0x2a2018, bx, 0.57, bz);
+              if (lit) {
+                B(0.1, 0.3, 0.1, 0x1c1c20, bx, 0.74, bz);
+                var shade = glowPlane(0.26, 0.2, 'win_warm');
+                shade.position.set(bx, baseY + 0.98, bz);
+                W.reg(group, shade);
+              }
+            }
+            function luggage(bx, bz) {                            // 行李箱 + 旅行袋
+              B(0.72, 0.28, 0.45, 0x5a2c1c, bx, 0.14, bz);
+              B(0.6, 0.1, 0.36, 0x3a1c12, bx, 0.33, bz);
+              B(0.5, 0.35, 0.3, 0x2c3a4a, bx + 0.8, 0.175, bz + 0.1);
+            }
+            // v2.0 P5：客房按真实使用逻辑布置（床+床头柜+灯+衣柜+行李）
+            if (layout === 'std') {
+              bed(cx - 1.2, cz, 1.6);
+              nightstand(cx - 2.35, cz - 0.9, true);
+              nightstand(cx - 0.05, cz - 0.9, false);
+              luggage(cx + 1.8, cz + 1.2);
+            } else if (layout === 'twin') {
+              bed(cx - 2.0, cz, 1.1); bed(cx + 0.4, cz, 1.1);
+              nightstand(cx - 0.8, cz - 0.9, true);
+              luggage(cx + 1.9, cz + 1.2);
+            } else {
               bed(cx - 1.6, cz + 0.8, 1.4);
-              var dk = box(1.4, 0.08, 0.7, 0x4a3a24); dk.position.set(cx + 1.6, 0.75, cz - 1.0); W.reg(group, dk);
+              nightstand(cx - 2.75, cz - 0.1, true);
+              B(1.4, 0.08, 0.7, 0x4a3a24, cx + 1.6, 0.75, cz - 1.0); // 书桌
               [-0.6, 0.6].forEach(function (o) {
-                var leg = box(0.08, 0.75, 0.08, 0x3a2c1c);
-                leg.position.set(cx + 1.6 + o, 0.37, cz - 1.0); W.reg(group, leg);
+                B(0.08, 0.75, 0.08, 0x3a2c1c, cx + 1.6 + o, 0.37, cz - 1.0);
               });
-              var ch = box(0.45, 0.5, 0.45, 0x2e2620); ch.position.set(cx + 1.6, 0.25, cz - 0.2); W.reg(group, ch);
+              B(0.45, 0.5, 0.45, 0x2e2620, cx + 1.6, 0.25, cz - 0.2); // 椅
+              var dlamp = glowPlane(0.3, 0.24, 'win_warm');           // 桌灯
+              dlamp.position.set(cx + 1.3, baseY + 1.0, cz - 1.0);
+              W.reg(group, dlamp);
+              luggage(cx - 0.2, cz + 1.6);
             }
+            var cl = glowPlane(0.5, 0.35, 'win_warm'); // 顶灯（吊顶下）
+            cl.rotation.x = Math.PI / 2;
+            cl.position.set(cx, baseY + F1C - 0.12, cz);
+            W.reg(group, cl);
             // 衣柜（可交互；确定性掉落；一次性，W.state.picked 持久化）
             var cab = box(1.1, 2.2, 0.6, 0x3a2c1c);
-            cab.position.set(cx + w * T / 2 - 1.0, 1.1, cz - h * T / 2 + 0.8);
+            cab.position.set(cx + w * T / 2 - 1.0, baseY + 1.1, cz - h * T / 2 + 0.8);
             W.reg(group, cab);
             var cabId = 'cabinet_' + num;
             if (W.state.picked.indexOf(cabId) < 0 && !locked) {
               var loot = new BR.RNG(BR.hashSeed('cab:' + num)).pick(['almond', 'bandage', 'almond', 'empty']);
               W.addInteractable({
                 id: cabId, kind: 'cabinet', chunkKey: W.chunkKeyOf(ctx, cty),
-                meshes: [cab], pos: new THREE.Vector3(cab.position.x, 1.2, cab.position.z + 1.0), radius: 2.6,
+                meshes: [cab], pos: new THREE.Vector3(cab.position.x, baseY + 1.2, cab.position.z + 1.0), radius: 2.6,
                 prompt: function () { return '🗄 打开衣柜'; },
                 canUse: function () { return W.state.picked.indexOf(cabId) < 0; },
                 use: function () {
@@ -1365,7 +1689,7 @@
             var rw = ROOM_WIN[num];
             if (rw) {
               var wg = new THREE.Group();
-              wg.position.set(rw.x, 1.8, rw.z);
+              wg.position.set(rw.x, baseY + 1.8, rw.z);
               wg.rotation.y = rw.ry;
               var wp = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.7),
                 new THREE.MeshBasicMaterial({ map: BR.Textures.get(wtx) }));
@@ -1393,25 +1717,38 @@
           var d = p.data || {};
           buildOneRoom(d.x0, d.y0, d.w, d.h, d.num, d.locked, p.tx, p.ty);
         });
-        (f2.rooms || []).forEach(function (fr) { // 2F 客房（tile=2 区）
+        (f2.rooms || []).forEach(function (fr) { // 2F 客房（f2t 层，与 1F 同 footprint）
           buildOneRoom(fr.x, fr.y, fr.w, fr.h, fr.num, fr.locked,
-            Math.round(fr.x + (fr.w - 1) / 2), Math.round(fr.y + (fr.h - 1) / 2));
+            Math.round(fr.x + (fr.w - 1) / 2), Math.round(fr.y + (fr.h - 1) / 2), F2Y);
         });
       })();
 
-      /* ---------- 走廊装扮：灯具 / 转角植物 / 长椅 ---------- */
+      /* ---------- 走廊装扮：灯具 / 转角植物 / 长椅（v2.0 P5：适配 3.4m 吊顶 + 2F 灯具） ---------- */
       (function dressCorridors() {
-        function lampAt(tx, ty) {
+        function lampAt(tx, ty, y) {
           W.addChunkContent(tx, ty, function (group) {
             var m = basicPlane(0.7, 0.35, 'win_warm');
             m.rotation.x = Math.PI / 2;
-            m.position.set(px(tx), 3.05, pz(ty));
+            m.position.set(px(tx), y, pz(ty));
             W.reg(group, m);
           });
         }
         var ci;
-        for (ci = 22; ci <= 35; ci += 4) { lampAt(17, ci); lampAt(38, ci); }
-        for (ci = 18; ci <= 44; ci += 5) { lampAt(ci, 37); }
+        // 1F 走廊灯（吊顶 3.4m 下）
+        for (ci = 22; ci <= 35; ci += 4) { lampAt(17, ci, F1C - 0.1); lampAt(38, ci, F1C - 0.1); }
+        for (ci = 18; ci <= 44; ci += 5) { lampAt(ci, 37, F1C - 0.1); }
+        // 2F 走廊灯（吊顶 6.97m 下）
+        for (ci = 22; ci <= 35; ci += 4) { lampAt(17, ci, F2C - 0.12); lampAt(38, ci, F2C - 0.12); }
+        for (ci = 18; ci <= 44; ci += 5) { lampAt(ci, 37, F2C - 0.12); }
+        // 内容点光源：1F 走廊 ×3 + 2F 走廊 ×2（引擎灯具面板已随 12m 顶取消，此处补真实光源）
+        W.addChunkContent(27, 30, function (group) {
+          [[52.5, 2.9, 88.5], [115.5, 2.9, 88.5], [93, 2.9, 112.5],
+           [93, F2Y + 2.5, 112.5], [52.5, F2Y + 2.5, 88.5]].forEach(function (lp) {
+            var L = new THREE.PointLight(0xffd9a0, 0.65, 16, 2);
+            L.position.set(lp[0], lp[1], lp[2]);
+            W.reg(group, L);
+          });
+        });
         [[17, 36], [38, 36], [17, 22], [38, 22]].forEach(function (c) { // 转角植物
           W.addChunkContent(c[0], c[1], function (group) {
             var potM = new THREE.MeshLambertMaterial({ color: 0x5a3a28 });
@@ -1438,6 +1775,48 @@
               leg.position.set(px(c[0]) + o, 0.25, pz(c[1]) - 0.9);
               W.reg(group, leg);
             });
+          });
+        });
+      })();
+
+      /* ---------- 2F 楼板（v2.0 P5 真垂直二层） ----------
+       * 分区块 InstancedMesh（每区块 1 个绘制调用；坡道区不铺板，台阶即行走面）；
+       * 2F 走廊另铺地毯面片（1F 走廊是引擎地毯，2F 需自建）。 */
+      (function buildSlab() {
+        for (var ccx = 1; ccx <= 5; ccx++)
+          for (var ccy = 2; ccy <= 5; ccy++) {
+            (function (qx, qy) {
+              W.addChunkContent(qx * 8, qy * 8, function (group) {
+                var mats = [];
+                var dummy = new THREE.Object3D();
+                for (var ty = qy * 8; ty < qy * 8 + 8; ty++)
+                  for (var tx = qx * 8; tx < qx * 8 + 8; tx++) {
+                    if (l188T2(W, tx, ty) !== 1) continue;
+                    if (tx === W._l188stair.tx && ty >= W._l188stair.ty0 &&
+                        ty <= W._l188stair.ty1) continue; // 坡道区不铺板
+                    dummy.position.set(px(tx), F2Y - 0.075, pz(ty));
+                    dummy.rotation.set(0, 0, 0);
+                    dummy.updateMatrix();
+                    mats.push(dummy.matrix.clone());
+                  }
+                if (!mats.length) return;
+                var im = new THREE.InstancedMesh(GEO188.slab, l188mat(W, 0x8a8378), mats.length);
+                for (var i = 0; i < mats.length; i++) im.setMatrixAt(i, mats[i]);
+                im.instanceMatrix.needsUpdate = true;
+                regInstanced(group, im);
+              });
+            })(ccx, ccy);
+          }
+        // 2F 走廊地毯（3.59m，楼板顶 3.57m 上 2cm）
+        W.addChunkContent(27, 30, function (group) {
+          var cm = new THREE.MeshLambertMaterial({ map: BR.Textures.get('hotel_floor') });
+          W._levelMats.push(cm);
+          [[52.5, 88.5, 2.7, 45], [115.5, 88.5, 2.7, 45], [93, 112.5, 84, 2.7]
+          ].forEach(function (r) {
+            var c = new THREE.Mesh(new THREE.PlaneGeometry(r[2], r[3]), cm);
+            c.rotation.x = -Math.PI / 2;
+            c.position.set(r[0], F2Y + 0.02, r[1]);
+            W.reg(group, c);
           });
         });
       })();
@@ -1578,6 +1957,39 @@
         if (from === 'L188') from = 'L0';
         W.state.l188_from = from;
       } catch (e) { W.state.l188_from = 'L0'; }
+      /* v2.0 P5 真垂直二层：恢复楼层 + 非法位置安全回落。
+       * 存档不存 pos.y（读档一律从地面开始），楼层走 W.state.l188floor；
+       * 老存档（远端 tile=2 假二层坐标/墙内/虚空）或楼层与位置矛盾时 → 出生点。 */
+      (function restoreFloor() {
+        var P = BR.Player;
+        var fl = (W.state.l188floor === 1) ? 1 : 0;
+        var ptx = Math.floor(P.pos.x / T), pty = Math.floor(P.pos.z / T);
+        var st = W._l188stair || { tx: 37, ty0: 39, ty1: 42 };
+        var onRamp = (ptx === st.tx && pty >= st.ty0 && pty <= st.ty1);
+        var onF2 = l188T2(W, ptx, pty) === 1 || onRamp;
+        if (fl === 1 && !onF2) fl = 0; // 楼下开局：强制回 1F
+        W._l188floor = fl; W._l188onF2 = !!fl;
+        if (onRamp) {
+          // 坡道上读档：按楼层吸附到最近端点（坡道中段无安全站立语义）
+          if (fl === 1) P.pos.set(px(st.tx), 0, (st.ty1 + 1) * T + 1.5); // 顶平台 (37,43)
+          else P.pos.set(px(st.tx), 0, (st.ty0 - 2) * T + 1.5);           // 南走廊 (37,37)
+          P.vel.set(0, 0, 0);
+        } else if (fl === 0) {
+          var bad = true;
+          try { bad = W.blocked(ptx, pty); } catch (e) { bad = true; }
+          if (bad) {
+            var sp = null, pois = (W.map && W.map.pois) || [];
+            for (var i = 0; i < pois.length; i++)
+              if (pois[i].type === 'spawn') { sp = pois[i]; break; }
+            if (sp) {
+              P.pos.set(px(sp.tx), 0, pz(sp.ty));
+              P.vel.set(0, 0, 0);
+              P.yaw = (sp.data && sp.data.yaw) || 0;
+            }
+          }
+        }
+        W.state.l188floor = W._l188floor;
+      })();
       W._l188t = 0; W._l188sndT = 0; W._l188flipT = 1;
       BR.Audio.setAmbient('L188');
       if (BR.UI && W.objective) BR.UI.setObjective(W.objective);
@@ -1722,17 +2134,27 @@
     }
   };
 
-  // 遮挡计数：玩家→窗口连线穿过几格墙（tile=0；tile=2 视为可通过）
+  // 遮挡计数：玩家→窗口连线穿过几格墙（v2.0 P5：按玩家所在楼层计墙）
   function occlWalls(W, ax, az, bx, bz) {
     var dx = bx - ax, dz = bz - az;
     var dist = Math.sqrt(dx * dx + dz * dz);
     var steps = Math.max(1, Math.floor(dist / 1.5));
+    var onF2 = (W._l188floor | 0) === 1 && !!W._l188f2tiles;
     var n = 0;
     for (var i = 1; i < steps; i++) {
       var tx = Math.floor((ax + dx * i / steps) / T);
       var ty = Math.floor((az + dz * i / steps) / T);
-      if (W.tile(tx, ty) === 0) { n++; if (n >= 3) break; }
+      var blocked = W.tile(tx, ty) === 0;
+      if (onF2 && l188T2(W, tx, ty) === 0) blocked = true;
+      if (blocked) { n++; if (n >= 3) break; }
     }
     return n;
   }
+
+  // 冒烟测试缝（纯函数，无副作用；node 冒烟脚本直接调用）
+  BR.Levels.L188.impl = {
+    F1C: F1C, F2Y: F2Y, F2C: F2C,
+    stairY: l188StairY,
+    tileBlocked: l188TileBlocked
+  };
 })();
