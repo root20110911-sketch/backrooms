@@ -369,6 +369,22 @@
         splitBox(x0, cut2 + 1, x1, y1, out);
       }
     }
+    // 立面类型防扎堆：候选类型若已有 ≥2 个近邻（中心曼哈顿 <9 tile）同类则换
+    // facade: 0 横条窗 / 1 竖条窗 / 2 点窗 / 3 清水混凝土无窗面
+    var placedFace = [];
+    function pickFacade(pc) {
+      var cx = (pc[0] + pc[2]) / 2, cy = (pc[1] + pc[3]) / 2;
+      var order = rng.shuffle([0, 1, 2, 3]);
+      for (var i = 0; i < order.length; i++) {
+        var same = 0;
+        for (var j = 0; j < placedFace.length; j++) {
+          var q = placedFace[j];
+          if (q.f === order[i] && Math.abs(q.x - cx) + Math.abs(q.y - cy) < 9) same++;
+        }
+        if (same < 2) return order[i];
+      }
+      return order[0];
+    }
     for (var ci2 = 0; ci2 < comps.length; ci2++) {
       var comp2 = comps[ci2];
       var x0 = 99, y0 = 99, x1 = -1, y1 = -1;
@@ -378,7 +394,9 @@
         if (tx2 > x1) x1 = tx2; if (ty2 > y1) y1 = ty2;
       }
       if (comp2.length < 6) {
-        buildings.push({ id: bid++, x0: x0, y0: y0, x1: x1, y1: y1, h: 1.2, style: 1, setback: 0, stub: true });
+        buildings.push({ id: bid++, x0: x0, y0: y0, x1: x1, y1: y1, h: 1.2, floors: 1,
+          style: 1, facade: 3, groundSealed: false, setback: 0, podium: 0,
+          wings: null, court: null, winMis: 0, enterable: null, stub: true });
         continue;
       }
       var pieces = [];
@@ -386,17 +404,45 @@
       for (var pi = 0; pi < pieces.length; pi++) {
         var pc = pieces[pi], pw = pc[2] - pc[0] + 1, ph = pc[3] - pc[1] + 1;
         if (pw < 2 || ph < 2) continue;
-        var d = districtOf((pc[1] + pc[3]) / 2), hh;
-        if (d === 0) hh = 16 + rng.int(0, 22);
-        else if (d === 1) hh = 8 + rng.int(0, 16);
-        else hh = 5 + rng.int(0, 9);
+        var d = districtOf((pc[1] + pc[3]) / 2), floors;
+        if (d === 0) floors = 8 + rng.int(0, 12);        // 北：8~20 层
+        else if (d === 1) floors = 5 + rng.int(0, 9);    // 中：5~14 层
+        else floors = 3 + rng.int(0, 6);                 // 南：3~9 层
         var style = rng.next() < 0.3 ? 0 : (rng.next() < 0.62 ? 1 : 2);
-        buildings.push({
+        var b = {
           id: bid++, x0: pc[0], y0: pc[1], x1: pc[2], y1: pc[3],
-          h: hh, style: style,
-          setback: (hh >= 16 && rng.chance(0.55)) ? 1 : 0,
+          floors: floors, h: +(floors * 3.4).toFixed(1), style: style,
+          facade: pickFacade(pc), groundSealed: rng.chance(0.7),
+          setback: 0, podium: 0, wings: null, court: null,
           winMis: 0, enterable: null
-        });
+        };
+        // 体量变体（互斥）：L 形 / 回字形 / 转角裙楼 / 退台
+        var roll = rng.next();
+        if (pw >= 6 && ph >= 6 && roll < 0.16) {
+          // L 形：底带 + 侧柱，内角庭院 ≥3×3
+          var chL = 2 + rng.int(0, ph - 5), cwL = 2 + rng.int(0, pw - 5);
+          b.wings = [
+            [pc[0], pc[1], pc[2], pc[1] + chL - 1],
+            [pc[0], pc[1] + chL, pc[0] + cwL - 1, pc[3]]
+          ];
+          b.court = [pc[0] + cwL, pc[1] + chL, pc[2], pc[3]];
+        } else if (pw >= 7 && ph >= 7 && roll < 0.26) {
+          // 回字形：四翼围合，内院 ≥3×3
+          var m2 = 2;
+          b.wings = [
+            [pc[0], pc[1], pc[2], pc[1] + m2 - 1],
+            [pc[0], pc[3] - m2 + 1, pc[2], pc[3]],
+            [pc[0], pc[1] + m2, pc[0] + m2 - 1, pc[3] - m2],
+            [pc[2] - m2 + 1, pc[1] + m2, pc[2], pc[3] - m2]
+          ];
+          b.court = [pc[0] + m2, pc[1] + m2, pc[2] - m2, pc[3] - m2];
+        } else if (floors >= 6 && Math.min(pw, ph) >= 4 && roll < 0.42) {
+          b.podium = 1; // 转角裙楼：2 层裙楼（封堵底层）+ 内收塔楼
+        } else if (floors >= 6 && rng.chance(0.55)) {
+          b.setback = 1; // 退台式高楼
+        }
+        placedFace.push({ x: (pc[0] + pc[2]) / 2, y: (pc[1] + pc[3]) / 2, f: b.facade });
+        buildings.push(b);
       }
     }
     // 窗户错位异常：挑 2 栋散布的高楼（立面窗户行与楼层错位，可观察）
@@ -409,8 +455,35 @@
             Math.abs((bb.y0 + bb.y1) / 2 - misIdx[mi][1]) < 0.01) { bb.winMis = 1; break; }
       }
     }
+    // 兜底（确定性）：高度极差 ≥15m；退台(h≥16) ≥1 栋
+    (function guardVariety() {
+      var solid = buildings.filter(function (b) { return !b.stub; });
+      var hs = solid.map(function (b) { return b.h; });
+      if (Math.max.apply(null, hs) - Math.min.apply(null, hs) < 15) {
+        var _t = null, _l = null, i;
+        for (i = 0; i < solid.length; i++) {
+          if (!_t || solid[i].h > _t.h) _t = solid[i];
+          if (!_l || solid[i].h < _l.h) _l = solid[i];
+        }
+        if (_t && _t !== _l) {
+          _t.floors = 20; _t.h = 68;
+          _t.wings = null; _t.court = null; _t.podium = 0; _t.setback = 1;
+        }
+        if (_l && _l !== _t) { _l.floors = 3; _l.h = 10.2; }
+      }
+      var hasSet = solid.some(function (b) { return b.setback && b.h >= 16; });
+      if (!hasSet) {
+        var _c = null;
+        for (var j = 0; j < solid.length; j++) if (!_c || solid[j].floors > _c.floors) _c = solid[j];
+        if (_c) {
+          if (_c.floors < 6) { _c.floors = 8; _c.h = 27.2; }
+          _c.setback = 1; _c.podium = 0; _c.wings = null; _c.court = null;
+        }
+      }
+    })();
     map.meta.l11 = {
       buildings: buildings,
+      roads: ROADS, // 主/次干道/巷道（含宽度），供 lv 画车道线
       longAlley: [[52, 4], [52, 24], [50, 24], [50, 50]],
       ring: { x0: 33, y0: 12, x1: 39, y1: 18 },
       junction: { x: 19, y: 32 }
@@ -519,7 +592,7 @@
     var noPOI = {};
     var enterables = [];
     var candB = buildings.filter(function (b) {
-      return !b.stub && !b.winMis && (b.x1 - b.x0 + 1) >= 4 && (b.y1 - b.y0 + 1) >= 4;
+      return !b.stub && !b.winMis && !b.wings && (b.x1 - b.x0 + 1) >= 4 && (b.y1 - b.y0 + 1) >= 4;
     });
     var bPts = farthest(candB.map(function (b) { return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]; }), 6, 9);
     // 顺序打乱多试几栋，保证 2~3 栋可进入
@@ -548,11 +621,8 @@
         if (ok) { side = s; break; }
       }
       if (!side) continue;
-      // 内部掏空（内缩 1 圈）
-      var ix0 = eb.x0 + 1, iy0 = eb.y0 + 1, ix1 = eb.x1 - 1, iy1 = eb.y1 - 1;
-      for (var iy3 = iy0; iy3 <= iy1; iy3++)
-        for (var ix3 = ix0; ix3 <= ix1; ix3++) { setT(ix3, iy3, 1); noPOI[T(ix3, iy3)] = 1; }
-      // 门洞：沿临街面找"外侧是地板且内侧连通内部"的位置（中点优先）
+      // 门洞：沿临街面找"外侧是地板"的位置（中点优先）。
+      // 先找门、后掏空：找不到合法门位整栋放弃，避免留下无门的孤立室内地板破坏连通。
       var dtx = -1, dty = -1;
       if (side.dx === 0) {
         var dyOut = side.dz < 0 ? eb.y0 : eb.y1, midX = (eb.x0 + eb.x1) >> 1, oxs = [];
@@ -568,15 +638,21 @@
           if (tile(dxOut + side.dx, oys[qj]) === 1) { dtx = dxOut; dty = oys[qj]; break; }
       }
       if (dtx < 0) continue; // 找不到合法门位：放弃这栋
+      // 内部掏空（内缩 1 圈）
+      var ix0 = eb.x0 + 1, iy0 = eb.y0 + 1, ix1 = eb.x1 - 1, iy1 = eb.y1 - 1;
+      for (var iy3 = iy0; iy3 <= iy1; iy3++)
+        for (var ix3 = ix0; ix3 <= ix1; ix3++) { setT(ix3, iy3, 1); noPOI[T(ix3, iy3)] = 1; }
       setT(dtx, dty, 1);
-      eb.enterable = { ix0: ix0, iy0: iy0, ix1: ix1, iy1: iy1, doorTx: dtx, doorTy: dty, outDx: side.dx, outDz: side.dz };
+      eb.enterable = { ix0: ix0, iy0: iy0, ix1: ix1, iy1: iy1, doorTx: dtx, doorTy: dty, outDx: side.dx, outDz: side.dz,
+        // 第二栋可进入建筑若够大则为停车场入口（宽门 + 室内残骸），其余为门厅
+        kind: (enterables.length === 1 && (ix1 - ix0 + 1) >= 4 && (iy1 - iy0 + 1) >= 3) ? 'garage' : 'lobby' };
       enterables.push(eb);
       addPOI('bld_door', dtx, dty, { bld: eb.id });
     }
 
-    // 异常门 ×2：临街立面（门后短走廊/砖墙，由 lv 表现）
+    // 异常门 ×2：临街立面（门后短走廊/砖墙，由 lv 表现；翼形建筑包络边不全是实墙面，排除）
     var anB = buildings.filter(function (b) {
-      return !b.stub && !b.enterable && (b.x1 - b.x0 + 1) >= 3 && (b.y1 - b.y0 + 1) >= 3;
+      return !b.stub && !b.wings && !b.enterable && (b.x1 - b.x0 + 1) >= 3 && (b.y1 - b.y0 + 1) >= 3;
     });
     var anPts = farthest(anB.map(function (b) { return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]; }), 4, 12);
     var anPlaced = 0;
@@ -603,8 +679,8 @@
         }
       }
     }
-    // 上不去的楼梯 ×1：多试几栋临街大楼
-    var stB = rng.shuffle(buildings.filter(function (b) { return !b.stub && !b.enterable && b.h >= 10 && !b.anomalyDoor; }));
+    // 上不去的楼梯 ×1：多试几栋临街大楼（翼形建筑排除，楼梯要正对实墙面）
+    var stB = rng.shuffle(buildings.filter(function (b) { return !b.stub && !b.wings && !b.enterable && b.h >= 10 && !b.anomalyDoor; }));
     var stPlaced = false;
     for (var sti = 0; sti < stB.length && !stPlaced; sti++) {
       var sb = stB[sti];

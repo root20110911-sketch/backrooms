@@ -26,12 +26,13 @@ chalk: { maxStack: 5, maxMarks: 200}, // 标记粉笔：每根 1 次标记
 oxygen_tank: { oxygen: 100, seconds: 120, maxStack: 3}, // 便携氧气瓶：水下供氧约 120s/瓶
 dive_light: { drain: 1.5, range: 18}, // 水下照明灯：开灯 1.5/s 耗电
 life_vest: { buoyancy: 2.2}, // 救生衣：浮力系数（调 W8 的 buoyancyModifier 接口）
+diving_suit: { oxygenMax: 10000, drainMul: 0.05, buoyancy: 0.85}, // v2.0 P2 深海潜水服：近乎无限供氧（10000≈按 0.05 倍率极慢消耗）、浮力 0.85（轻微下沉、悬停更稳）、不消耗不掉耐久
 dry_bag: { wetIntervalMul: 5}, // 防水物资袋：浸水损坏间隔 ×5
 adrenaline: { duration: 15, speedMul: 1.25, maxStack: 3}, // 肾上腺素：15s 加速 25%+不耗耐力+无视虚弱
 wet: { vulnerable: ['cigarette', 'gum'], interval: 6} // 浸水：头部在水下每 6s 随机坏 1 件易损品
 },
 
-/* ================= 9 种新道具定义 =================
+/* ================= 10 种新道具定义 =================
 * kind: 'use'（消耗使用）/ 'equip'（装备开关）/ 'deploy'（部署到世界）/ 'device'（设备开关）
 * 备用电池（battery）已存在：走 ui.js 原分支（+60），W9 只扩展"手电满时可给水下照明灯充电"。
 * 跃迁浆果（berry）已存在：不计入新增。 */
@@ -80,12 +81,17 @@ adrenaline: {
 name: '肾上腺素', kind: 'use', stack: true,
 desc: '注射：15 秒内移速 +25%、疾跑不耗耐力、无视饥饿虚弱减速。效果持续期间不可叠加。',
 icon: svg('<path d="M5 19l7.5-7.5"/><rect x="11.5" y="8.5" width="5" height="8" rx="1" transform="rotate(-45 14 12.5)"/><path d="M17.5 4.5l2 2M19 3l1.5 3.5"/>')
+},
+diving_suit: {
+name: '深海潜水服', kind: 'equip', stack: false,
+desc: '穿上后在水下近乎无限供氧（呼吸条极长），并略微下沉、悬停更稳。不消耗、不掉耐久。',
+icon: svg('<path d="M9 3.2a3 3 0 0 1 6 0v2.6l2.1 2.4v8.6a1.6 1.6 0 0 1-3.2 0v-4.4h-3.8v4.4a1.6 1.6 0 0 1-3.2 0V8.2L9 5.8z"/><path d="M9.2 12h5.6" opacity="0.7"/><path d="M4.5 20.5l2-1M19.5 20.5l-2-1" opacity="0.55"/>')
 }
 },
 
 /* ================= 运行时态（不直接存档，走 saveState/loadState） ================= */
 charges: {}, // oxygen_tank: [剩余氧气%,...]（与 inv 数量对齐，charges[0] 为当前装备瓶）
-equipped: {}, // { vest:bool, o2:bool, drybag:bool}
+equipped: {}, // { vest:bool, o2:bool, drybag:bool, suit:bool（v2.0 P2 深海潜水服）}
 _glows: [], // [{key, mesh, light, x,y,z, remain}]
 _chalks: [], // [{key, mesh, x,y,z, nx,ny,nz, ground}]
 _drops: [], // [{key, item, mesh, x, z, charge}]
@@ -103,7 +109,7 @@ const inv = (BR.Game && BR.Game.inv) || {};
 if (id === 'dive_light') return (BR.Player && BR.Player.diveLight)? 1: 0;
 return inv[id] || 0;
 },
-// 背包是否还能装下 n 个 id（总量上限 + 各自堆叠上限；dive_light/life_vest/dry_bag 唯一）
+// 背包是否还能装下 n 个 id（总量上限 + 各自堆叠上限；dive_light/life_vest/dry_bag/diving_suit 唯一）
 canAdd: function (id, n) {
 n = n || 1;
 const C = this.CONFIG, inv = (BR.Game && BR.Game.inv) || {};
@@ -111,7 +117,7 @@ if (id === 'dive_light') {
 if (BR.Player && BR.Player.diveLight) return false;
 return this.totalUnits() + 1 <= C.inventoryMax;
 }
-if (id === 'life_vest' || id === 'dry_bag') {
+if (id === 'life_vest' || id === 'dry_bag' || id === 'diving_suit') {
 if ((inv[id] || 0) > 0) return false;
 return this.totalUnits() + n <= C.inventoryMax;
 }
@@ -129,7 +135,7 @@ return s;
 fullReason: function (id, n) {
 const C = this.CONFIG, inv = (BR.Game && BR.Game.inv) || {};
 if (id === 'dive_light' && BR.Player && BR.Player.diveLight) return '已经有一盏水下照明灯了';
-if ((id === 'life_vest' || id === 'dry_bag') && (inv[id] || 0) > 0)
+if ((id === 'life_vest' || id === 'dry_bag' || id === 'diving_suit') && (inv[id] || 0) > 0)
 return '已经有一件了，物品留在原地';
 const def = this.DEFS[id];
 const maxStack = (def && C[id] && C[id].maxStack) || 99;
@@ -228,9 +234,22 @@ const P = BR.Player, U = BR.UI, G = BR.Game;
 if (!(G.inv[id] > 0)) { U.toast('没有' + this.DEFS[id].name); return;}
 if (id === 'life_vest') {
 this.equipped.vest =!this.equipped.vest;
-P.buoyancyModifier = this.equipped.vest? this.CONFIG.life_vest.buoyancy: 1;
+P.buoyancyModifier = this._resolveBuoyancy();
 BR.Audio.uiClick();
 U.toast(this.equipped.vest? '穿上救生衣（浮力大增，下潜更费力）': '脱下救生衣');
+} else if (id === 'diving_suit') {
+// v2.0 P2 深海潜水服：近乎无限供氧 + 轻微下沉（buoyancy 0.85）；不消耗、不掉耐久
+this.equipped.suit =!this.equipped.suit;
+if (this.equipped.suit) {
+if (P && typeof P.setOxygenGear === 'function')
+P.setOxygenGear(this.CONFIG.diving_suit.oxygenMax, this.CONFIG.diving_suit.drainMul, true);
+U.toast('穿上深海潜水服（近乎无限供氧，略微下沉、悬停更稳）');
+} else {
+if (P && typeof P.clearOxygenGear === 'function') P.clearOxygenGear();
+U.toast('脱下深海潜水服');
+}
+P.buoyancyModifier = this._resolveBuoyancy();
+BR.Audio.uiClick();
 } else if (id === 'dry_bag') {
 this.equipped.drybag =!this.equipped.drybag;
 BR.Audio.uiClick();
@@ -469,7 +488,8 @@ if (!def) return;
 if (id === 'dive_light') { U.toast('水下照明灯不能丢弃（贵重设备）'); return;}
 if (this.equipped.vest && id === 'life_vest' ||
 this.equipped.drybag && id === 'dry_bag' ||
-this.equipped.o2 && id === 'oxygen_tank') {
+this.equipped.o2 && id === 'oxygen_tank' ||
+this.equipped.suit && id === 'diving_suit') {
 U.toast('先卸下再丢弃'); return;
 }
 if (!(G.inv[id] > 0)) { U.toast('没有' + def.name); return;}
@@ -572,6 +592,13 @@ _o2GearOn: false,
 _tickOxygen: function (dt) {
 const P = BR.Player, S = BR.Swim;
 if (!P || typeof P.setOxygenGear !== 'function') return;
+// v2.0 P2 深海潜水服：恒定供氧（近乎无限），不走氧气瓶消耗链路、不掉耐久；
+// 且氧气瓶的 clear 分支不许误清潜水服的 gear（潜水服卸下只走 _toggleEquip 的显式 clear）。
+if (this.equipped.suit) {
+P.setOxygenGear(this.CONFIG.diving_suit.oxygenMax, this.CONFIG.diving_suit.drainMul);
+this._o2GearOn = false;
+return;
+}
 const supplying = !!(this.equipped.o2 && S && S.headUnder);
 if (supplying) {
 const ch = this._chargesOf('oxygen_tank');
@@ -702,10 +729,17 @@ this._tickOxygen(dt);
 },
 
 /* ================= 装备态同步 ================= */
+// v2.0 P2：浮力优先级——救生衣（2.2）> 深海潜水服（0.85）> 默认 1.0。
+// 救生衣开时取救生衣值（潜水服的下沉倾向被覆盖）；只穿潜水服时 0.85 轻微下沉。
+_resolveBuoyancy: function () {
+if (this.equipped.vest) return this.CONFIG.life_vest.buoyancy;
+if (this.equipped.suit) return this.CONFIG.diving_suit.buoyancy;
+return 1;
+},
 _syncEquipFlags: function () {
 const P = BR.Player;
 if (!P) return;
-P.buoyancyModifier = this.equipped.vest? this.CONFIG.life_vest.buoyancy: 1;
+P.buoyancyModifier = this._resolveBuoyancy();
 },
 applyAll: function () {
 // 读档/切关后重建派生状态
@@ -727,7 +761,11 @@ const ch = this._chargesOf('oxygen_tank');
 rows.push('各瓶氧气：' + ch.map(v => Math.round(v) + '%').join(' / '));
 } else if (id === 'life_vest') {
 rows.push('状态：' + eq(this.equipped.vest));
-rows.push('浮力系数：×' + (this.equipped.vest? this.CONFIG.life_vest.buoyancy: 1));
+rows.push('浮力系数：×' + this._resolveBuoyancy());
+} else if (id === 'diving_suit') {
+rows.push('状态：' + eq(this.equipped.suit));
+rows.push('供氧：近乎无限（' + this.CONFIG.diving_suit.oxygenMax + '）· 不消耗不掉耐久');
+rows.push('浮力系数：×' + this._resolveBuoyancy() + '（救生衣优先）');
 } else if (id === 'dry_bag') {
 rows.push('状态：' + eq(this.equipped.drybag));
 } else if (id === 'dive_light') {
@@ -759,7 +797,7 @@ const P = BR.Player;
 const dep = {};
 // 本关运行时态 → 按关分桶
 const lv = (BR.Game && BR.Game.level) || 'L0';
-dep[lv] = {
+const cur = {
 glows: this._glows.map(r => ({ x: r.x, y: r.y, z: r.z, remain: Math.round(r.remain * 10) / 10})),
 chalks: this._chalks.map(r => ({ x: r.x, y: r.y, z: r.z, nx: r.nx, ny: r.ny, nz: r.nz, ground: r.ground})),
 drops: this._drops
@@ -768,6 +806,15 @@ drops: this._drops
 };
 // 合并其它关已存的（跨关不丢）
 const prev = (this._savedDeployed && typeof this._savedDeployed === 'object')? this._savedDeployed: {};
+// P0-3 根因加固：本关运行时态全空、但旧桶有数据、且正有一次恢复待执行
+// （_pendingDeployed 非空，即 loadState/onTravel 已填但 onLevelBuilt 尚未消费）
+// → 保留旧桶，不许用空运行时覆盖。防"闪现又消失"与一切时序意外的永久丢失。
+// _pendingDeployed 门限保证：正常拾取/消耗/过期导致的全空（恢复早已消费，pending 为 null）不受影响。
+const prevBucket = prev[lv];
+const prevHas = prevBucket &&
+(((prevBucket.glows || []).length + (prevBucket.chalks || []).length + (prevBucket.drops || []).length) > 0);
+const runtimeEmpty = this._glows.length === 0 && this._chalks.length === 0 && this._drops.length === 0;
+dep[lv] = (runtimeEmpty && prevHas && this._pendingDeployed) ? prevBucket : cur;
 for (const k in prev) if (k!== lv) dep[k] = prev[k];
 this._savedDeployed = dep;
 return {
@@ -782,8 +829,11 @@ loadState: function (d) {
 d = d || {};
 this.charges = d.itemCharges || {};
 this.equipped = d.equipped || {};
-this._savedDeployed = d.deployed || {};
-this._pendingDeployed = d.deployed || {};
+// P0-3：存档无 deployed（如回滚的合成 saved）时不清空内存旧桶，
+// 否则回滚会把上一关的部署物永久丢掉；_pendingDeployed 同样回退，保证 onLevelBuilt 能恢复
+const keepDep = this._savedDeployed;
+this._savedDeployed = d.deployed || keepDep || {};
+this._pendingDeployed = d.deployed || keepDep || {};
 const P = BR.Player;
 if (P) {
 P.stamina = d.stamina!= null? d.stamina: 100;
