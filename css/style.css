@@ -144,6 +144,11 @@ button:disabled { opacity: 0.4; }
 #loading-text { font-size: 16px; color: #9d9684; letter-spacing: 4px; }
 .spin { font-size: 38px; margin-top: 16px; animation: sp 1.2s linear infinite; color: #8a743d; }
 @keyframes sp { to { transform: rotate(360deg); } }
+/* P0-4：加载失败界面 */
+#loadfail-box { margin-top: 14px; }
+#loadfail-msg { margin: 6px 0 14px; line-height: 1.8; color: #e08a7a; font-size: 14px;
+  letter-spacing: 1px; word-break: break-all; max-width: 420px; }
+#loadfail-box button { margin-top: 8px; }
 
 /* ---------- 暂停设置 ---------- */
 #screen-pause label { display: block; text-align: left; font-size: 14px; margin: 12px 0; color: #a8a496; letter-spacing: 1px; }
@@ -319,15 +324,25 @@ body.joy-right #joy-zone { left: auto; right: 0; }
   border: 1.5px solid rgba(214,210,196,0.5);
 }
 #touch-btns {
-  position: absolute; right: 14px; bottom: calc(20px + env(safe-area-inset-bottom));
+  position: absolute; right: calc(14px + env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom));
   display: flex; flex-direction: column; gap: 14px; align-items: flex-end; pointer-events: auto;
 }
-body.joy-right #touch-btns { right: auto; left: 14px; }
+body.joy-right #touch-btns { right: auto; left: calc(14px + env(safe-area-inset-left)); }
 /* v1.5 W8：下坐骑按钮仅坐骑时显示（input.js syncTouchStates 切 body.mounted） */
 .tbtn.mount-only { display: none; }
 body.mounted .tbtn.mount-only { display: flex; }
 /* v1.5 W8：蹲下按钮仅陆地显示（游泳时走跳跃簇的下潜按钮） */
+/* C（v2.0 P1）：坐骑上蹲伏无意义（dispatch 直接忽略），同样隐藏 */
 body.swimming .tbtn.land-only { display: none; }
+body.mounted .tbtn.land-only { display: none; }
+/* C（v2.0 P1）：交互按钮情境高亮——准星有目标 .ready（高亮+放大），
+   无目标 .idle（置灰，不隐藏，避免玩家找不到按钮） */
+#btn-interact.idle { opacity: 0.55; }
+#btn-interact.ready {
+  border-color: #cdb872; background: rgba(90,74,32,0.85); color: #f2e9cf;
+  box-shadow: 0 0 18px rgba(205,184,114,0.55); transform: scale(1.1);
+}
+#btn-interact.ready:active { transform: scale(1.0); }
 .tbtn {
   width: 60px; height: 60px; border-radius: 50%; margin: 0; padding: 0;
   background: rgba(14,15,18,0.62); border: 1.5px solid rgba(214,210,196,0.32);
@@ -341,7 +356,7 @@ body.swimming .tbtn.land-only { display: none; }
 .tbtn.big svg { width: 34px; height: 34px; }
 .tbtn.on { border-color: #cdb872; background: rgba(90,74,32,0.85); color: #f2e9cf; box-shadow: 0 0 14px rgba(205,184,114,0.35); }
 .tbtn.mini {
-  position: fixed; right: 12px; top: calc(52px + env(safe-area-inset-top));
+  position: fixed; right: calc(12px + env(safe-area-inset-right)); top: calc(52px + env(safe-area-inset-top));
   width: 44px; height: 44px; pointer-events: auto;
 }
 .tbtn.mini svg { width: 18px; height: 18px; }
@@ -350,12 +365,12 @@ body.swimming .tbtn.land-only { display: none; }
 /* ---------- F（v1.4）：跳跃/下潜触控簇 ---------- */
 /* 交互大钮左侧的横排拇指区：[下潜（仅游泳）][跳跃/上浮]；与右侧纵列对齐底部 */
 #touch-jump-cluster {
-  position: absolute; right: calc(14px + 82px + 16px);
+  position: absolute; right: calc(14px + env(safe-area-inset-right) + 82px + 16px);
   bottom: calc(20px + env(safe-area-inset-bottom));
   display: flex; flex-direction: row; gap: 16px; align-items: flex-end;
   pointer-events: auto;
 }
-body.joy-right #touch-jump-cluster { right: auto; left: calc(14px + 82px + 16px); }
+body.joy-right #touch-jump-cluster { right: auto; left: calc(14px + env(safe-area-inset-left) + 82px + 16px); }
 /* 下潜按钮：仅游泳时显示（input.js syncTouchStates 切 body.swimming） */
 .tbtn.swim-only { display: none; }
 body.swimming .tbtn.swim-only { display: flex; }
@@ -416,10 +431,32 @@ body.need-orient #screen-orient { display: flex; }
   .how { font-size: 13px; line-height: 1.75; }
   .tbtn { width: 54px; height: 54px; }
   .tbtn.big { width: 72px; height: 72px; }
-  #touch-btns { gap: 9px; }
-  /* F（v1.4）：矮屏下跳跃簇跟随缩小 */
-  #touch-jump-cluster { right: calc(14px + 72px + 12px); gap: 12px; }
-  body.joy-right #touch-jump-cluster { right: auto; left: calc(14px + 72px + 12px); }
+  /* C（v2.0 P1）：矮屏（横屏手机约 360px 高）下右侧纵列会超出屏幕顶部、
+     顶部按钮被切掉够不着。改成右下角横排：跳跃簇贴右下角锚定，
+     其余按钮横排在它左侧，暂停钮仍在右上，互不遮挡。 */
+  #touch-btns {
+    flex-direction: row; align-items: flex-end; gap: 10px;
+    right: calc(14px + env(safe-area-inset-right) + 152px);
+    bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+  body.joy-right #touch-btns {
+    right: auto; left: calc(14px + env(safe-area-inset-left) + 152px);
+  }
+  #touch-btns .tbtn { width: 52px; height: 52px; }
+  #touch-btns .tbtn.big { width: 64px; height: 64px; }
+  #touch-btns .tbtn svg { width: 22px; height: 22px; }
+  #touch-btns .tbtn.big svg { width: 28px; height: 28px; }
+  /* F（v1.4）：矮屏下跳跃簇跟随缩小；C（v2.0 P1）：右下角锚定 */
+  #touch-jump-cluster {
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    gap: 12px;
+  }
+  body.joy-right #touch-jump-cluster {
+    right: auto; left: calc(14px + env(safe-area-inset-left));
+  }
+  #touch-jump-cluster .tbtn.big { width: 64px; height: 64px; }
+  #touch-jump-cluster .tbtn.big svg { width: 28px; height: 28px; }
 }
 /* 窄屏竖屏：面板收紧 */
 @media (max-width: 420px) {
@@ -443,7 +480,9 @@ body.underwater #game-canvas { filter: saturate(1.2) brightness(0.85); }
   width: 180px; height: 8px; z-index: 45; display: none;
   background: rgba(10,20,30,0.6); border: 1px solid #3b5a6a; border-radius: 4px;
 }
-body.underwater #breath-wrap.need { display: block; }
+/* v2.0 P2：呼吸条显示改由 .need 类唯一控制（JS 按 breathNeeded 规则切换）：
+ * headUnder 时，或氧气瓶/潜水服装备且在水下（头部可能在水面上）时显示；平时不占屏 */
+#breath-wrap.need { display: block; }
 #breath-fill { height: 100%; width: 100%; border-radius: 3px;
   background: linear-gradient(90deg, #4fc3e8, #9fe8ff); transition: width 0.2s; }
 
