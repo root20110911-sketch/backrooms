@@ -240,10 +240,12 @@
   };
   // 低理智暗角（player.update 每帧调用）
   // Systems C-A：叠加轻度视线模糊（0~1.8px，随理智线性渐变；设置 sanityfx='off' 可关闭）
+  // D-verify（v2.0 P1）：sanityfx='off' 时暗角也一并关闭（此前只有模糊被关，暗角仍显示，设置半假）
   U.setSanityFx = function (sanity) {
     const el = BR.$('sanity-vignette');
     if (!el) return;
-    el.style.opacity = sanity < 40 ? (0.55 * (1 - sanity / 40)).toFixed(2) : 0;
+    const sfxOff = BR.Input && BR.Input.settings && BR.Input.settings.sanityfx === 'off';
+    el.style.opacity = (!sfxOff && sanity < 40) ? (0.55 * (1 - sanity / 40)).toFixed(2) : 0;
     if (BR.SanityEvents && BR.SanityEvents.applyBlur) BR.SanityEvents.applyBlur(sanity);
   };
   // 迁跃浆果目的地：候选池权重与裂隙系统同表（EXPANSION_PLAN §2），排除当前关；
@@ -806,7 +808,7 @@
     this.$set_vol.oninput = (e) => { S.vol = +e.target.value; this.$vol_val.textContent = Math.round(S.vol * 100) + '%'; BR.Audio.setVolume(S.vol); BR.Input.saveSettings(); };
     this.$set_joysize.oninput = (e) => { S.joySize = +e.target.value; this.$joysize_val.textContent = S.joySize + 'px'; BR.Input.saveSettings(); };
     this.$set_joyside.onchange = (e) => { S.joySide = e.target.value; BR.Input.applyJoySide(); BR.Input.saveSettings(); };
-    this.$set_quality.onchange = (e) => { S.quality = e.target.value; BR.Input.saveSettings(); BR.UI.toast('画质将在下次进入关卡时生效'); };
+    this.$set_quality.onchange = (e) => { S.quality = e.target.value; BR.Input.saveSettings(); if (BR.Game && BR.Game.applyQuality) BR.Game.applyQuality(); BR.UI.toast('画质已生效（雾效/灯数/灯具密度下次进入关卡生效）'); };
     const hb = BR.$('set-headbob');
     if (hb) hb.onchange = (e) => { S.headbob = e.target.value; BR.Input.saveSettings(); };
     const dc = BR.$('set-dropcam'); // Systems A：坠落镜头强度（唯一允许的 ui.js 新增）
