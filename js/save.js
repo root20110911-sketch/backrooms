@@ -177,6 +177,8 @@
       });
     }
     if (typeof ws.l188_from !== 'string') { ws.l188_from = 'L0'; fixed.push('ws.l188_from'); }
+    // v2.0 P5：Level 188 真垂直二层——玩家所在楼层（0=1F, 1=2F；老存档缺省 0）
+    if (ws.l188floor !== 0 && ws.l188floor !== 1) { ws.l188floor = 0; fixed.push('ws.l188floor'); }
     // v2.0：Level 25「街机枢纽」可选字段（缺失走默认值，不破坏老存档）：
     //   ws.l25 = { coins: 游戏币数, mach: {街机idx: {seen, plays, wins, st}} }
     if (ws.l25 == null || typeof ws.l25 !== 'object' || Array.isArray(ws.l25)) {

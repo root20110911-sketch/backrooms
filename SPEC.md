@@ -4,14 +4,14 @@
 Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
 
 **脚本加载顺序**（index.html，Three.js r128 走 CDN 三重回退）：
-`three.min.js(CDN) → config.js → utils.js → items.js → textures.js → audio.js → gen.js → gen_l4.js → gen_l188.js → gen_l37.js → gen_l7.js → gen_l11.js → gen_l25.js → gen_bang.js → gen_l6.js → world.js → player.js → input.js → entities.js → transitions.js → cutout.js → levels.js → levels2.js → lv_l4.js → lv_l188.js → lv_l37.js → lv_l7.js → lv_l11.js → lv_l25.js → lv_bang.js → lv_l6.js → sanityEvents.js → ui.js → dev.js → save.js → main.js`
+`three.min.js(CDN) → config.js → utils.js → items.js → textures.js → audio.js → gen.js → gen_l4.js → gen_l188.js → gen_l37.js → gen_l372.js → gen_l7.js → gen_l11.js → gen_l25.js → gen_bang.js → gen_l6.js → world.js → player.js → input.js → entities.js → transitions.js → cutout.js → levels.js → levels2.js → lv_l4.js → lv_l188.js → lv_l37.js → lv_l372.js → lv_l7.js → lv_l11.js → lv_l25.js → lv_bang.js → lv_l6.js → sanityEvents.js → ui.js → dev.js → save.js → main.js`
 （`gen_l94.js` / `lv_l94.js` 已退役，不再加载，保留作历史参考。）
 
 ## 全局约定
 - `BR` 命名空间；`BR.log(...args)` 调试输出（`?debug=1` 或 localStorage `br_debug=1` 时进 console）。
 - 坐标：tile `(tx,ty)`，`tx` 向东为 +x，`ty` 向南为 +z。世界坐标：`x=(tx+0.5)*T`，`z=(ty+0.5)*T`，`T=3`（米）。
 - `BR.TILE = 3`。
-- 关卡 id：`'L0','L1','L2','L3','FUN','L188','L37','L7','L11','bang','L4','L6','L25'`（共 13 个；`'L94'` 已退役，老存档自动迁移到 `'bang'`）。
+- 关卡 id：`'L0','L1','L2','L3','FUN','L188','L37','L372','L7','L11','bang','L4','L6','L25'`（共 14 个；`'L94'` 已退役，老存档自动迁移到 `'bang'`）。
 - 事件总线 `BR.bus = { on(ev,fn), emit(ev,data) }`（utils.js 提供）。
 - 主循环由 main.js 驱动：`BR.Game.tick(dt)` 调用各模块 `update(dt)`。
 
@@ -99,7 +99,7 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
 - `BR.Input.init(canvas)`；`BR.Input.update()`。
 - 默认键位：`fwd/back/left/right`=WASD+方向键，`run`=Shift，`dive`=C（蹲/下潜），`jump`=空格（跳/上浮），`interact`=E+鼠标左键，`backpack`=Tab/I，`flashlight`=F，`thirdperson`=V，`pause`=Esc。**快捷栏（数字键/Q）已于 v1.5.1 删除**，使用物品统一走背包。
 - 改键系统：全部动作可改键，冲突处理，`localStorage` 持久化，`sanitizeBindings` 自动丢弃已删除动作的老键位。
-- 触控：左摇杆（动态原点+死区0.15+滑出跟随）、右侧拖动视角；按钮：背包/第三人称/手电/蹲下（仅陆地）/下坐骑（仅坐骑）/疾跑/交互大钮（无目标置灰）/跳跃-下潜簇（下潜仅游泳时显示）/暂停。v2.0 P1 情境化规则：用不到的按钮不长期占屏。
+- 触控：左摇杆（动态原点+死区0.15+滑出跟随）、右侧拖动视角；v2.1 分区：`#touch-sys`（右上 mini 横排常驻：暂停/背包/手电/疾跑开关/第三人称）+ `#touch-btns`（右下主操作区：交互大钮常驻但情境高亮，蹲下 land-only，下坐骑 mount-only）+ `#touch-jump-cluster`（跳跃/上浮 big，下潜 swim-only，坐骑时整簇隐藏）。v2.0 P1 情境化规则延续：用不到的按钮不长期占屏。**无"道具"按钮**（v1.5.1 起道具只走背包；`ui.js` 触屏键位文案已同步清理，不再提"道具"）。
 - `BR.Input.setLocked(b)` 转场/菜单时锁定；多点触控按手指 ID 分配。
 
 ## entities.js
@@ -192,7 +192,7 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 
 ## dev.js —— 开发者模式（v1.5.1）
 - 暂停菜单底部「开发者选项」→ 密码框（密码 `muse`）→ 开发者面板。
-- 面板：无限体力 / 无限理智开关、13 关传送（`BR.Cutout.travelTo(level,{mode:'none'})`）、回满状态。
+- 面板：无限体力 / 无限理智开关、14 关传送（`BR.Cutout.travelTo(level,{mode:'none'})`，v2.1 加入 L372）、回满状态。
 - 会话级，不落盘；`player.js` 在 `drainSanity` 开头与体力扣除处检查 `BR.Dev`。
 
 ## main.js
@@ -202,6 +202,36 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 - `BR.Game.locked` 输入锁定；失焦自动暂停（visibilitychange）。
 - 画质应用：pixelRatio、雾距离、灯光数；`?quality=low|mid|high` 覆盖；平板默认 mid。
 - `window.BR.debug = { game, world, player, gen, tp(x,z), give(item), trigger(name) }` 供自动化测试。
+
+## v2.1 机制（2026-10-17，审计整改）
+
+### Level 188 真垂直二层（gen_l188.js / lv_l188.js）
+- v2.0 的"二层"实为同平面远端 tile=2 区域 + 淡入淡出传送冒充（见 tools/AUDIT_V21.md §1a①），v2.1 改为**真垂直二层**：与 1F 同 footprint 的 f2t 层、二层楼板 3.57m、真实可走楼梯坡道（视觉 18 级台阶 + 弦杆 + 扶手 + 栏杆柱，`meta.l188f2.stair` 给出 z0/z1，`l188StairY` 按 z 插值 0→F2Y）。
+- 楼层状态 `W._l188floor`（0/1）被碰撞/地面高度/交互遮挡**真实读取**（存档 `W.state.l188floor`，`save.js validate` 缺省回填）；`W._l188onF2` 保留为兼容别名（v2.0 时写而不读，现为真实楼层态）；楼层闩在坡道半高处翻转；老存档非法位置在 onEnter 安全回落。
+- 阳台栏杆与庭院水池沿补碰撞（v2.0 审计：纯 decor 可穿过）；客房双吊顶清理（3.4m 降吊顶保留，12m 引擎吊顶不再叠加）；104 扇窗四态系统保留。
+
+### Level 37 池核重制（gen_l37.js / lv_l37.js）
+- 4 种新池核空间：下沉庭院 / 半淹没大厅 / 浸水台阶厅 / 水下连通水道（水深参与建筑生成，gen 纯逻辑 `BR.Gen.L37waterAt` Node 可测）。
+- 水面接缝根本修复（v2.0 审计：相邻 chunk 共享边 destination-in 双重淡出形成细缝线）；水下仰视层；柱体水线圈；按深度分层水体 tint。
+- **Sunlit Gate**：POI `sunlit_gate` + `meta.l37.gate`（墙上暖白发光开口）→ 传送到 L372「阳光泳池」；返回落点对应。
+
+### Level 37.2「Sunlit Pools」（gen_l372.js / lv_l372.js，v2.1 新增）
+- 原型：Fandom Backrooms Wiki Level 37.2 "Sunlit Pools"；**露天蓝天/可见太阳/天空之境倒影为本游戏改编**（原著只有墙面矩形开口的粉色光，开口外是白色虚空），文档与 LORE.md 明确标注为改编。
+- 内容：白瓷砖浅水厅（及膝深清水）/ 干燥平台 / 粉色开口光；Pinnicorns（充气浮具状无害实体，纯装饰）；黑暗开口 → 返回 L37（Fandom 主站出口依据）。
+- 跨关接线：`BR.Game._cameFrom` 契约——出发关在 `travelTo` 前置 `_cameFrom` 为自身 id，目的关 `onEnter` 读取并搬运到对应落点（L37↔L372 双向）。
+
+### Level 7 四带按真实垂直深度（gen_l7.js / lv_l7.js）
+- v2.0 的四带按到入口舱室中心的**水平** tile 距离划分（同心圆，审计 §3a），v2.1 改为按玩家**真实下潜深度**：日光 <12m / 暮光 12–30m / 午夜 30–55m / 深渊 ≥55m（游戏尺度改编，原著公里级深度压缩）。
+- 连续海底地形（浅海台地 → 断崖 → 深沟 → 深渊），视觉与物理海床统一；游泳防穿海床（`player.js` 下潜下限按地形钳制）。
+- 水上：海雾近/中/远三层 + 阴天云层 + 阴云穹顶（两层灰云平面 + 大球体内壁渐变）；水下：透光层（独立朝下网格跟随波浪，海面 -0.22m，太阳透光斑）+ 按深度分档压暗（浅水透光）+ 散射颗粒。
+
+### 移动端（input.js / ui.js / css/style.css）
+- 情境化按钮分区：右上 `#touch-sys` mini 系统区（暂停/背包/手电/疾跑开关/第三人称，常驻不占主视野）+ 右下 `#touch-btns` 主操作区（只放当前情境真正需要的操作）+ `#touch-jump-cluster` 拇指区（乘船时整簇隐藏）。
+- 教学 pill：替代原来与按钮列视觉重叠的常驻右下说明框（且旧文案提到不存在的"道具"按钮，已清理）；只在首次进入时顶部目标文本下方居中出现，点击或 30 秒后自动收起并持久化（`br_tut_seen`）。
+- 目标文字移出状态条区；背包标题触屏适配（小屏不溢出）。
+
+### 存档（save.js）
+- 存档键 **`backrooms_save_v2` 不变**；v2.1 无新顶层字段、无 key 升级。L372 状态走按关 `ws` 通透桶（`validate` 未知字段透传，无需新字段）；L188 `W.state.l188floor` 走 `ws.l188floor`（`validate` 缺省回填 0）。
 
 ## 性能铁律
 - 每区块每材质 1 个 InstancedMesh；fixture 灯光用对象池（≤6 个 PointLight）；无实时阴影（low/mid），high 可选 1 个。
