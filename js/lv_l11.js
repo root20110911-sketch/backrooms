@@ -9,6 +9,26 @@
   var BR = window.BR;
   var T = BR.TILE;
 
+  /* ---------- 确定性小工具（渲染期，不碰 gen 的 rng） ---------- */
+  function trackMat(W, m) { // W._levelMats 可能被 dispose 置 null，push 前兜底
+    W._levelMats = W._levelMats || [];
+    W._levelMats.push(m);
+    return m;
+  }
+  function hashStr(s) {
+    var h = 2166136261;
+    s = String(s);
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function seqRand(seed) {
+    var s = (seed >>> 0) || 1;
+    return function () {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+
   /* ---------- 出口 ---------- */
   function travelTo(to, kind) {
     if (!BR.Levels[to]) {
@@ -114,44 +134,228 @@
     return s || '附近';
   }
 
-  /* ---------- 建筑盒子：立面纹理按 ~6m 重复，避免拉伸 ---------- */
-  var FAC_TEX = ['fac_brick', 'fac_conc', 'fac_panel'];
+  /* ---------- 建筑盒子：立面纹理整幅覆盖该段高度（v=0..1），u 每 ~6m 重复一开间 ---------- */
   function facadeBox(W, wT, hM, dT, sideMat, topMat) {
     var geo = new THREE.BoxGeometry(wT * T, hM, dT * T);
-    var uv = geo.attributes.uv, su = wT * T / 6, sv = hM / 6, du = dT * T / 6;
+    var uv = geo.attributes.uv, su = wT * T / 6, du = dT * T / 6;
     for (var i = 0; i < 24; i++) {
       var f = (i / 4) | 0, u = uv.getX(i), v = uv.getY(i);
-      if (f === 0 || f === 1) uv.setXY(i, u * du, v * sv);       // ±x 面：进深×高
-      else if (f === 4 || f === 5) uv.setXY(i, u * su, v * sv);  // ±z 面：宽×高
-      else uv.setXY(i, u * su, v * du);                          // 顶/底
+      if (f === 0 || f === 1) uv.setXY(i, u * du, v);       // ±x 面：进深×整高
+      else if (f === 4 || f === 5) uv.setXY(i, u * su, v);  // ±z 面：宽×整高
+      else uv.setXY(i, u * su, v * du);                      // 顶/底：roof_top 保持 6m 重复
     }
     uv.needsUpdate = true;
     return new THREE.Mesh(geo, [sideMat, sideMat, topMat, topMat, sideMat, sideMat]);
   }
-  function bFacadeMat(W, b, rearr) {
-    var name = FAC_TEX[b.style] + (b.winMis ? '_mis' : '') + (rearr ? '_b' : '');
-    if (b.winMis && b.style === 2) name = 'fac_conc_mis' + (rearr ? '_b' : ''); // panel 无 mis 版，借 conc
-    return W.mat(name);
+
+  /* ---------- 立面贴图工厂（canvas 本地生成，不走 js/textures.js）
+   * 每栋楼按 (facade 类型 / 色系 / 层数 / 错位 / 变体 / 底层封堵 / id盐) 生成独立贴图，
+   * 窗户行数 == 实际层数。variant=1 为"重排"变体（窗光分布不同）。
+   * facade: 0 横条窗 / 1 竖条窗 / 2 点窗 / 3 清水混凝土无窗面
+   */
+  var FAC_STYLE_BASE = ['#54463e', '#5f6266', '#565b63']; // style: 砖 / 混凝土 / 板材
+  function paintFacade(b, floors, variant, sealed, seedStr) {
+    var rnd = seqRand(hashStr(seedStr + '|fac|' + variant));
+    var fw = 256, pxF = 26, fh = Math.max(pxF * 2, floors * pxF);
+    var c = document.createElement('canvas'); c.width = fw; c.height = fh;
+    var x = c.getContext('2d');
+    x.fillStyle = FAC_STYLE_BASE[b.style] || '#5f6266'; x.fillRect(0, 0, fw, fh);
+    for (var i = 0; i < 260; i++) { // 污渍
+      x.fillStyle = rnd() < 0.6 ? 'rgba(0,0,0,0.10)' : 'rgba(255,250,240,0.045)';
+      x.fillRect(rnd() * fw, rnd() * fh, 3, 3);
+    }
+    var DARK = 'rgba(10,13,18,0.94)', LIT = 'rgba(150,125,70,0.85)', GLOW = 'rgba(255,196,110,0.92)';
+    function rollWin() { // 0 暗 / 1 昏黄 / 2 微光异常 / 3 半开 / 4 错位
+      var r = rnd();
+      if (r < 0.050) return 1;
+      if (r < 0.062) return 2;
+      if (r < 0.074) return 3;
+      if (r < 0.084) return 4;
+      return 0;
+    }
+    function drawWin(wx, wy, ww, wh) {
+      var k = rollWin();
+      if (k === 4) wy += 6; // 错位窗：下沉半格
+      if (k === 3) { // 半开：上半暗 + 下半透光 + 斜开窗扇线
+        x.fillStyle = DARK; x.fillRect(wx, wy, ww, wh);
+        x.fillStyle = 'rgba(96,106,120,0.85)'; x.fillRect(wx, wy + wh * 0.45, ww, wh * 0.55);
+        x.strokeStyle = 'rgba(0,0,0,0.7)'; x.lineWidth = 2;
+        x.beginPath(); x.moveTo(wx, wy + wh * 0.45); x.lineTo(wx + ww, wy); x.stroke();
+      } else {
+        x.fillStyle = k === 2 ? GLOW : (k === 1 ? LIT : DARK);
+        x.fillRect(wx, wy, ww, wh);
+      }
+      x.strokeStyle = 'rgba(0,0,0,0.55)'; x.lineWidth = 2;
+      x.strokeRect(wx, wy, ww, wh);
+    }
+    for (var f = 0; f < floors; f++) {
+      var fy = fh - (f + 1) * pxF; // f=0 为临街底层
+      if (f === 0 && sealed) { // 临街底层封堵：卷帘门 / 木板封窗（保持无人感）
+        if (rnd() < 0.6) {
+          x.fillStyle = '#43464c'; x.fillRect(8, fy + 2, fw - 16, pxF - 4);
+          x.fillStyle = 'rgba(0,0,0,0.35)';
+          for (var sl = 0; sl < pxF - 4; sl += 5) x.fillRect(8, fy + 2 + sl, fw - 16, 2);
+          x.fillStyle = 'rgba(18,18,20,0.85)'; x.fillRect(8, fy + pxF - 6, fw - 16, 4);
+        } else {
+          x.fillStyle = '#4a4238'; x.fillRect(10, fy + 3, fw - 20, pxF - 6);
+          x.strokeStyle = 'rgba(30,24,18,0.8)'; x.lineWidth = 3;
+          x.beginPath();
+          x.moveTo(10, fy + 3); x.lineTo(fw - 10, fy + pxF - 3);
+          x.moveTo(fw - 10, fy + 3); x.lineTo(10, fy + pxF - 3);
+          x.stroke();
+        }
+        continue;
+      }
+      var ft = b.facade, misDy = 0;
+      if (ft === 3) { // 清水混凝土：模板缝 + 对拉孔，无窗
+        x.fillStyle = 'rgba(0,0,0,0.22)'; x.fillRect(0, fy + pxF - 3, fw, 2);
+        x.fillStyle = 'rgba(0,0,0,0.30)';
+        for (var th2 = 32; th2 < fw; th2 += 64) { x.beginPath(); x.arc(th2, fy + pxF / 2, 3, 0, 7); x.fill(); }
+        continue;
+      }
+      if (ft === 0) { // 横条窗：6 开间条窗
+        var ncols = 6, cw2 = fw / ncols;
+        for (var q = 0; q < ncols; q++) {
+          misDy = (b.winMis && (q % 2)) ? 7 : 0; // 建筑级错位：奇偶列差半层
+          drawWin(q * cw2 + 5, fy + 6 + misDy, cw2 - 10, pxF - 12);
+        }
+      } else if (ft === 1) { // 竖条窗：5 道竖向窗带
+        for (var v = 0; v < 5; v++) {
+          misDy = (b.winMis && (v % 2)) ? 7 : 0;
+          var vx = 14 + v * 46;
+          drawWin(vx, fy + 3 + misDy, 26, pxF - 6);
+          x.strokeStyle = 'rgba(0,0,0,0.5)'; x.lineWidth = 2; // 横向中梃
+          x.beginPath(); x.moveTo(vx, fy + pxF / 2 + misDy); x.lineTo(vx + 26, fy + pxF / 2 + misDy); x.stroke();
+        }
+      } else { // 点窗：6 列方窗
+        var pcw = fw / 6;
+        for (var p = 0; p < 6; p++) {
+          misDy = (b.winMis && (p % 2)) ? 7 : 0;
+          drawWin(p * pcw + 8, fy + 6 + misDy, pcw - 16, pxF - 12);
+        }
+      }
+    }
+    x.fillStyle = 'rgba(10,10,12,0.5)'; x.fillRect(0, fh - 8, fw, 8); // 底部污边
+    var tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  /* ---------- 废弃车辆 ---------- */
+  function buildCarMesh(paintColor, wrecked) {
+    var car = new THREE.Group();
+    var paint = new THREE.MeshLambertMaterial({ color: paintColor });
+    var rust = new THREE.MeshLambertMaterial({ color: 0x4a3826 });
+    var bodyM = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.7, 1.6), paint);
+    bodyM.position.y = 0.6; car.add(bodyM);
+    var cab = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.58, 1.45), paint);
+    cab.position.set(-0.15, 1.2, 0); car.add(cab);
+    var glass = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.38, 1.47),
+      new THREE.MeshLambertMaterial({ color: 0x0c0e12 }));
+    glass.position.set(-0.15, 1.22, 0); car.add(glass);
+    var wg = new THREE.CylinderGeometry(0.34, 0.34, 0.28, 10);
+    var wm = new THREE.MeshLambertMaterial({ color: 0x141518 });
+    [[-1.1, 0.8], [1.1, 0.8], [-1.1, -0.8], [1.1, -0.8]].forEach(function (o) {
+      var w = new THREE.Mesh(wg, wm);
+      w.rotation.x = Math.PI / 2;
+      w.position.set(o[0], 0.34, o[1]); car.add(w);
+    });
+    var rp = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.45, 0.06), rust);
+    rp.position.set(0.7, 0.65, 0.82); car.add(rp);
+    if (wrecked) { // 凹陷车顶 + 掉落的保险杠
+      var dent = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.3, 1.2), rust);
+      dent.position.set(-0.15, 1.45, 0); car.add(dent);
+      var bumper = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.25, 1.5), paint);
+      bumper.position.set(2.1, 0.15, 0.4); bumper.rotation.y = 0.5; car.add(bumper);
+    }
+    return car;
+  }
+  // 车辆碰撞盒（有向矩形；W.circleFree 的 wrap 里判定；chunk 重建时去重）
+  function regCarObstacle(L, x, z, rot) {
+    var obs = L.carObstacles;
+    for (var i = 0; i < obs.length; i++)
+      if (Math.hypot(obs[i].x - x, obs[i].z - z) < 0.5) return;
+    obs.push({ x: x, z: z, hx: 1.85, hz: 0.95, cos: Math.cos(rot), sin: Math.sin(rot) });
+  }
+  function facadeMatFor(W, L, b, floors, variant, sealed) {
+    L.facMatCache = L.facMatCache || {};
+    L.facTexList = L.facTexList || [];
+    // key 与 seed 一致：同组合共享一张贴图（相邻建筑靠 facade 防扎堆 + style/floors 区分）
+    var key = 'f' + b.facade + 's' + b.style + 'n' + floors + 'm' + (b.winMis ? 1 : 0) +
+              'v' + variant + 'g' + (sealed ? 1 : 0);
+    var m = L.facMatCache[key];
+    if (!m) {
+      var tex = paintFacade(b, floors, variant, sealed, 'l11:' + L.seed + '|' + key);
+      L.facTexList.push(tex);
+      m = new THREE.MeshLambertMaterial({ map: tex, color: 0xdbd5c2 }); // 同 W.mat 的压暗偏暖
+      L.facMatCache[key] = m;
+      trackMat(W, m);
+    }
+    return m;
   }
 
   /* 远楼重排（明确事件时）：只换玩家 55m 外远楼的立面窗光材质，不动几何/碰撞，
-   * 不闪烁眼前、不穿过玩家、不困玩家。材质走 W.mat 缓存，无泄漏。 */
+   * 不闪烁眼前、不穿过玩家、不困玩家。材质走关卡缓存，无泄漏。 */
   function applyRearr(W, L) {
     var P = BR.Player;
     if (!P || !P.pos) return;
     for (var i = 0; i < L.bldMeshes.length; i++) {
       var rec = L.bldMeshes[i], b = rec.b;
-      if (!rec.meshes.length) continue;
       var cx = BR.tileCX((b.x0 + b.x1) / 2), cz = BR.tileCZ((b.y0 + b.y1) / 2);
       if (Math.hypot(cx - P.pos.x, cz - P.pos.z) < 55) continue; // 玩家不可见区才动
-      var alt = bFacadeMat(W, b, true);
-      for (var j = 0; j < rec.meshes.length; j++) {
-        var m = rec.meshes[j];
+      for (var j = 0; j < rec.parts.length; j++) {
+        var pt = rec.parts[j], m = pt.mesh;
         if (!m || !m.parent) continue; // 已卸载的 chunk 跳过（重载时按 L.rearr 规则重建）
+        var alt = facadeMatFor(W, L, b, pt.floors, 1, pt.sealed);
         if (Array.isArray(m.material)) m.material = [alt, alt, m.material[2], m.material[3], alt, alt];
         else m.material = alt;
       }
     }
+  }
+
+  /* 女儿墙（屋顶剪影）与庭院小品 */
+  function addParapet(W, group, L, cx, cz, wT, dT, topY) {
+    if (wT < 2 || dT < 2) return;
+    if (!L.concMat) {
+      L.concMat = new THREE.MeshLambertMaterial({ color: 0x4a4d52 });
+      trackMat(W, L.concMat);
+    }
+    var th = 0.28, ph = 1.0, hw = wT * T / 2, hd = dT * T / 2;
+    [
+      [2 * hw, ph, th, cx, topY + ph / 2, cz - hd + th / 2],
+      [2 * hw, ph, th, cx, topY + ph / 2, cz + hd - th / 2],
+      [th, ph, 2 * hd, cx - hw + th / 2, topY + ph / 2, cz],
+      [th, ph, 2 * hd, cx + hw - th / 2, topY + ph / 2, cz]
+    ].forEach(function (g) {
+      var m = new THREE.Mesh(new THREE.BoxGeometry(g[0], g[1], g[2]), L.concMat);
+      m.position.set(g[3], g[4], g[5]); W.reg(group, m);
+    });
+  }
+  function indoorFloorTex() {
+    var c = document.createElement('canvas'); c.width = c.height = 256;
+    var x = c.getContext('2d');
+    x.fillStyle = '#3a3d42'; x.fillRect(0, 0, 256, 256);
+    x.strokeStyle = 'rgba(0,0,0,0.45)'; x.lineWidth = 3; // 大块地砖缝（室内材质，非街道）
+    for (var i = 0; i <= 256; i += 64) {
+      x.beginPath(); x.moveTo(i, 0); x.lineTo(i, 256); x.stroke();
+      x.beginPath(); x.moveTo(0, i); x.lineTo(256, i); x.stroke();
+    }
+    var rnd = seqRand(hashStr('l11infloor'));
+    for (var j = 0; j < 320; j++) {
+      x.fillStyle = rnd() < 0.6 ? 'rgba(0,0,0,0.12)' : 'rgba(200,200,200,0.05)';
+      x.fillRect(rnd() * 256, rnd() * 256, 3, 3);
+    }
+    var tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   /* ================= Level 定义 ================= */
@@ -166,7 +370,26 @@
 
     buildContent: function (map, W) {
       var meta = map.meta.l11 || { buildings: [] };
-      var L = (W._l11 = { guide: null, megNPC: null, manholes: [], traflites: [], anoDoors: [], rearr: false, bldMeshes: [] });
+      var L = (W._l11 = { guide: null, megNPC: null, manholes: [], traflites: [], anoDoors: [],
+        rearr: false, bldMeshes: [], carObstacles: [] });
+      L.seed = map.seed;
+      // 废弃车辆碰撞：W 是跨关单例，wrap 只做一次 + 关卡守卫，避免跨关污染/重复包裹
+      if (!W._l11cfWrapped) {
+        W._l11cfWrapped = true;
+        W._l11cfOrig = W.circleFree;
+        W.circleFree = function (nx, nz, radius) {
+          if (!W._l11cfOrig.call(W, nx, nz, radius)) return false;
+          if (!W.map || W.map.level !== 'L11' || !W._l11 || !W._l11.carObstacles) return true;
+          var obs = W._l11.carObstacles;
+          for (var i = 0; i < obs.length; i++) {
+            var o = obs[i];
+            var dx = nx - o.x, dz = nz - o.z;
+            var lx = dx * o.cos - dz * o.sin, lz = dx * o.sin + dz * o.cos;
+            if (Math.abs(lx) < o.hx + radius && Math.abs(lz) < o.hz + radius) return false;
+          }
+          return true;
+        };
+      }
       var sp = poiList(map, 'spawn')[0];
       var spx = sp ? BR.tileCX(sp.tx) : 0, spz = sp ? BR.tileCZ(sp.ty) : 0;
       // 重排标记：事件里有 l11_rearranged 即进入"重排态"（重进/明确事件后远处立面换窗光）
@@ -230,31 +453,49 @@
           .map(function (r) {
             // 子块继承原建筑属性
             return { id: b.id + '_' + r.x0 + '_' + r.y0, x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1,
-              h: b.h, style: b.style, setback: b.setback, winMis: b.winMis,
-              enterable: b.enterable, stub: b.stub, anomalyDoor: b.anomalyDoor };
+              h: b.h, floors: b.floors, style: b.style, facade: b.facade,
+              groundSealed: b.groundSealed, setback: b.setback, podium: b.podium,
+              winMis: b.winMis, enterable: b.enterable, stub: b.stub, anomalyDoor: b.anomalyDoor };
           });
       }
       buildings.forEach(function (b) {
-        var parts = splitBld(b);
-        // 全部建筑 tile 跳过默认墙体渲染（碰撞仍走 tile）；只跳实心子块
-        parts.forEach(function (pb) {
-          for (var yy = pb.y0; yy <= pb.y1; yy++)
-            for (var xx = pb.x0; xx <= pb.x1; xx++) W.skipWall(xx, yy);
-        });
+        // L 形 / 回字形：按翼渲染，整包络跳墙；其余按 splitBld 子块
+        var parts;
+        if (b.wings) {
+          parts = b.wings.map(function (wr, wi) {
+            return { id: b.id + '_w' + wi, x0: wr[0], y0: wr[1], x1: wr[2], y1: wr[3],
+              h: b.h, floors: b.floors, style: b.style, facade: b.facade,
+              groundSealed: b.groundSealed, setback: 0, podium: 0,
+              winMis: b.winMis, enterable: null, stub: false, anomalyDoor: b.anomalyDoor };
+          });
+          for (var wyy = b.y0; wyy <= b.y1; wyy++)
+            for (var wxx = b.x0; wxx <= b.x1; wxx++) W.skipWall(wxx, wyy);
+        } else {
+          parts = splitBld(b);
+          // 全部建筑 tile 跳过默认墙体渲染（碰撞仍走 tile）；只跳实心子块
+          parts.forEach(function (pb) {
+            for (var yy = pb.y0; yy <= pb.y1; yy++)
+              for (var xx = pb.x0; xx <= pb.x1; xx++) W.skipWall(xx, yy);
+          });
+        }
         var atx = (b.x0 + b.x1) >> 1, aty = (b.y0 + b.y1) >> 1;
         W.addChunkContent(atx, aty, function (group) {
           var rearr = L.rearr && isFar(b); // 重排只影响远楼窗光，不动几何/碰撞
-          var sideMat = bFacadeMat(W, b, rearr), topMat = W.mat('roof_top');
+          var rearrV = rearr ? 1 : 0, topMat = W.mat('roof_top');
           // 重排登记：异常门事件时只换玩家 55m 外远楼的立面窗光（不可见区，不动几何/碰撞）
-          var rec = b.enterable ? null : { b: b, meshes: [] };
+          var rec = b.enterable ? null : { b: b, parts: [] };
+          function regPart(mesh, floors, sealed) {
+            if (rec) rec.parts.push({ mesh: mesh, floors: floors, sealed: sealed });
+          }
+          function sideMatFor(floors, sealed) { return facadeMatFor(W, L, b, floors, rearrV, sealed); }
           var prng = hashRng('l11roof:' + map.seed + ':' + b.id);
           parts.forEach(function (pb, pIdx) {
             var wT = pb.x0 <= pb.x1 ? (pb.x1 - pb.x0 + 1) : 1, dT = pb.y0 <= pb.y1 ? (pb.y1 - pb.y0 + 1) : 1;
             var cx = BR.tileCX((pb.x0 + pb.x1) / 2), cz = BR.tileCZ((pb.y0 + pb.y1) / 2);
+            var FL = pb.floors || Math.max(1, Math.round(pb.h / 3.4));
             if (pb.stub) { // 碎块：矮混凝土护栏
               var bar = facadeBox(W, wT, 1.2, dT, W.mat('fac_conc'), topMat);
               bar.position.set(cx, 0.6, cz); W.reg(group, bar);
-              rec.meshes.push(bar);
               return;
             }
             // 接触阴影：楼底一圈暗色
@@ -262,49 +503,90 @@
               new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false }));
             sh.rotation.x = -Math.PI / 2; sh.position.set(cx, 0.02, cz); W.reg(group, sh);
 
-            if (pb.enterable) buildEnterable(W, group, pb, sideMat, topMat, cx, cz, wT, dT);
-            else {
-              if (pb.setback) { // 退台：下部 62% 高全占地，上部收进 1 格
-                var h1 = pb.h * 0.62, h2 = pb.h - h1;
-                var lo = facadeBox(W, wT, h1, dT, sideMat, topMat);
-                lo.position.set(cx, h1 / 2, cz); W.reg(group, lo);
-                var up = facadeBox(W, Math.max(1, wT - 2), h2, Math.max(1, dT - 2), sideMat, topMat);
-                up.position.set(cx, h1 + h2 / 2, cz); W.reg(group, up);
-                rec.meshes.push(lo, up);
-              } else {
-                var box = facadeBox(W, wT, pb.h, dT, sideMat, topMat);
-                box.position.set(cx, pb.h / 2, cz); W.reg(group, box);
-                rec.meshes.push(box);
-              }
+            if (pb.enterable) {
+              var fH = Math.max(1, Math.round(Math.min(pb.h, 9) / 3.4));
+              buildEnterable(W, group, pb, sideMatFor, topMat, cx, cz, wT, dT, L);
+            } else if (pb.podium && wT >= 3 && dT >= 3 && FL >= 3) {
+              // 转角裙楼：2 层裙楼（底层封堵）+ 内收塔楼
+              var fLo = 2, fHi = FL - 2, hLo = fLo * 3.4, hHi = fHi * 3.4;
+              var lo = facadeBox(W, wT, hLo, dT, sideMatFor(fLo, true), topMat);
+              lo.position.set(cx, hLo / 2, cz); W.reg(group, lo); regPart(lo, fLo, true);
+              var up = facadeBox(W, wT - 2, hHi, dT - 2, sideMatFor(fHi, false), topMat);
+              up.position.set(cx, hLo + hHi / 2, cz); W.reg(group, up); regPart(up, fHi, false);
+              addParapet(W, group, L, cx, cz, wT - 2, dT - 2, hLo + hHi);
+            } else if (pb.setback) { // 退台：下部 62% 层全占地，上部收进 1 格
+              var f1 = Math.max(1, Math.round(FL * 0.62)), f2 = Math.max(1, FL - f1);
+              var h1 = f1 * 3.4, h2 = f2 * 3.4;
+              var lo2 = facadeBox(W, wT, h1, dT, sideMatFor(f1, pb.groundSealed), topMat);
+              lo2.position.set(cx, h1 / 2, cz); W.reg(group, lo2); regPart(lo2, f1, pb.groundSealed);
+              var up2 = facadeBox(W, Math.max(1, wT - 2), h2, Math.max(1, dT - 2), sideMatFor(f2, false), topMat);
+              up2.position.set(cx, h1 + h2 / 2, cz); W.reg(group, up2); regPart(up2, f2, false);
+              addParapet(W, group, L, cx, cz, Math.max(1, wT - 2), Math.max(1, dT - 2), h1 + h2);
+            } else {
+              var bh = FL * 3.4;
+              var box = facadeBox(W, wT, bh, dT, sideMatFor(FL, pb.groundSealed), topMat);
+              box.position.set(cx, bh / 2, cz); W.reg(group, box); regPart(box, FL, pb.groundSealed);
+              addParapet(W, group, L, cx, cz, wT, dT, bh);
             }
-            // 楼顶小品：水箱 / 天线（偶发；只在最大子块放，避免重复）
+            // 楼顶小品：水箱 / 天线剪影（偶发；只在首个子块放，避免重复）
             if (pIdx === 0) {
+              var topY = FL * 3.4;
               if (!pb.stub && prng.chance(0.35)) {
                 var tank = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 1.7, 10),
                   new THREE.MeshLambertMaterial({ color: 0x3f434a }));
-                tank.position.set(cx + (prng.next() - 0.5) * wT * T * 0.4, pb.h + 0.85,
+                tank.position.set(cx + (prng.next() - 0.5) * wT * T * 0.4, topY + 0.85,
                   cz + (prng.next() - 0.5) * dT * T * 0.4);
                 W.reg(group, tank);
               }
               if (!pb.stub && pb.h >= 20 && prng.chance(0.4)) {
                 var ant = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 5, 6),
                   new THREE.MeshLambertMaterial({ color: 0x2c2f35 }));
-                ant.position.set(cx, pb.h + 2.5, cz); W.reg(group, ant);
+                ant.position.set(cx, topY + 2.5, cz); W.reg(group, ant);
                 var tip = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6),
                   new THREE.MeshBasicMaterial({ color: 0xff4444 }));
-                tip.position.set(cx, pb.h + 5, cz); W.reg(group, tip);
+                tip.position.set(cx, topY + 5, cz); W.reg(group, tip);
               }
               // 明确关闭的入口（链条封门，纯视觉，无交互）
               if (!pb.enterable && !pb.anomalyDoor && prng.chance(0.45)) buildShutDoor(W, group, pb, prng, map);
             }
           });
+          // L 形 / 回字形庭院：铺地 + 瓦砾（被翼包围，不可见虚空）
+          if (b.wings && b.court) {
+            var ct = b.court;
+            var ccx = BR.tileCX((ct[0] + ct[2]) / 2), ccz = BR.tileCZ((ct[1] + ct[3]) / 2);
+            var cwT = ct[2] - ct[0] + 1, cdT = ct[3] - ct[1] + 1;
+            if (!L.courtMat) {
+              if (!L.inFloorTex) L.inFloorTex = indoorFloorTex();
+              L.courtMat = new THREE.MeshLambertMaterial({ map: L.inFloorTex, color: 0xb9b2a4 });
+              trackMat(W, L.courtMat);
+            }
+            var cf = new THREE.Mesh(new THREE.PlaneGeometry(cwT * T, cdT * T), L.courtMat);
+            cf.rotation.x = -Math.PI / 2; cf.position.set(ccx, 0.035, ccz); W.reg(group, cf);
+            if (!L.concMat) {
+              L.concMat = new THREE.MeshLambertMaterial({ color: 0x4a4d52 });
+              trackMat(W, L.concMat);
+            }
+            var crng = hashRng('l11court:' + map.seed + ':' + b.id);
+            var nRub = 2 + Math.floor(crng.next() * 3);
+            for (var ri2 = 0; ri2 < nRub; ri2++) {
+              var rb = new THREE.Mesh(new THREE.BoxGeometry(0.5 + crng.next() * 0.9, 0.3 + crng.next() * 0.5, 0.5 + crng.next() * 0.9), L.concMat);
+              rb.position.set(ccx + (crng.next() - 0.5) * Math.max(0.5, cwT * T - 2), 0.2,
+                ccz + (crng.next() - 0.5) * Math.max(0.5, cdT * T - 2));
+              rb.rotation.y = crng.next() * Math.PI;
+              W.reg(group, rb);
+            }
+          }
           if (rec) L.bldMeshes.push(rec);
         });
       });
 
-  /* 可进入建筑：空心围合（4 面墙 + 门洞），内部有补给意义 */
-  function buildEnterable(W, group, b, sideMat, topMat, cx, cz, wT, dT) {
+  /* 可进入建筑：空心围合（4 面墙 + 门洞），内部有补给意义
+   * kind=lobby 门厅（1.4m 门）/ kind=garage 停车场入口（2.6m 宽门 + 室内残骸车） */
+  function buildEnterable(W, group, b, matFor, topMat, cx, cz, wT, dT, L) {
     var e = b.enterable, th = 0.4;
+    var garage = e.kind === 'garage', gap = garage ? 1.3 : 0.7;
+    var fH = Math.max(1, Math.round(Math.min(b.h, 9) / 3.4));
+    var sideMat = matFor(fH, b.groundSealed);
     var x0w = BR.tileCX(b.x0) - T / 2, x1w = BR.tileCX(b.x1) + T / 2;
     var z0w = BR.tileCZ(b.y0) - T / 2, z1w = BR.tileCZ(b.y1) + T / 2;
     function wallSeg(w, h, d, x, y, z) {
@@ -316,7 +598,7 @@
     var doorWX = BR.tileCX(e.doorTx), doorWZ = BR.tileCZ(e.doorTy);
     if (e.outDz !== 0) { // 南北面开门
       var zw = e.outDz < 0 ? z0w : z1w;
-      var segs = [[x0w, doorWX - 0.7], [doorWX + 0.7, x1w]];
+      var segs = [[x0w, doorWX - gap], [doorWX + gap, x1w]];
       segs.forEach(function (s) {
         if (s[1] - s[0] > 0.3) wallSeg(s[1] - s[0], H, th, (s[0] + s[1]) / 2, H / 2, zw);
       });
@@ -324,25 +606,55 @@
       wallSeg(th, H, z1w - z0w, x0w, H / 2, cz);
       wallSeg(th, H, z1w - z0w, x1w, H / 2, cz);
       // 门楣 + 敞开的门板
-      wallSeg(1.9, 0.5, th, doorWX, 2.45, zw);
+      wallSeg(garage ? 3.0 : 1.9, 0.5, th, doorWX, 2.45, zw);
       var panel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.2, 1.15),
         new THREE.MeshLambertMaterial({ color: 0x4a4238 }));
       panel.position.set(doorWX - 0.62, 1.1, zw + e.outDz * 0.55);
       panel.rotation.y = 1.1; W.reg(group, panel);
     } else { // 东西面开门
       var xw = e.outDx < 0 ? x0w : x1w;
-      var segs2 = [[z0w, doorWZ - 0.7], [doorWZ + 0.7, z1w]];
+      var segs2 = [[z0w, doorWZ - gap], [doorWZ + gap, z1w]];
       segs2.forEach(function (s) {
         if (s[1] - s[0] > 0.3) wallSeg(th, H, s[1] - s[0], xw, H / 2, (s[0] + s[1]) / 2);
       });
       wallSeg(th, H, z1w - z0w, e.outDx < 0 ? x1w : x0w, H / 2, cz);
       wallSeg(x1w - x0w, H, th, cx, H / 2, z0w);
       wallSeg(x1w - x0w, H, th, cx, H / 2, z1w);
-      wallSeg(th, 0.5, 1.9, xw, 2.45, doorWZ);
+      wallSeg(th, 0.5, garage ? 3.0 : 1.9, xw, 2.45, doorWZ);
       var panel2 = new THREE.Mesh(new THREE.BoxGeometry(1.15, 2.2, 0.08),
         new THREE.MeshLambertMaterial({ color: 0x4a4238 }));
       panel2.position.set(xw + e.outDx * 0.55, 1.1, doorWZ - 0.62);
       panel2.rotation.y = 1.1; W.reg(group, panel2);
+    }
+    // 室内地面：换室内材质（地砖缝混凝土，不再沿用街道 city_road）；覆盖室内 + 门洞 tile
+    if (!L.inFloorMat) {
+      if (!L.inFloorTex) L.inFloorTex = indoorFloorTex();
+      L.inFloorMat = new THREE.MeshLambertMaterial({ map: L.inFloorTex, color: 0xcfc9bb });
+      trackMat(W, L.inFloorMat);
+    }
+    var fx0 = Math.min(e.ix0, e.doorTx), fx1 = Math.max(e.ix1, e.doorTx);
+    var fz0 = Math.min(e.iy0, e.doorTy), fz1 = Math.max(e.iy1, e.doorTy);
+    var fwT = fx1 - fx0 + 1, fdT = fz1 - fz0 + 1;
+    var fgeo = new THREE.PlaneGeometry(fwT * T, fdT * T);
+    var fuv = fgeo.attributes.uv;
+    for (var fi = 0; fi < fuv.count; fi++)
+      fuv.setXY(fi, fuv.getX(fi) * fwT * T / 6, fuv.getY(fi) * fdT * T / 6);
+    fuv.needsUpdate = true;
+    var fl = new THREE.Mesh(fgeo, L.inFloorMat);
+    fl.rotation.x = -Math.PI / 2;
+    fl.position.set(BR.tileCX((fx0 + fx1) / 2), 0.03, BR.tileCZ((fz0 + fz1) / 2));
+    W.reg(group, fl);
+    if (garage) { // 停车场入口：油渍 + 靠里墙的残骸车（带碰撞）
+      var oil = new THREE.Mesh(new THREE.CircleGeometry(1.1, 12),
+        new THREE.MeshBasicMaterial({ color: 0x0a0a0c, transparent: true, opacity: 0.7, depthWrite: false }));
+      oil.rotation.x = -Math.PI / 2; oil.position.set(cx, 0.045, cz); W.reg(group, oil);
+      var wreck = buildCarMesh(0x3a3f45, true);
+      var wzx = e.outDz !== 0 ? cx : (e.outDx < 0 ? x1w - 1.7 : x0w + 1.7);
+      var wzz = e.outDz !== 0 ? (e.outDz < 0 ? z1w - 1.7 : z0w + 1.7) : cz;
+      var wrot = e.outDz !== 0 ? 0 : Math.PI / 2;
+      wreck.position.set(wzx, 0, wzz); wreck.rotation.y = wrot;
+      W.reg(group, wreck);
+      regCarObstacle(L, wzx, wzz, wrot);
     }
     // 室内顶（3m 暗顶）+ 灯泡假发光
     var ceil = new THREE.Mesh(new THREE.PlaneGeometry((b.x1 - b.x0) * T, (b.y1 - b.y0) * T),
@@ -351,8 +663,9 @@
     var bulb = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6),
       new THREE.MeshBasicMaterial({ color: 0xffd9a0 }));
     bulb.position.set(cx, 2.85, cz); W.reg(group, bulb);
-    // 上部体量（视觉封顶，不可上）
-    var cap = facadeBox(W, wT, Math.max(1, b.h - H), dT, sideMat, topMat);
+    // 上部体量（视觉封顶，不可上）：按实际层数取立面贴图，避免拉伸
+    var capFloors = Math.max(1, Math.round((b.h - H) / 3.4));
+    var cap = facadeBox(W, wT, Math.max(1, b.h - H), dT, matFor(capFloors, false), topMat);
     cap.position.set(cx, H + Math.max(1, b.h - H) / 2, cz); W.reg(group, cap);
     // 室内意义：补给箱 + 字条（直接建，不走 POI）
     var itx = (e.ix0 + e.ix1) >> 1, itz = (e.iy0 + e.iy1) >> 1;
@@ -660,26 +973,31 @@
         }
       });
 
-      /* ---------- 路灯 ---------- */
+      /* ---------- 路灯（杆贴路边，灯臂伸向路面；不站路中间） ---------- */
       poiList(map, 'streetlamp').forEach(function (p) {
         W.addChunkContent(p.tx, p.ty, function (group, chunk) {
-          var x = BR.tileCX(p.tx), z = BR.tileCZ(p.ty);
+          var n = wallNormal(W, p.tx, p.ty); // 朝开阔路面方向
+          var bx = BR.tileCX(p.tx) - n.x * 1.15, bz = BR.tileCZ(p.ty) - n.z * 1.15;
+          var lampG = new THREE.Group();
+          lampG.position.set(bx, 0, bz);
+          lampG.rotation.y = Math.atan2(n.x, n.z); // 灯臂朝路面
           var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.10, 4.4, 8),
             new THREE.MeshLambertMaterial({ color: 0x2c3138 }));
-          pole.position.set(x, 2.2, z); W.reg(group, pole);
-          var arm = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 0.08),
+          pole.position.set(0, 2.2, 0); lampG.add(pole);
+          var arm = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.1),
             new THREE.MeshLambertMaterial({ color: 0x2c3138 }));
-          arm.position.set(x + 0.5, 4.38, z); W.reg(group, arm);
-          var head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, 0.24),
+          arm.position.set(0, 4.38, 0.55); lampG.add(arm);
+          var head = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 0.5),
             new THREE.MeshBasicMaterial({ color: 0xffd9a0 }));
-          head.position.set(x + 0.95, 4.32, z); W.reg(group, head);
+          head.position.set(0, 4.32, 1.0); lampG.add(head);
           var cone = new THREE.Mesh(new THREE.ConeGeometry(1.35, 4.1, 12, 1, true),
             new THREE.MeshBasicMaterial({
               color: 0xffd9a0, transparent: true, opacity: 0.10,
               side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
             }));
-          cone.position.set(x + 0.95, 2.05, z); W.reg(group, cone);
-          chunk.fixtures.push({ x: x + 0.95, y: 4.1, z: z, phase: 0, flicker: false });
+          cone.position.set(0, 2.05, 1.0); lampG.add(cone);
+          W.reg(group, lampG);
+          chunk.fixtures.push({ x: bx + n.x * 1.0, y: 4.1, z: bz + n.z * 1.0, phase: 0, flicker: false });
         });
       });
 
@@ -940,23 +1258,63 @@
         });
       })();
 
-      /* ---------- 废弃汽车剪影（v1.3 细节保留）：纯装饰，无交互，不挡路 ---------- */
+      /* ---------- 车道线：主/次干道（≥2 宽）画中央虚线，巷道（1 宽）无 ---------- */
+      (function () {
+        if (!L.laneMat) {
+          L.laneMat = new THREE.MeshBasicMaterial({ color: 0xc9b458, transparent: true, opacity: 0.42, depthWrite: false });
+          trackMat(W, L.laneMat);
+        }
+        var roads = (map.meta.l11 && map.meta.l11.roads) || [];
+        roads.forEach(function (s) {
+          if (s[4] < 2) return; // 巷道不画线
+          var vert = s[0] === s[2];
+          var a0 = vert ? Math.min(s[1], s[3]) : Math.min(s[0], s[2]);
+          var a1 = vert ? Math.max(s[1], s[3]) : Math.max(s[0], s[2]);
+          var off = s[4] === 2 ? T / 2 : 0; // 2 宽路中心在两 tile 之间
+          for (var d = 1; d < a1 - a0 - 1; d += 3) {
+            (function (dd) {
+              var tx = vert ? s[0] : a0 + dd, ty = vert ? a0 + dd : s[1];
+              W.addChunkContent(tx, ty, function (group) {
+                var m = new THREE.Mesh(
+                  vert ? new THREE.PlaneGeometry(0.14, 1.7) : new THREE.PlaneGeometry(1.7, 0.14),
+                  L.laneMat);
+                m.rotation.x = -Math.PI / 2;
+                m.position.set(BR.tileCX(tx) + (vert ? off : 0), 0.025, BR.tileCZ(ty) + (vert ? 0 : off));
+                W.reg(group, m);
+              });
+            })(d);
+          }
+        });
+      })();
+
+      /* ---------- 废弃车辆：贴边停放 + 一处事故现场；全部带碰撞盒 ---------- */
       (function () {
         var crng = hashRng('l11car:' + map.seed);
         var cands = [];
         for (var yy = 3; yy < map.h - 3; yy++)
           for (var xx = 3; xx < map.w - 3; xx++) {
             if (map.tiles[yy * map.w + xx] !== 1) continue;
-            // 路边：至少一侧是建筑，且前后 2 格都是路（不堵死）
+            // 路边：至少一侧是建筑（不堵死路心）
             var side = (map.tiles[yy * map.w + xx + 1] === 0) || (map.tiles[yy * map.w + xx - 1] === 0) ||
                        (map.tiles[(yy + 1) * map.w + xx] === 0) || (map.tiles[(yy - 1) * map.w + xx] === 0);
             if (!side) continue;
             cands.push([xx, yy]);
           }
+        var placedCarTiles = [];
+        function carOK(c, minSpawn) {
+          if (Math.hypot(c[0] - sp.tx, c[1] - sp.ty) < (minSpawn || 8)) return false; // 不挡出生
+          for (var i = 0; i < map.pois.length; i++) {
+            var p = map.pois[i];
+            if (Math.hypot(p.tx - c[0], p.ty - c[1]) < 3) return false;
+          }
+          for (var j = 0; j < placedCarTiles.length; j++)
+            if (Math.hypot(placedCarTiles[j][0] - c[0], placedCarTiles[j][1] - c[1]) < 10) return false;
+          return true;
+        }
         var pts = [], guard = 0;
         while (pts.length < 2 && guard++ < 300 && cands.length) {
           var c = crng.pick(cands), ok = true, sideDx = 0, sideDz = 0;
-          if (Math.hypot(c[0] - sp.tx, c[1] - sp.ty) < 8) ok = false; // 不挡出生
+          if (!carOK(c)) ok = false;
           // 记下建筑在哪一侧，车贴边停放
           if (ok) {
             if (map.tiles[c[1] * map.w + c[0] + 1] === 0) sideDx = 1;
@@ -964,43 +1322,101 @@
             else if (map.tiles[(c[1] + 1) * map.w + c[0]] === 0) sideDz = 1;
             else sideDz = -1;
           }
-          for (var i = 0; i < map.pois.length && ok; i++) {
-            var p = map.pois[i];
-            if (Math.hypot(p.tx - c[0], p.ty - c[1]) < 3) ok = false;
-          }
-          for (var j = 0; j < pts.length && ok; j++)
-            if (Math.hypot(pts[j][0] - c[0], pts[j][1] - c[1]) < 10) ok = false;
-          if (ok) pts.push([c[0], c[1], sideDx, sideDz]);
+          if (ok) { pts.push([c[0], c[1], sideDx, sideDz]); placedCarTiles.push([c[0], c[1]]); }
         }
-        pts.forEach(function (pt) {
+        var paints = [0x3a3f45, 0x4a3a30, 0x2e3a3f];
+        pts.forEach(function (pt, pi) {
           W.addChunkContent(pt[0], pt[1], function (group) {
             // 贴建筑边停放（路缘 wreck，不占路心）
             var x = BR.tileCX(pt[0]) + pt[2] * 0.75, z = BR.tileCZ(pt[1]) + pt[3] * 0.75;
-            var car = new THREE.Group();
-            var paint = new THREE.MeshLambertMaterial({ color: [0x3a3f45, 0x4a3a30, 0x2e3a3f][pts.indexOf(pt) % 3] });
-            var rust = new THREE.MeshLambertMaterial({ color: 0x4a3826 });
-            var bodyM = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.7, 1.6), paint);
-            bodyM.position.y = 0.6; car.add(bodyM);
-            var cab = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.58, 1.45), paint);
-            cab.position.set(-0.15, 1.2, 0); car.add(cab);
-            var glass = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.38, 1.47),
-              new THREE.MeshLambertMaterial({ color: 0x0c0e12 }));
-            glass.position.set(-0.15, 1.22, 0); car.add(glass);
-            var wg = new THREE.CylinderGeometry(0.34, 0.34, 0.28, 10);
-            var wm = new THREE.MeshLambertMaterial({ color: 0x141518 });
-            [[-1.1, 0.8], [1.1, 0.8], [-1.1, -0.8], [1.1, -0.8]].forEach(function (o) {
-              var w = new THREE.Mesh(wg, wm);
-              w.rotation.x = Math.PI / 2;
-              w.position.set(o[0], 0.34, o[1]); car.add(w);
-            });
-            // 锈蚀补丁
-            var rp = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.45, 0.06), rust);
-            rp.position.set(0.7, 0.65, 0.82); car.add(rp);
+            var car = buildCarMesh(paints[pi % 3], true);
             car.position.set(x, 0, z);
             // 车头沿路边方向（平行建筑立面）
-            var along = pt[2] !== 0 ? Math.PI / 2 : 0;
-            car.rotation.y = along + (crng.next() - 0.5) * 0.25;
+            var rot = (pt[2] !== 0 ? Math.PI / 2 : 0) + (crng.next() - 0.5) * 0.25;
+            car.rotation.y = rot;
             W.reg(group, car);
+            regCarObstacle(L, x, z, rot);
+          });
+        });
+        // 事故现场：3 宽主干道上斜停一辆 + 两道刹车痕（叙事；9m 宽路，两侧仍可通行）
+        var accSegs = ((map.meta.l11 && map.meta.l11.roads) || []).filter(function (s) { return s[4] >= 3; });
+        if (accSegs.length) {
+          var seg = crng.pick(accSegs);
+          var vert = seg[0] === seg[2];
+          var a0 = vert ? Math.min(seg[1], seg[3]) : Math.min(seg[0], seg[2]);
+          var a1 = vert ? Math.max(seg[1], seg[3]) : Math.max(seg[0], seg[2]);
+          var at = a0 + 2 + Math.floor(crng.next() * Math.max(1, a1 - a0 - 4));
+          var atx = vert ? seg[0] : at, aty = vert ? at : seg[1];
+          if (map.tiles[aty * map.w + atx] === 1 && carOK([atx, aty], 10)) {
+            placedCarTiles.push([atx, aty]);
+            W.addChunkContent(atx, aty, function (group) {
+              var x = BR.tileCX(atx) + 0.4, z = BR.tileCZ(aty) - 0.3;
+              var car = buildCarMesh(0x4a2e28, true);
+              var rot = (vert ? Math.PI / 2 : 0) + 0.55; // 斜停
+              car.position.set(x, 0, z); car.rotation.y = rot;
+              W.reg(group, car);
+              regCarObstacle(L, x, z, rot);
+              // 刹车痕：车尾后两道深色拖痕（长轴沿车身方向）
+              var skidM = new THREE.MeshBasicMaterial({ color: 0x0b0b0d, transparent: true, opacity: 0.55, depthWrite: false });
+              for (var s2 = 0; s2 < 2; s2++) {
+                var skid = new THREE.Mesh(new THREE.PlaneGeometry(5.5, 0.22), skidM);
+                skid.rotation.x = -Math.PI / 2; skid.rotation.z = rot;
+                skid.position.set(x - Math.cos(rot) * (4.2 + s2 * 0.5), 0.02, z + Math.sin(rot) * (4.2 + s2 * 0.5));
+                W.reg(group, skid);
+              }
+            });
+          }
+        }
+      })();
+
+      /* ---------- 远景：城市天际线剪影层（防走到地图边看到虚空/整齐切断） ----------
+       * 四象限分别挂在边缘区块：地面围裙盖住地图外的虚空，18~73m 外雾中楼群剪影。
+       * 天空保持阴沉统一（theme），剪影不打灯、不加窗光。 */
+      (function () {
+        if (!L.skyMat) {
+          L.skyMat = new THREE.MeshLambertMaterial({ color: 0x232a36 });
+          trackMat(W, L.skyMat);
+        }
+        if (!L.apronMat) {
+          L.apronMat = new THREE.MeshLambertMaterial({ color: 0x14161a });
+          trackMat(W, L.apronMat);
+        }
+        var mapW = map.w * T, mapH = map.h * T, mcx = mapW / 2, mcz = mapH / 2;
+        [
+          { tx: 28, ty: 3, dx: 0, dz: -1 },   // 北
+          { tx: 28, ty: 52, dx: 0, dz: 1 },  // 南
+          { tx: 3, ty: 28, dx: -1, dz: 0 },  // 西
+          { tx: 52, ty: 28, dx: 1, dz: 0 }   // 东
+        ].forEach(function (q, qi) {
+          W.addChunkContent(q.tx, q.ty, function (group) {
+            var qrng = hashRng('l11sky:' + map.seed + ':' + qi);
+            // 地面围裙（盖住边缘外的虚空，中心压在边缘线上向外铺）
+            var apron = new THREE.Mesh(
+              new THREE.PlaneGeometry(q.dx !== 0 ? 250 : 500, q.dx !== 0 ? 500 : 250), L.apronMat);
+            apron.rotation.x = -Math.PI / 2;
+            apron.position.set(
+              q.dx !== 0 ? (q.dx < 0 ? -125 : mapW + 125) : mcx, -0.05,
+              q.dz !== 0 ? (q.dz < 0 ? -125 : mapH + 125) : mcz);
+            W.reg(group, apron);
+            // 剪影楼群（相对地图边缘定位，不在可玩区内）
+            var n = 10 + Math.floor(qrng.next() * 5);
+            for (var i = 0; i < n; i++) {
+              var along = (qrng.next() - 0.5) * 260;
+              var out = 18 + qrng.next() * 55;
+              var bx = q.dx !== 0 ? (q.dx < 0 ? -out : mapW + out) : mcx + along;
+              var bz = q.dz !== 0 ? (q.dz < 0 ? -out : mapH + out) : mcz + along;
+              var bw = 10 + qrng.next() * 18, bd = 10 + qrng.next() * 14;
+              var bh = 14 + qrng.next() * 46;
+              var m = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), L.skyMat);
+              m.position.set(bx, bh / 2 - 2, bz); // 基座下沉 2m
+              m.rotation.y = (qrng.next() - 0.5) * 0.3;
+              W.reg(group, m);
+              if (qrng.next() < 0.3) { // 天线剪影
+                var an = new THREE.Mesh(new THREE.BoxGeometry(0.5, 7, 0.5), L.skyMat);
+                an.position.set(bx, bh + 1.5, bz);
+                W.reg(group, an);
+              }
+            }
           });
         });
       })();
@@ -1021,6 +1437,12 @@
 
       /* ---------- 薄墙 ---------- */
       BR.buildThinWalls(map, W);
+
+      // 本关 canvas 贴图释放：立面材质走 _levelMats，贴图在这里兜底释放
+      trackMat(W, { dispose: function () {
+        (L.facTexList || []).forEach(function (t) { if (t && t.dispose) t.dispose(); });
+        if (L.inFloorTex && L.inFloorTex.dispose) L.inFloorTex.dispose();
+      } });
 
       W.objective = '探索混凝土森林：找到那口能掀开的井盖（→下层），或去地铁站';
     },
