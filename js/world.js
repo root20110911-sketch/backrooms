@@ -594,11 +594,26 @@
     }
     near.sort((a, b) => a.d2 - b.d2);
     const th = this.theme || {};
+    // P5：点光源重分配淡入淡出——灯具切换时先快速淡出（~0.17s）再在新位置淡入，
+    // 避免玩家看到灯"闪现"。_lfx=当前绑定的灯具（null=未分配），_lfade=0..1 系数。
+    const FADE_RATE = 6;
     for (let i = 0; i < this.lights.length; i++) {
       const L = this.lights[i];
-      if (this.blackout || i >= near.length || i >= maxL) { L.intensity = 0; continue; }
-      const f = near[i].f;
-      L.position.set(f.x, f.y, f.z);
+      const f = (!this.blackout && i < near.length && i < maxL) ? near[i].f : null;
+      if (L._lfx === undefined) {
+        L._lfx = f; L._lfade = f ? 1 : 0;
+        if (f) L.position.set(f.x, f.y, f.z);
+      } else if (L._lfx !== f) {
+        L._lfade = Math.max(0, (L._lfade == null ? 1 : L._lfade) - dt * FADE_RATE);
+        if (L._lfade <= 0) {
+          L._lfx = f;
+          if (f) L.position.set(f.x, f.y, f.z);
+        }
+      } else {
+        L._lfade = Math.min(1, (L._lfade == null ? 1 : L._lfade) + dt * FADE_RATE);
+      }
+      const fade = (L._lfade == null ? 1 : L._lfade);
+      if (!f) { L.intensity = 0; continue; }
       let inten = (th.lightInt != null ? th.lightInt : 0.9) * 0.92;
       inten *= (f.bright || 1); // W10：灯具个体亮度差异
       const flickDepth = th.flickerDepth != null ? th.flickerDepth : 0.15;
@@ -612,7 +627,7 @@
         const sd = Math.hypot(f.x - st.x, f.z - st.z);
         if (sd < st.r && Math.sin(this.time * 31 + f.phase * 3) > 0.1) inten *= 0.08;
       }
-      L.intensity = inten;
+      L.intensity = inten * fade;
       L.color.setHex(th.light != null ? th.light : 0xfff0d2); // 默认灯色偏微黄
     }
     // 玩家光跟随
@@ -755,6 +770,8 @@
     'exit', 'inspect', 'shop_sign', 'car_exit', 'castle_exit',
     // v1.5 W4（L11 城市重构）：特定井盖出口、异常门
     'manhole_exit', 'anomaly_door',
+    // v2.0 P4（L6 熄灯之时）："最安静的房间"电灯开关
+    'l6_switch',
     // F1 新增：跳水台（lv_l37）
     'dive_board',
     // v1.5 W5：小鸭子坐骑 / 金属扶梯（lv_l37）

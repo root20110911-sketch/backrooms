@@ -42,10 +42,14 @@
     /* —— E 路（v1.4）：跳跃 / 游泳物理 ——
      * JUMP_V/GRAVITY：初速 7 m/s + 重力 22 m/s² → 顶点约 1.11 m、滞空约 0.64 s；
      * 仅落地可跳（边沿触发，长按不连跳）；顶棚按 BODY_H 截断；落地冲击 >3.5 m/s 触发 landDip。
-     * 游泳：深水（depth>=SWIM_DEEP，与 BR.Swim DEEP_LINE 对齐）进入浮力模式；
-     *   空格=上浮(RISE_V)、C=下潜(DIVE_V)，无输入时以 (floatY-pos)*2.2 的速率逐渐漂回
-     *   FLOAT_OFF 下的漂浮位（眼高=水面+0.3，头部在水上），不瞬间弹回；
+     * 游泳（v2.0 P2 三维自由泳，MC 海洋更新手感）：
+     *   深水（depth>=SWIM_DEEP，与 BR.Swim DEEP_LINE 对齐）进入浮力模式；
+     *   空格=上浮(RISE_V)、C=下潜(DIVE_V)，按住持续，显式垂直输入优先；
+     *   前进 + 视角俯仰 → 斜向游（抬头上游、俯视下游，PITCH_SWIM 开关默认开）；
+     *   无输入 → 中性浮力悬停（vy→hoverT；bm=1 时 hoverT=0，深水不许僵硬上浮）；
+     *   bm>1（救生衣）轻微上浮倾向，bm<1（潜水服）轻微下沉倾向且垂直阻尼更快（悬停更稳）；
      *   游泳↔涉水切换带 0.15 滞回（1.0 进 / 0.85 出），防镜头抖。
+     *   （旧 FLOAT_OFF 漂浮回位语义已由悬停取代，常量保留防外部引用。）
      * 水体查询：D 路 BR.Levels.L37.waterAt（若已交付）优先，否则走共享 BR.Swim.zoneAt
      *   （L37/L7 通用）。地面高度：关卡可选 floorYAt(x,z)，默认 0。
      */
@@ -53,8 +57,16 @@
     BODY_H: 1.78,                 // 身体总高（头顶=脚底+1.78；站立眼高 1.62）
     SWIM_DEEP: 1.0,               // depth >= 此值进入游泳（与 BR.Swim DEEP_LINE 一致）
     SWIM_HYST: 0.15,              // 游泳退出滞回：depth < 0.85 才退回涉水
-    FLOAT_OFF: 1.32,              // 漂浮时脚底=水面-1.32（眼=水面+0.30）
+    FLOAT_OFF: 1.32,              // （旧）漂浮位常量；v2.0 P2 起悬停语义取代漂浮回位，仅保留防外部引用
     RISE_V: 2.8, DIVE_V: 2.4,     // 水中上浮 / 下潜速度
+    // —— v2.0 P2：三维自由泳手感参数（调数值只改这里，注释即文档） ——
+    // PITCH_SWIM：俯仰斜游开关（默认开）；PITCH_SWIM_V：满前进+极限俯仰时的垂直速度
+    // HOVER_BIAS_V：悬停偏置（m/s 每单位 bm 偏差）：bm=1→0 中性悬停；
+    //   bm=2.2（救生衣）→ +0.42 缓上浮；bm=0.85（潜水服）→ -0.05 微下沉
+    // SWIM_VDAMP：垂直 damp 系数；bm<1（潜水服）时 ×1.4，悬停更稳
+    // SWIM_ACCEL：水中水平加速度（陆地 cfg.ACCEL=26，水中更重、转向更平滑）
+    PITCH_SWIM: true, PITCH_SWIM_V: 2.6,
+    HOVER_BIAS_V: 0.35, SWIM_VDAMP: 6, SWIM_ACCEL: 6,
     _grounded: true,              // 是否在地面上（仅落地可跳）
     _mode: 'land',                // 'land' | 'wade'（浅水涉行）| 'swim'（游泳）
     _swim: false,                 // 游泳滞回锁存
@@ -206,17 +218,37 @@
   };
   P.eyeY = function () { return this.pos.y + this.eyeCur; };
 
-  P.reset = function (x, z, yaw) {
+  /* P0-1：reset 参数化——mode ∈ 'full'（新游戏）| 'travel'（普通跨关）| 'saved'（读档/死亡重试/回滚）。
+   * 'full'：旧行为 + 显式 hasFlashlight=false / flashlightOn=false
+   *   （修"回到标题→新游戏"不刷新页面时手电状态带进新局的泄漏）。
+   * 'travel'：只重置位置/速度/状态机/坐骑/临时 buff，保留 hp/sanity/hunger/stamina/
+   *   flashBat/hasFlashlight/diveLight 与氧气派生值（buoyancyModifier/oxygenMax/
+   *   oxygenDrainMul）；不碰任何资源数值。flashlightOn 保持（跨关连续性）。
+   * 'saved'：先按 full 重置，再由 main.js 按存档值恢复（现有恢复逻辑保留）。
+   * 注意：状态名字符串一律不改（审计 5.1 高风险耦合）；缺省 mode='full'（旧行为）。 */
+  P.reset = function (x, z, yaw, mode) {
+    const travel = (mode === 'travel');
     this.pos.set(x, 0, z); this.vel.set(0, 0, 0);
     this.yaw = yaw || 0; this.pitch = 0;
-    this.hp = 100; this.noise = 0; this.trauma = 0;
-    this.sanity = 100; this.sanWhispT = 6; this.sanStingT = 20;
-    this.hunger = 100; this._hungerWarned = false;
-    // W9：耐力/肾上腺素/水下照明灯复位（浮力/氧气由 W8 的 clearOxygenGear 等复位）
-    this.stamina = 100; this._staminaOut = false; this.adrenalineT = 0;
-    this.diveLight = null;
-    this._weakWarned = false; this._weakToastT = 40; this._starveT = 0; // 饥饿惩罚 E：虚弱字幕/归零掉血计时器
-    this.flashBat = 100; // 手电电池回满
+    if (!travel) {
+      this.hp = 100; this.noise = 0; this.trauma = 0;
+      this.sanity = 100; this.sanWhispT = 6; this.sanStingT = 20;
+      this.hunger = 100; this._hungerWarned = false;
+      // W9：耐力/肾上腺素/水下照明灯复位（浮力/氧气由 W8 的 clearOxygenGear 等复位）
+      this.stamina = 100; this._staminaOut = false; this.adrenalineT = 0;
+      this.diveLight = null;
+      this._weakWarned = false; this._weakToastT = 40; this._starveT = 0; // 饥饿惩罚 E：虚弱字幕/归零掉血计时器
+      this.flashBat = 100; // 手电电池回满
+      // P0-1：新游戏/读档基线显式清手电（回到标题→新游戏不刷新页面时的泄漏）
+      this.hasFlashlight = false; this.flashlightOn = false;
+    } else {
+      // P0-1 travel：临时 buff/警告计时器仍复位；资源数值一律保留
+      this.noise = 0; this.trauma = 0;
+      this.sanWhispT = 6; this.sanStingT = 20;
+      this._hungerWarned = false;
+      this._staminaOut = false; this.adrenalineT = 0;
+      this._weakWarned = false; this._weakToastT = 40; this._starveT = 0;
+    }
     this.crouching = false; this.running = false;
     this.extDipY = 0; this.extRoll = 0; this.extPitch = 0; this.extFov = 0;
     this.eyeCur = C().EYE;
@@ -225,12 +257,14 @@
     this._grounded = true; this._mode = 'land'; this._swim = false;
     this._headUnder = false; this._jumpPrev = false;
     this._extFloorY = 0; this._extFloorT = 0; this._physY = 0;
-    // v1.5 W8：状态机 / 坐骑 / 装备钩子复位
+    // v1.5 W8：状态机 / 坐骑复位；travel 保留氧气装备派生值，full/saved 走 clearOxygenGear
     this.state = 'walk';
     this._gravOn = true; this._collide = true;
     this.mountHandle = null;
-    this.buoyancyModifier = 1.0;
-    this.clearOxygenGear();
+    if (!travel) {
+      this.buoyancyModifier = 1.0;
+      this.clearOxygenGear();
+    }
     // 第三人称默认关闭，avatar 若已构建则隐藏（不销毁，下次切换复用）
     this.thirdPerson = false;
     if (this.avatar) this.avatar.visible = false;
@@ -562,14 +596,25 @@
   P.getOxygen = function () {
     return (BR.Swim && isFinite(BR.Swim.breath)) ? BR.Swim.breath : 100;
   };
-  P.setOxygenGear = function (max, drainMul) {
+  P.setOxygenGear = function (max, drainMul, refill) {
     this.oxygenMax = (max != null && max > 0) ? max : 100;
     this.oxygenDrainMul = (drainMul != null && drainMul > 0) ? drainMul : 1;
-    if (BR.Swim && BR.Swim.breath > this.oxygenMax) BR.Swim.breath = this.oxygenMax;
+    if (BR.Swim) {
+      if (BR.Swim.breath > this.oxygenMax) BR.Swim.breath = this.oxygenMax;
+      // v2.0 P2：refill=true 时把 breath 充满到上限（深海潜水服：呼吸条显示为满/极长）
+      if (refill && isFinite(BR.Swim.breath)) BR.Swim.breath = this.oxygenMax;
+    }
   };
   P.clearOxygenGear = function () {
     this.oxygenMax = 100;
     this.oxygenDrainMul = 1;
+    // v2.0 P2：上限回落时把 breath 钳回 100（防潜水服 10000 残留变相续航）
+    if (BR.Swim && BR.Swim.breath > 100) BR.Swim.breath = 100;
+  };
+  // v2.0 P2：是否穿着深海潜水服（供氧气 HUD / 游泳逻辑查询；装备态真值在 BR.Items.equipped）
+  P.hasDivingSuit = function () {
+    const I = BR.Items;
+    return !!(I && I.equipped && I.equipped.suit);
   };
 
   /* ================= E 路（v1.4）：跳跃 / 游泳垂直物理 =================
@@ -625,17 +670,30 @@
     return (world && world.theme && world.theme.wallH) || 3;
   };
 
-  // 游泳垂直分量：浮力 + 阻尼（无输入时逐渐漂回水面，不瞬间弹回）
-  // v1.5 W8：buoyancyModifier（救生衣钩子）——>1 时回漂/上浮更快、
-  // 下潜速度按 DIVE_V/bm 衰减（下潜需更主动输入）；全程 BR.damp 平滑，不硬锁高度。
-  P._swimVertical = function (dt, w, jumpHeld, diveHeld, groundY, world) {
-    const floatY = w.surface - this.FLOAT_OFF;
+  // 三维自由游泳垂直分量（v2.0 P2，MC 海洋更新手感）：
+  // - 显式垂直输入优先：C=下潜（救生衣按 DIVE_V/bm 抵抗）、Space=上浮（救生衣按 RISE_V*bm 增强），按住持续
+  // - 俯仰斜游：无显式垂直输入 + 前进时，按 pitch 给垂直分量（抬头上游、俯视下游），PITCH_SWIM 开关
+  // - 悬停：无输入时 vy→hoverT 中性浮力悬停（bm=1 时 hoverT=0）——不许深水僵硬上浮、不许无法悬停
+  // - bm>1（救生衣）轻微上浮倾向；bm<1（潜水服）轻微下沉倾向 + 垂直阻尼 ×1.4（悬停更稳）
+  // - 全程 BR.damp 平滑，不硬锁高度；池底/水面钳制保留（头肩可出水，身体不出水）
+  // - 性能：只用局部数字与 Math.sin，不 new 对象
+  P._swimVertical = function (dt, w, jumpHeld, diveHeld, groundY, world, mvZ) {
     const bm = (this.buoyancyModifier > 0) ? this.buoyancyModifier : 1;
+    const fz = (typeof mvZ === 'number') ? mvZ : 0;
     let vyT;
     if (diveHeld && !jumpHeld) vyT = -this.DIVE_V / bm;        // 下潜（救生衣抵抗）
     else if (jumpHeld && !diveHeld) vyT = this.RISE_V * bm;    // 上浮（救生衣增强）
-    else vyT = BR.clamp((floatY - this.pos.y) * 2.2 * bm, -1.4 * bm, 1.6 * bm); // 漂浮回位
-    this.vel.y = BR.damp(this.vel.y, vyT, 6, dt);
+    else {
+      // 中性浮力悬停偏置：bm=1 → 0（悬停）；bm>1 → 缓上浮；bm<1 → 微下沉
+      const hoverT = (bm - 1) * this.HOVER_BIAS_V;
+      let pitchVy = 0;
+      if (this.PITCH_SWIM && fz > 0.1 && this.pitch !== 0) {
+        pitchVy = Math.sin(this.pitch) * fz * this.PITCH_SWIM_V;
+      }
+      vyT = hoverT + pitchVy;
+    }
+    const vk = (bm < 1) ? this.SWIM_VDAMP * 1.4 : this.SWIM_VDAMP; // 潜水服悬停更稳
+    this.vel.y = BR.damp(this.vel.y, vyT, vk, dt);
     this.pos.y += this.vel.y * dt;
     // 池底
     const floorY = Math.max(groundY, (w.floor != null ? w.floor : 0));
@@ -645,7 +703,7 @@
     if (this.pos.y > maxY) { this.pos.y = maxY; if (this.vel.y > 0) this.vel.y = 0; }
   };
 
-  P._stepVertical = function (dt, input, world) {
+  P._stepVertical = function (dt, input, world, mvZ) {
     // —— 外部支撑检测：L37 跳水台 damp 等旧逻辑在 level.tick 里直接写 pos.y ——
     // 本帧若 pos.y 被外部抬升（>0.003），视为临时支撑面（0.18s 记忆，持续抬升则刷新）；
     // 被外部下压则立即清除。level.tick 在 player.update 之后跑，故用帧间差值检测。
@@ -681,7 +739,7 @@
 
     if (mode === 'swim') {
       this._grounded = false;
-      this._swimVertical(dt, w, jumpHeld, diveHeld, groundY, world);
+      this._swimVertical(dt, w, jumpHeld, diveHeld, groundY, world, mvZ);
     } else {
       // —— 陆地 / 浅水涉行：重力 + 跳跃 ——
       if (this._grounded && jumpPressed) {
@@ -778,8 +836,11 @@
     const tx = (rx * mv.x + fx * mv.z) * speed;
     const tz = (rz * mv.x + fz * mv.z) * speed;
 
-    this.vel.x = BR.damp(this.vel.x, tx, cfg.ACCEL, dt);
-    this.vel.z = BR.damp(this.vel.z, tz, cfg.ACCEL, dt);
+    // v2.0 P2：水中水平加速度更低（SWIM_ACCEL），游动更重、转向更平滑；
+    // _mode 为上一帧 _stepVertical 推导，1 帧延迟可接受
+    const hAcc = (this._mode === 'swim') ? this.SWIM_ACCEL : cfg.ACCEL;
+    this.vel.x = BR.damp(this.vel.x, tx, hAcc, dt);
+    this.vel.z = BR.damp(this.vel.z, tz, hAcc, dt);
     if (mv.x === 0 && mv.z === 0) {
       this.vel.x = BR.damp(this.vel.x, 0, cfg.FRICTION, dt);
       this.vel.z = BR.damp(this.vel.z, 0, cfg.FRICTION, dt);
@@ -788,7 +849,8 @@
     else { this.pos.x += this.vel.x * dt; this.pos.z += this.vel.z * dt; }
 
     // E 路（v1.4）：跳跃 / 游泳垂直物理（真实位移，非镜头晃动）
-    this._stepVertical(dt, input, world);
+    // v2.0 P2：把前进输入传给 _stepVertical（俯仰斜游用）
+    this._stepVertical(dt, input, world, mv.z);
 
     hSpeed = Math.hypot(this.vel.x, this.vel.z);
     moving = hSpeed > 0.4;
@@ -913,8 +975,9 @@
     const sh = this.trauma * this.trauma * shk;
     const shx = sh * 0.12 * Math.sin(performance.now() * 0.09);
     const shy = sh * 0.12 * Math.cos(performance.now() * 0.073);
-    // 低理智：视线轻微游移
-    const sanSway = this.sanity < 28 ? (28 - this.sanity) / 28 : 0;
+    // 低理智：视线轻微游移（v2.0 P1：纳入"低理智特效"开关，off 时关闭）
+    const sanityFxOff = input.settings && input.settings.sanityfx === 'off';
+    const sanSway = (!sanityFxOff && this.sanity < 28) ? (28 - this.sanity) / 28 : 0;
     const swayX = sanSway * 0.02 * Math.sin(performance.now() * 0.0011);
     const swayY = sanSway * 0.02 * Math.cos(performance.now() * 0.0009);
     // v1.5 W8：坐骑态相机由 handle 全权驱动（位/旋转都自己写），跳过玩家相机逻辑
