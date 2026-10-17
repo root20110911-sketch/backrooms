@@ -7,8 +7,9 @@
  *
  * v1.5 W7 重构：①中庭统一整体景观（草坪/交叉步道/左侧浅水池/中央圆形铺装/
  *   地面蓝色小地灯，四面高墙 wallH=12，四层窗，夜间无自然光；参考用户提供的参考图4）；
- *   ②真二层（二楼环廊+6 间客房+楼梯间上下连通，
- *   楼梯走关内淡入淡出换层）；③窗户四态进 map.meta.l188wins（窗帘遮挡/普通房间/
+ *   ②真垂直二层（与 1F 同一 tile 坐标系的独立 f2t 层：二层楼板/坡道/6 间客房/
+ *   走廊/楼梯间，楼梯为可行走的真实坡道，经 floorYAt 上下连通，不再是传送冒充）；
+ *   ③窗户四态进 map.meta.l188wins（窗帘遮挡/普通房间/
  *   异空间/事件窗+可穿越窗），确定性分配，卸载不重抽；④入口附近返回门（回来源层级）
  *   + 位置随机的紧急出口（目的地=已完成层级池）；⑤异空间窗对应房门强制锁死。
  *
@@ -16,20 +17,25 @@
  *   1F：出生小房间(26..29,16..19) → 敞开门框(27,20) → 阳台(20..35,21)俯瞰中庭
  *       → 西/东/南走廊环绕 → 10 间客房 + 休息室 + 员工室 + 楼梯间大厅(36..38,38..40)
  *   中庭(20..35,22..35)四周四层窗户（104 扇）；异常窗在南墙下（POI odd_window →L1）
- *   2F（南区 46..54 行，关内楼梯换层到达）：环廊(12..42,50) + 6 间客房 + 楼梯间大厅
+ *   2F（f2t 独立层，与 1F 同 footprint 垂直叠加；楼板高 3.57m）：
+ *       南/西/东走廊 + 6 间客房（301..306，分别在 201/202/205/206/208/209 正上方）
+ *       + 楼梯间（门厅/坡道/双侧平台/顶平台）；坡道 tile (37,39..42)，
+ *       z 117→129 上行 0→3.57m；2F 门与 1F 门同 tile 上下叠放
  *
- * v2.0 P5（百窗亭质量升级）：①四面层高微差（TIERS_BY_SIDE，打破完全对称）；
- *   ②tier2/3 封存（外观多层/实际两层 → "封锁"解释：常暗或百叶封死、永不翻转，
- *   异空间/事件/穿越只在 tier0/1）；③异空间窗加 av 变体（同类三档可辨识差异）；
- *   ④南墙 209 窗 sx:28→32，使其 x 落进 209 房横向范围（室内窗对位用）；
- *   ⑤分配兜底：curtain/room≥3、异空间种类≥3（任意种子不断言失败）。
+ * v2.0 P5（百窗亭建筑完整性重制）："真二层"改为真垂直二层——与 1F 同一 tile
+ *   坐标系的独立 f2t 层（同一建筑 footprint 垂直叠加）：二层楼板（3.57m）/
+ *   可行走楼梯坡道（tile (37,39..42)，z 117→129 上行 0→3.57m，经 floorYAt 连通）/
+ *   6 间客房（301..306，在 201/202/205/206/208/209 正上方）/ 走廊 / 楼梯间；
+ *   2F 门与 1F 门同 tile 上下叠放；旧的南区远端 tile=2 假二层与传送换层移除。
+ *   另：阳台栏杆/庭院水池沿补碰撞；客房取消 12m+3.4m 双吊顶（单一 3.4m）；
+ *   返回门移至北墙真实墙面上；W._l188onF2 改为真实读取的 W._l188floor。
  *
  * POI 类型（lv_l188.js 消费，见该文件头部的清单）：
  *   spawn / balcony / hotel_room / room_door / lounge / staff_room /
- *   radio / odd_window / stairwell / stair_up / return_door / emergency_exit /
+ *   radio / odd_window / stairwell / return_door / emergency_exit /
  *   note / crate / thin_wall（走廊墙边 1~2 处，跨关切出）
  *   （2F 内容不走 POI——通用可达性抽查要求全部 POI 从 spawn 可达；
- *    2F 数据放 map.meta.l188.f2，lv_l188.js 按定坐标构建）
+ *    2F 数据放 map.meta.l188f2 = {tiles, rooms, doors, stair}，lv_l188.js 构建）
  * CRITICAL: spawn, odd_window, stairwell（均在连通的雕刻区内）
  */
 (function () {
@@ -478,19 +484,26 @@
       for (var y = y0; y <= y1; y++)
         for (var x = x0; x <= x1; x++) setT(x, y, 1);
     }
-    // carve2：二层地板（tile=2）：渲染/碰撞与 1 相同，但 gen 侧 BFS/缝线检查只认 1，
-    // 因此二层天然"不可达"——只能经楼梯间换层到达，符合"楼梯真连楼层"。
-    function setT2(x, y, v) {
-      if (x > 0 && y > 0 && x < MW - 1 && y < MH - 1) map.tiles[y * MW + x] = v;
-    }
-    function carve2(x0, y0, x1, y1) {
+    // v2.0 P5 真垂直二层：二层 tile 层（f2t）与一层同一 tile 坐标系
+    // （同一建筑 footprint 垂直叠加），1=二层地板，0=墙/虚空。
+    // 渲染/碰撞/门由 lv_l188.js 按玩家所在楼层分别处理；
+    // map.tiles 只保留一层（不再使用 tile=2）。
+    var f2t = new Array(MW * MH);
+    for (var fzi = 0; fzi < MW * MH; fzi++) f2t[fzi] = 0;
+    function carveF2(x0, y0, x1, y1) {
       for (var y = y0; y <= y1; y++)
-        for (var x = x0; x <= x1; x++) setT2(x, y, 2);
+        for (var x = x0; x <= x1; x++)
+          if (x > 0 && y > 0 && x < MW - 1 && y < MH - 1) f2t[y * MW + x] = 1;
     }
     var poiN = 0, doorN = 0;
     function POI(type, tx, ty, data) {
       map.pois.push({ id: 'p' + (poiN++), type: type, tx: tx, ty: ty, data: data || {} });
     }
+    /* ---------- Stage 0：清空（gen.js 的随机房间+走廊作废，酒店自己画；L11 同款模式） ----------
+     * 否则 layerStructure 的随机地形会污染酒店 footprint，导致门洞 tile 被挖穿、
+     * 玩家可从酒店走进随机洞穴（"先是一座完整的酒店"要求建筑完整）。 */
+    for (var clr = 0; clr < map.tiles.length; clr++) map.tiles[clr] = 0;
+    map.rooms.length = 0;
     // 门 axis 取视觉正确的约定（门扇与所在墙共面）：
     //   南北墙（墙沿 X 走向）用 'x'，东西墙（墙沿 Z 走向）用 'z'。
     // 实测注记：gen.js 的 findDoorSpot 对南北/东西墙给的轴是反的，
@@ -515,7 +528,7 @@
       }
       return [dx, dy];
     }
-    // doorTile2：二层门位（两侧为 tile=2 的二层地板）
+    // doorTile2：二层门位（f2t 层：门洞 tile 为 0，两侧为二层地板 1）
     function doorTile2(dx, dy, axis) {
       var cands = axis === 'z'
         ? [[dx, dy], [dx, dy - 1], [dx, dy + 1]]
@@ -523,10 +536,10 @@
       for (var i2 = 0; i2 < cands.length; i2++) {
         var tx2 = cands[i2][0], ty2 = cands[i2][1];
         if (tx2 < 1 || ty2 < 1 || tx2 >= MW - 1 || ty2 >= MH - 1) continue;
-        if (map.tiles[ty2 * MW + tx2] !== 0) continue;
-        var a2 = axis === 'z' ? map.tiles[ty2 * MW + tx2 - 1] : map.tiles[(ty2 - 1) * MW + tx2];
-        var b2 = axis === 'z' ? map.tiles[ty2 * MW + tx2 + 1] : map.tiles[(ty2 + 1) * MW + tx2];
-        if (a2 === 2 && b2 === 2) return [tx2, ty2];
+        if (f2t[ty2 * MW + tx2] !== 0) continue;
+        var a2 = axis === 'z' ? f2t[ty2 * MW + tx2 - 1] : f2t[(ty2 - 1) * MW + tx2];
+        var b2 = axis === 'z' ? f2t[ty2 * MW + tx2 + 1] : f2t[(ty2 + 1) * MW + tx2];
+        if (a2 === 1 && b2 === 1) return [tx2, ty2];
       }
       return [dx, dy];
     }
@@ -570,24 +583,36 @@
     carve(25, 39, 32, 44);
     carve(40, 39, 44, 43);
 
-    /* —— 1F 楼梯间大厅（真连二层）：南走廊东侧 —— */
-    carve(36, 38, 38, 40);
+    /* —— 1F 楼梯间大厅（真垂直二层：门厅 + 楼梯井；(37,38) 留墙洞装真门） —— */
+    carve(36, 38, 36, 38);   // 门厅西格（(37,38) 留作墙洞）
+    carve(38, 38, 38, 38);   // 门厅东格
+    carve(36, 39, 38, 43);   // 楼梯井（x=37 列为上行坡道，12m 行程上行 3.57m）
 
-    /* —— 2F（南区；关内楼梯换层到达，不走 POI 以免可达性抽查失败） —— */
-    carve2(12, 50, 42, 50);   // 2F 环廊
+    /* —— 2F（真垂直二层：与 1F 同一 tile 坐标系，f2t 独立层；
+     *   不走 POI——通用可达性抽查要求全部 POI 从 spawn 可达） —— */
+    carveF2(17, 37, 44, 37);   // 2F 南走廊（1F 南走廊正上方）
+    carveF2(17, 22, 17, 35);   // 2F 西走廊
+    carveF2(38, 22, 38, 35);   // 2F 东走廊
+    carveF2(17, 36, 17, 36);   // 2F 西连接段
+    carveF2(38, 36, 38, 36);   // 2F 东连接段
+    carveF2(36, 38, 36, 38);   // 2F 楼梯间门厅西格（(37,38) 留墙洞，与 1F 门上下叠放）
+    carveF2(38, 38, 38, 38);   // 2F 楼梯间门厅东格
+    carveF2(37, 39, 37, 42);   // 2F 楼梯坡道（lv 侧 floorYAt 按 z 插值 0→3.57m）
+    carveF2(36, 39, 36, 42);   // 2F 坡道西侧平台
+    carveF2(38, 39, 38, 42);   // 2F 坡道东侧平台
+    carveF2(36, 43, 38, 43);   // 2F 坡道顶平台
     var f2rooms = [
-      { x: 14, y: 46, w: 5, h: 3, num: '301', dx: 16, dy: 49, axis: 'x' },
-      { x: 21, y: 46, w: 5, h: 3, num: '302', dx: 23, dy: 49, axis: 'x' },
-      { x: 28, y: 46, w: 5, h: 3, num: '303', dx: 30, dy: 49, axis: 'x' },
-      { x: 14, y: 52, w: 5, h: 3, num: '304', dx: 16, dy: 51, axis: 'x' },
-      { x: 21, y: 52, w: 5, h: 3, num: '305', dx: 23, dy: 51, axis: 'x' },
-      { x: 28, y: 52, w: 5, h: 3, num: '306', dx: 30, dy: 51, axis: 'x' }
+      { x: 11, y: 23, w: 5, h: 4, num: '301', dx: 16, dy: 24, axis: 'z' },
+      { x: 11, y: 28, w: 5, h: 4, num: '302', dx: 16, dy: 29, axis: 'z' },
+      { x: 40, y: 23, w: 5, h: 4, num: '303', dx: 39, dy: 24, axis: 'z' },
+      { x: 40, y: 28, w: 5, h: 4, num: '304', dx: 39, dy: 29, axis: 'z' },
+      { x: 21, y: 39, w: 4, h: 4, num: '305', dx: 22, dy: 38, axis: 'x' },
+      { x: 31, y: 39, w: 4, h: 4, num: '306', dx: 32, dy: 38, axis: 'x' }
     ];
     for (var fi = 0; fi < f2rooms.length; fi++) {
       var fr = f2rooms[fi];
-      carve2(fr.x, fr.y, fr.x + fr.w - 1, fr.y + fr.h - 1);
+      carveF2(fr.x, fr.y, fr.x + fr.w - 1, fr.y + fr.h - 1);
     }
-    carve2(36, 52, 38, 53);   // 2F 楼梯间大厅
 
     /* —— 门：约 70% 上锁（休息室/员工室/楼梯间常开，保证出口可达） —— */
     var shuffled = rng.shuffle(guests.slice());
@@ -599,6 +624,7 @@
     for (i = 0; i < guests.length; i++) {
       g = guests[i];
       var spot = doorTile(g.dx, g.dy, g.axis);
+      g.doorSpot = spot; // 2F 门叠放用：同几何客房的 2F 门与此同 tile
       g.doorId = DOOR(spot[0], spot[1], g.axis, g.locked, g.num + ' 房门');
       g.winKind = rng.pick(['warm', 'warm', 'warm', 'cold', 'cold', 'dark', 'blinds']);
       POI('hotel_room', Math.round(g.x + (g.w - 1) / 2), Math.round(g.y + (g.h - 1) / 2),
@@ -614,24 +640,57 @@
     POI('room_door', loungeSpot[0], loungeSpot[1], { doorId: loungeDoor, num: '休息室', locked: false });
     POI('room_door', staffSpot[0], staffSpot[1], { doorId: staffDoor, num: '员工室', locked: false });
     POI('room_door', stairSpot[0], stairSpot[1], { doorId: stairDoor, num: '楼梯间', locked: false });
-    POI('stair_up', 37, 39, {});   // 1F 楼梯间大厅内：上楼交互点
     POI('return_door', 27, 16, {}); // 出生房北墙：返回来时的门
 
-    /* —— 2F 门（进 meta，不走 map.doors/POI；lv 按定坐标构建） —— */
+    /* —— 2F 门（进 meta，不走 map.doors/POI；与 1F 门同 tile 上下叠放，lv 构建） —— */
     var f2doors = [];
     var f2shuf = rng.shuffle(f2rooms.slice());
     for (fi = 0; fi < f2rooms.length; fi++) f2rooms[fi].locked = true;
     f2shuf[0].locked = false;
     f2shuf[1].locked = false;
+    // 2F 门位：与同几何 1F 客房的门同 tile 叠放（doorTile 在 1F/2F 独立微调会错位，
+    // 故优先采用 1F 门位并校验其在 f2t 层亦为合法墙洞；否则回退 doorTile2）
+    function f2DoorSpot(fr) {
+      for (var gi = 0; gi < guests.length; gi++) {
+        var g0 = guests[gi];
+        if (g0.x === fr.x && g0.y === fr.y && g0.w === fr.w && g0.h === fr.h && g0.doorSpot) {
+          var sx = g0.doorSpot[0], sy = g0.doorSpot[1];
+          if (f2t[sy * MW + sx] === 0) {
+            var sa = fr.axis === 'z' ? f2t[sy * MW + sx - 1] : f2t[(sy - 1) * MW + sx];
+            var sb = fr.axis === 'z' ? f2t[sy * MW + sx + 1] : f2t[(sy + 1) * MW + sx];
+            if (sa === 1 && sb === 1) return [sx, sy];
+          }
+          break;
+        }
+      }
+      return doorTile2(fr.dx, fr.dy, fr.axis);
+    }
     for (fi = 0; fi < f2rooms.length; fi++) {
       fr = f2rooms[fi];
-      var fspot = doorTile2(fr.dx, fr.dy, fr.axis);
+      var fspot = f2DoorSpot(fr);
       f2doors.push({ id: 'd2_' + fi, tx: fspot[0], ty: fspot[1], axis: fr.axis,
-        locked: fr.locked, label: fr.num + ' 房门', num: fr.num, room: fr });
+        locked: fr.locked, label: fr.num + ' 房门', num: fr.num, room: fr, floor: 1 });
     }
-    var f2stairSpot = doorTile2(37, 51, 'x');
+    var f2stairSpot = doorTile2(37, 38, 'x');
     f2doors.push({ id: 'd2_stair', tx: f2stairSpot[0], ty: f2stairSpot[1], axis: 'x',
-      locked: false, label: '楼梯间', num: '楼梯间', room: null });
+      locked: false, label: '楼梯间', num: '楼梯间', room: null, floor: 1 });
+
+    /* —— 回填 map.rooms（Stage 0 已清空；下游 ensureConnected/涂鸦/测试用） —— */
+    (function fillRooms() {
+      var rl = [
+        ['spawn_room', 26, 16, 4, 4], ['atrium', 20, 22, 16, 14], ['balcony', 20, 21, 16, 1],
+        ['corr_w', 17, 22, 1, 14], ['corr_e', 38, 22, 1, 14], ['corr_s', 17, 37, 28, 1],
+        ['lounge', 25, 39, 8, 6], ['staff', 40, 39, 5, 5],
+        ['stair_hall', 36, 38, 3, 1], ['stair_shaft', 36, 39, 3, 5]
+      ];
+      for (var gi = 0; gi < guests.length; gi++)
+        rl.push(['guest_' + guests[gi].num, guests[gi].x, guests[gi].y, guests[gi].w, guests[gi].h]);
+      for (var ri = 0; ri < rl.length; ri++) {
+        var r = rl[ri];
+        map.rooms.push({ id: 'r' + ri, x: r[1], y: r[2], w: r[3], h: r[4], tag: r[0],
+          cx: r[1] + (r[3] - 1) / 2, cy: r[2] + (r[4] - 1) / 2 });
+      }
+    })();
 
     /* —— 紧急出口：5 个候选位 rng 选 1（位置不定；目的地=已完成层级池） —— */
     var EMERG_CANDS = [
@@ -867,7 +926,8 @@
         }
       }
       map.meta.l188wins = wins;
-      map.meta.l188f2 = { rooms: f2rooms, doors: f2doors, stairDown: { tx: 37, ty: 52 } };
+      map.meta.l188f2 = { tiles: f2t, rooms: f2rooms, doors: f2doors,
+        stair: { tx: 37, ty0: 39, ty1: 42 } };
     })();
   }
 
