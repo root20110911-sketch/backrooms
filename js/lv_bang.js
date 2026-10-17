@@ -4,8 +4,10 @@
  *
  * 玩法：载入即面向逃跑方向；警报 + 身后动静预热 6 秒；随后追逐者沿路线
  *   BFS 追击（真追逐，不是只放声音）。被抓到：-30 生命 + 击退 + 追逐者硬直 4.5s
- *   （不许必败）。追逐者移速 4.0~4.55（玩家耐力限制下可持续约 4.87，疾跑 5.6），
- *   管好耐力+干净跳跃能缓慢拉开；障碍/转弯/耐力耗尽会吃掉优势（不许无脑冲刺无压力）。
+ *   （不许必败）。追逐者移速为距离橡皮筋（>20m:6.4 / 10~20m:6.2 / 5~10m:5.8 /
+ *   <5m:5.0，终段 lane7~8 各 +0.3；玩家疾跑 5.6，本关肾上腺素不耗耐力），
+ *   目标全程 3~8m 压迫感：干净跑位缓慢拉开、1~2 次小失误可逃脱、连续犯错会被抓。
+ *   障碍/转弯/大失误会吃掉优势（不许无脑冲刺无压力，不许瞬移/穿墙）。
  * 障碍：半开门/病床/椅子（高，需绕行）+ 整幅杂物堆（低，h=0.8，必须跳，
  *   玩家跳跃顶点 1.11m）。碰撞为运行时推挤（tile 碰撞之外），跳起越过低障碍。
  * 补给：走过即自动拾取（边跑边拾）；快捷栏（按钮/数字键 1/2）直接使用杏仁水/绷带。
@@ -71,6 +73,19 @@
 
   /* ================= 运行时态 ================= */
   var S = null;
+  // 离开本关的兜底清理：框架没有 onExit 机制、切关后本关 tick 不再跑，
+  // 只靠 tick 守卫 cleanup() 会泄漏（quickbar DOM 常驻别关、钩子槽位被占）。
+  // watcher 在 onEnter 启动、cleanup 后自停；400ms 内发现 level 切走就清场。
+  var _leaveWatch = null;
+  function watchLeave() {
+    if (_leaveWatch) return;
+    _leaveWatch = setInterval(function () {
+      try {
+        if (S && BR.Game && BR.Game.level && BR.Game.level !== 'bang') cleanup();
+        if (!S) { clearInterval(_leaveWatch); _leaveWatch = null; }
+      } catch (e) {}
+    }, 400);
+  }
   function newState() {
     return {
       warmup: 6, warmSndT: 0,          // 预热：警报 + 身后动静
@@ -316,7 +331,11 @@
     setTimeout(function () { BR.Bang.travelOut(dest); }, 900);
   }
 
-  /* ================= 快捷栏（边跑边用道具） ================= */
+  /* ================= 快捷栏（边跑边用道具） =================
+   * P1 统一交互管线：桌面数字键走 BR.Input.levelKeyHandler（input.js 的 keydown
+   * 分发在「游玩态 && 未锁定 && code 未被全局改键占用」时调用；离开本关时清掉）。
+   * 触屏按钮直接调统一入口 BR.UI.useItem（与背包/道具同一条使用链路）。
+   * 功能（追逐中不用开背包就能喝杏仁水/打绷带）保持不变。 */
   function ensureQuickbar() {
     if (S.qb || !document.body) return;
     var div = document.createElement('div');
@@ -357,20 +376,30 @@
     }
   }
   function bindQuickKeys() {
-    if (S.keyH) return;
-    S.keyH = function (e) {
-      if (e.repeat) return;
-      if (!BR.Game || BR.Game.level !== 'bang' || BR.Game.state !== 'playing') return;
+    if (S.keyH || !BR.Input) return;
+    // 关卡级按键钩子：input.js 只把「未被全局改键绑定」的 code 送进来，
+    // Digit1/2 在 DEFAULT_BINDINGS 里是空闲的；用户若自行改绑占用了它们，
+    // 改键分发优先，本钩子自动让路（无冲突）。
+    var me = function (e) {
+      if (!BR.Game || BR.Game.level !== 'bang') {
+        // 已离开本关：懒清除（切关后本关 tick 不再跑，靠这次按键自清；
+        // 清之前不做任何事，保证「只在本关生效」）
+        if (BR.Input && BR.Input.levelKeyHandler === me) BR.Input.levelKeyHandler = null;
+        return;
+      }
       if (e.code === 'Digit1') BR.UI.useItem('almond');
       else if (e.code === 'Digit2') BR.UI.useItem('bandage');
     };
-    window.addEventListener('keydown', S.keyH);
+    S.keyH = me;
+    BR.Input.levelKeyHandler = me;
   }
 
   function cleanup() {
     if (!S) return;
     if (S.qb && S.qb.parentNode) S.qb.parentNode.removeChild(S.qb);
-    if (S.keyH) window.removeEventListener('keydown', S.keyH);
+    // 清关卡级按键钩子（只清自己挂的那个，不动别人的）
+    if (S.keyH && BR.Input && BR.Input.levelKeyHandler === S.keyH) BR.Input.levelKeyHandler = null;
+    S.keyH = null;
     if (S.chaser && S.chaser.mesh && S.chaser.mesh.parent) S.chaser.mesh.parent.remove(S.chaser.mesh);
     // v1.5 W6：恢复耐力消耗（离开本关即失效；默认 1，不影响其他关卡）
     try { if (BR.Player) BR.Player.staminaDrainMul = 1; } catch (e) {}
@@ -409,6 +438,7 @@
       ensureQuickbar();
       bindQuickKeys();
       updateQuickbar();
+      watchLeave(); // 离关兜底清理（见 watchLeave 注释）
     },
 
     tick: function (dt) {
@@ -451,9 +481,17 @@
             Math.floor(P.pos.x / T), Math.floor(P.pos.z / T));
           ch.pathI = 0; ch.repathT = 0.5;
         }
-        var speed = 4.2;                    // 基础：低于玩家可持续速度（耐力限制下约 4.87）
-        if (dist > 30) speed = 4.55;        // 掉太远：加速（仍 < 疾跑 5.6，干净冲刺能拉开）
-        else if (dist < 10) speed = 4.0;    // 贴太近：减速，给反应空间
+        // P5 追逐调优（实测见 tools/e2e/bang-chase-p5.js）：
+        // 旧曲线 4.0~4.55 全程低于疾跑 5.6 → 预热后距离只增不减（"永远追不上"）。
+        // 新曲线为距离橡皮筋：目标把欧几里得距离压在 3~8m 压迫带（玩家体感距离），
+        // 干净跑位缓慢拉开、小失误（减速 ~1s）会被追上、大/连续失误会被抓。
+        // 终段（lane 7~8）+0.3 收官压迫。不许瞬移/穿墙：全程仍走 BFS 路径。
+        var finale = (P.pos.z > 112) ? 0.3 : 0; // laneY0(7)=39 → cz=120；z>112 即最后两条走廊
+        var speed;
+        if (dist > 20) speed = 6.4 + finale;      // 掉太远：强力回追（> 疾跑 5.6）
+        else if (dist > 10) speed = 6.2 + finale; // 中距离：明显快于玩家，持续施压
+        else if (dist > 5) speed = 5.8 + finale;  // 压迫带：略快于疾跑，缓慢磨进抓取区
+        else speed = 5.0 + finale;               // 贴身：略减速，给反应/小失误空间
         if (ch.path && ch.pathI < ch.path.length) {
           var wp = ch.path[ch.pathI];
           var wx = wp.x - ch.x, wz = wp.z - ch.z;

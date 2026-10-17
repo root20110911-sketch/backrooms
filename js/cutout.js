@@ -4,7 +4,8 @@
  *   opts: { kind: 'walk'|'rift'|'hole'|'berry'|'slide'|'drop'|'water',
  *           pre: 保留字段(暂未用), dropText: 抵达后提示文字 }
  *   流程：kind 专属前段 → BR.Game.gotoLevel(to) → 抵达演出(空中→失衡→落地→撑地→爬起)
- *         → 交还控制。全程 Input 锁定，30s 看门狗兜底。
+ *         → 交还控制。全程 Input 锁定，30s 看门狗兜底（触发即视为加载失败，
+ *         无条件解锁输入 + 弹失败界面，不许只清 busy）。
  *   镜头强度：BR.Input.settings.dropcam ∈ 'full'|'soft'|'off'（默认 'full'）。
  *
  * BR.Rifts：随机裂隙（运行时选点，可复现）。
@@ -101,10 +102,43 @@
       self.busy = false;
       if (BR.Game.state === 'playing') BR.Input.setLocked(false);
     };
-    // 30 秒看门狗：绝不永久锁死
+    // P0-4：加载失败统一处理（不是静默 finish）——无条件解锁输入、清 busy、弹失败界面
+    const failLoad = (err) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(watchdog);
+      const p = P();
+      if (p) { p.extDipY = 0; p.extRoll = 0; p.extPitch = 0; p.extFov = 0; }
+      document.body.classList.remove('dropping');
+      document.body.classList.remove('underwater');
+      // P0-4：失败时转场遮罩绝不能盖住失败界面——_pre 可能已把它拉黑，
+      // 也可能上一个转场（如 newGame 的 drop 掉落感）还没播完（此时 _hideOv 会因
+      // BR.Trans.active 直接 return，遮罩以 pointer-events:auto 盖在 loading 屏上，
+      // 失败按钮点不到——实测根因）。失败路径等不起外层收尾：立刻强制隐藏+让出点击，
+      // 并跳过进行中的可跳过转场让它尽快收尾。transitions.js 不动：_finish 的收尾
+      // 动作（opacity 0 / pointerEvents none / 去 show）与隐藏状态一致，无冲突。
+      const ovEl = ov();
+      ovEl.style.transition = 'opacity 200ms linear';
+      ovEl.style.opacity = 0;
+      ovEl.style.pointerEvents = 'none';
+      ovEl.classList.remove('show');
+      if (BR.Trans && BR.Trans.skip) BR.Trans.skip();
+      self.busy = false;
+      const G = BR.Game;
+      // 补齐重试上下文（_pre 抛错时 loadLevel 还没跑过）
+      G._loadFailCtx = { level: to, opts: opts };
+      if (G && G._loadFailed) {
+        if (G.state === 'title') BR.Input.setLocked(false); // 回滚失败已回标题，不再弹界面
+        else if (G.state === 'loadfail' && G._loadError === err) BR.Input.setLocked(false); // loadLevel 已处理过
+        else G._loadFailed(err);
+      } else {
+        BR.Input.setLocked(false);
+      }
+    };
+    // P0-4：30 秒看门狗——触发 = 视为加载失败，走同一失败处理（不许只清 busy）
     const watchdog = setTimeout(() => {
       BR.warn('Cutout watchdog fired:', from, '->', to, kind);
-      finish();
+      failLoad(new Error('切出超时（30s 看门狗）: ' + from + ' -> ' + to));
     }, 30000);
 
     try {
@@ -116,7 +150,8 @@
       }
       BR.Game.autosave();                   // gotoLevel 内部 loadLevel 已存过一次；这里补一次保证事件落盘
     } catch (e) {
-      BR.warn('Cutout.travel failed', e);
+      failLoad(e); // P0-4：await 失败 → 失败处理（解锁输入+失败界面），不是静默 finish
+      return;
     }
     finish();
   };

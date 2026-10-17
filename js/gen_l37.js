@@ -501,7 +501,10 @@
       var dwx = (deepPit.tx0 + deepPit.tx1 + 1) / 2 * TILE;
       var dwz = (deepPit.ty0 + deepPit.ty1 + 1) / 2 * TILE;
       var deepDepth = +(SURF - deepPit.floorY).toFixed(2);
-      // 交互射线最远 4m：圆环/浮标放在 POI 朝坑心 2m 处（坑边水下），而非坑心
+      // 交互射线最远 4m：浮标放在 POI 朝坑心 2m 处（坑边水下）。
+      // v2.0 P3：tunnel 圆环改放坑心 —— 坑边 2m 处常落在台阶上（水深<1m），
+      // 玩家站台阶上头在水面之上，永远满足不了"潜入水中才能进入"；坑心水深 2.7，
+      // 可下潜、头可没入，圆环在视野正中也更易发现。
       function edgePoint(ptx, pty) {
         var cx = (ptx + 0.5) * TILE, cz = (pty + 0.5) * TILE;
         var dx = dwx - cx, dz = dwz - cz, d = Math.hypot(dx, dz) || 1;
@@ -517,13 +520,13 @@
         addPOI('deep_zone', ring[bi][0], ring[bi][1],
           { depth: deepDepth, wx: edgePoint(ring[bi][0], ring[bi][1])[0], wz: edgePoint(ring[bi][0], ring[bi][1])[1] });
         addPOI('tunnel', ring[bj][0], ring[bj][1],
-          { depth: deepDepth, wx: edgePoint(ring[bj][0], ring[bj][1])[0], wz: edgePoint(ring[bj][0], ring[bj][1])[1] });
+          { depth: deepDepth, wx: dwx, wz: dwz }); // v2.0 P3：圆环在坑心（见上）
       } else if (ring.length === 1) {
         addPOI('deep_zone', ring[0][0], ring[0][1],
           { depth: deepDepth, wx: edgePoint(ring[0][0], ring[0][1])[0], wz: edgePoint(ring[0][0], ring[0][1])[1] });
         var alt = nearestFloorTile(picked[0], deepPit.tx0, deepPit.ty0 - 1);
         addPOI('tunnel', alt[0], alt[1],
-          { depth: deepDepth, wx: edgePoint(alt[0], alt[1])[0], wz: edgePoint(alt[0], alt[1])[1] });
+          { depth: deepDepth, wx: dwx, wz: dwz }); // v2.0 P3：圆环在坑心（见上）
       }
     }
     // 浅水出口：次间（必浅）东缘
