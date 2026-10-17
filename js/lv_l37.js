@@ -133,19 +133,22 @@
   });
 
   // 水面：蓝绿底 + 白色不规则波纹亮带（参考图3样式：风吹水面的横向亮带）
-  // 确定性伪随机（LCG，贴图稳定）；整数周期正弦保证横向无缝，
-  // 纵向边缘淡出保证纵向无缝（水面按 chunk 逐块铺设）。
+  // 确定性伪随机（LCG，贴图稳定）；整数周期正弦保证横向无缝。
+  // v2.1 W-l37 根本修法（替代旧纵向 destination-in 淡出）：
+  //   每个 chunk 都是同一张贴图 UV 0..1 —— 相邻 chunk 在共享边的波纹函数值
+  //   本就完全相同；旧淡出让共享边双重淡出，反而压出一条透明度下凹的细缝线。
+  //   新做法：底色改纯色（纵向渐变会在共享边形成"深→浅"重置缝），波纹天然连续，
+  //   细碎波纹做横向 wraparound 绘制，边缘不断线 → 真正无缝。
   BR.Textures.registerTex('pool_water', function (w, h) {
     var c = mkCanvas(w, h), x = c.getContext('2d');
     x.clearRect(0, 0, w, h);
     var seed = 0x37a5;
     function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
-    // 蓝绿底
-    var grd = x.createLinearGradient(0, 0, 0, h);
-    grd.addColorStop(0, 'rgba(52,148,160,0.88)');
-    grd.addColorStop(1, 'rgba(38,124,142,0.88)');
-    x.fillStyle = grd; x.fillRect(0, 0, w, h);
+    // 蓝绿底：纯色（清澈柔和，不过度饱和）
+    x.fillStyle = 'rgba(46,138,152,0.88)';
+    x.fillRect(0, 0, w, h);
     // 主波纹亮带：横向不规则白色亮带（y(x) 用整数周期正弦 → 横向无缝）
+    // v2.1：亮度略收（清澈柔和；alpha 0.30+rnd*0.32 → 0.24+rnd*0.28）
     var bi;
     for (bi = 0; bi < 12; bi++) {
       var y0 = (bi + 0.5) * h / 12 + (rnd() - 0.5) * h / 14;
@@ -153,7 +156,7 @@
       var k = 2 + Math.floor(rnd() * 3); // 整数周期
       var ph = rnd() * 6.2832;
       var thick = 3 + rnd() * 8;
-      var alpha = 0.30 + rnd() * 0.32;
+      var alpha = 0.24 + rnd() * 0.28;
       x.strokeStyle = 'rgba(238,252,255,' + alpha.toFixed(2) + ')';
       x.lineWidth = thick; x.lineCap = 'round';
       x.beginPath();
@@ -173,25 +176,36 @@
       }
       x.stroke();
     }
-    // 细碎小波纹（短横向亮划线）
+    // 细碎小波纹（短横向亮划线；横向 wraparound 绘制，chunk 边缘不断线）
     var fi;
+    function strokeWrap(sx, sy, sl, style, lw) {
+      x.strokeStyle = style; x.lineWidth = lw; x.lineCap = 'round';
+      function one(ox) {
+        x.beginPath(); x.moveTo(sx + ox, sy);
+        x.quadraticCurveTo(sx + ox + sl / 2, sy + (rnd() - 0.5) * 7, sx + ox + sl, sy + (rnd() - 0.5) * 5);
+        x.stroke();
+      }
+      one(0);
+      if (sx < sl) one(w);
+      if (sx + sl > w) one(-w);
+    }
     for (fi = 0; fi < 36; fi++) {
       var sx = rnd() * w, sy = rnd() * h, sl = 10 + rnd() * 30;
-      x.strokeStyle = 'rgba(242,252,255,' + (0.16 + rnd() * 0.24).toFixed(2) + ')';
-      x.lineWidth = 1.5 + rnd() * 1.5; x.lineCap = 'round';
-      x.beginPath(); x.moveTo(sx, sy);
-      x.quadraticCurveTo(sx + sl / 2, sy + (rnd() - 0.5) * 7, sx + sl, sy + (rnd() - 0.5) * 5);
-      x.stroke();
+      strokeWrap(sx, sy, sl, 'rgba(242,252,255,' + (0.14 + rnd() * 0.20).toFixed(2) + ')', 1.5 + rnd() * 1.5);
     }
-    // 纵向边缘淡出 → 纵向无缝
-    x.globalCompositeOperation = 'destination-in';
-    var fm = x.createLinearGradient(0, 0, 0, h);
-    fm.addColorStop(0, 'rgba(0,0,0,0)');
-    fm.addColorStop(0.10, 'rgba(0,0,0,1)');
-    fm.addColorStop(0.90, 'rgba(0,0,0,1)');
-    fm.addColorStop(1, 'rgba(0,0,0,0)');
-    x.fillStyle = fm; x.fillRect(0, 0, w, h);
-    x.globalCompositeOperation = 'source-over';
+    return c;
+  });
+  // 日光门：暖白阳光开口（Fandom「Sunlit Pools」入口：墙上异常发光的开口）
+  // 中心亮、边缘羽化；克制用色，不做廉价泛光
+  BR.Textures.registerTex('sunlit_gate', function (w, h) {
+    var c = mkCanvas(w, h), x = c.getContext('2d');
+    x.clearRect(0, 0, w, h);
+    var g = x.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, Math.max(w, h) * 0.62);
+    g.addColorStop(0, 'rgba(255,252,240,0.98)');
+    g.addColorStop(0.45, 'rgba(255,244,214,0.85)');
+    g.addColorStop(0.8, 'rgba(255,232,180,0.28)');
+    g.addColorStop(1, 'rgba(255,230,175,0)');
+    x.fillStyle = g; x.fillRect(0, 0, w, h);
     return c;
   });
   // 水下焦散：亮青白色网状光斑（透明底，加色混合叠在水面/池底上）
@@ -646,6 +660,21 @@
       map: caTex, transparent: true, opacity: 0.24,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     }) : null;
+    // v2.1 W-l37：水下仰视层 —— BackSide 加色焦散，只在水下看得见
+    // （水下看向水面的真实过渡：仰视时水面有波光穹顶感；水上完全不可见）
+    M.waterUnder = caTex ? new THREE.MeshBasicMaterial({
+      map: caTex, transparent: true, opacity: 0.30,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide
+    }) : null;
+    // v2.1 W-l37：柱体水线圈（柱/水面自然接触的涟漪；tick 里轻微呼吸）
+    M.waterline = new THREE.MeshBasicMaterial({
+      color: 0xeafcff, transparent: true, opacity: 0.32,
+      depthWrite: false, side: THREE.DoubleSide
+    });
+    // v2.1 W-l37：浅水 tint（-1.2m 泳池，0.10；深水另有 deepShade 0.22 + midShade）
+    M.swimShade = new THREE.MeshBasicMaterial({
+      color: 0x2b8aa0, transparent: true, opacity: 0.10, depthWrite: false
+    });
     M.pitWall = new THREE.MeshLambertMaterial({
       map: BR.Textures.get('pool_tile'), color: 0xdfe8ea, side: THREE.DoubleSide
     });
@@ -679,12 +708,27 @@
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     });
     M.lightBar = new THREE.MeshBasicMaterial({ color: 0xf2fbff }); // 天花板灯带
+    // v2.1 W-l37：日光门材质（→L37.2 预留；跳转逻辑由总协调接线）
+    var gateTex = BR.Textures.get('sunlit_gate');
+    M.gateGlow = new THREE.MeshBasicMaterial({
+      map: gateTex || null, transparent: true, depthWrite: false
+    });
+    M.gateHalo = new THREE.MeshBasicMaterial({
+      map: gateTex || null, transparent: true, opacity: 0.35,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    });
     W._levelMats = W._levelMats || [];
     W._levelMats.push(M.water);
     if (M.caust) W._levelMats.push(M.caust);
+    if (M.waterUnder) W._levelMats.push(M.waterUnder);
+    W._levelMats.push(M.waterline); W._levelMats.push(M.swimShade);
+    W._levelMats.push(M.gateGlow); W._levelMats.push(M.gateHalo);
     W._levelMats.push(M.pitWall); W._levelMats.push(M.deepShade); W._levelMats.push(M.pillar);
     W._levelMats.push(M.trim); W._levelMats.push(M.midShade);
     W._levelMats.push(M.streak); W._levelMats.push(M.streakCol); W._levelMats.push(M.lightBar);
+    // tick 动画用（buildContent 里 FX37 重置时清零）
+    FX37.waterlineMat = M.waterline;
+    FX37.gateHaloMat = M.gateHalo;
     return M;
   }
 
@@ -742,6 +786,8 @@
             var cx = (ix0 + ix1 + 1) / 2 * TILE, cz = (iy0 + iy1 + 1) / 2 * TILE;
             W.reg(group, hPlane(w, h, M.water, cx, SURF, cz, true));
             if (M.caust) W.reg(group, hPlane(w, h, M.caust, cx, SURF + 0.02, cz, true));
+            // v2.1：水下仰视层（BackSide，水上不可见；水下看向水面有波光过渡）
+            if (M.waterUnder) W.reg(group, hPlane(w, h, M.waterUnder, cx, SURF - 0.03, cz, true));
             if (streakOn && M.streak) {
               // 灯带倒影：沿水面长轴的柔光带（与天花板灯带对应，有层次）
               var n = Math.max(1, Math.min(3, Math.round(Math.max(w, h) / 9)));
@@ -826,8 +872,13 @@
           if (!pit.ramp) {
             // 池底（tile=2 上引擎不渲染默认地板，这里自建；deck 平台同理）
             W.reg(group, hPlane(qw, qh, W.mat('pool_floor'), qcx, pit.floorY, qcz, true));
-            if (pit.kind === 'deep' || pit.dark) {
+            // v2.1：按深度分层 tint —— 深水/浅水/半淹没区分明显
+            //   ≥1.5m 深水层（deep/dive/庭院内核/分层深半）；1.0~1.5m 浅水层；<1.0m 不压色（清澈见底）
+            var pdepth = SURF - pit.floorY;
+            if (pdepth >= 1.5 && pit.floorY <= 0) {
               W.reg(group, hPlane(qw, qh, M.deepShade, qcx, pit.floorY + 0.03, qcz, true));
+            } else if (pdepth >= 1.0 && pit.floorY <= 0) {
+              W.reg(group, hPlane(qw, qh, M.swimShade, qcx, pit.floorY + 0.03, qcz, true));
             }
             if (pit.dark) {
               // 较暗深水区：中层再压一层 shade（光线随深度过渡清楚）
@@ -899,28 +950,41 @@
           // 顶面（tile=2 无默认天花板；坑上无灯具 → 自然暗区）
           W.reg(group, hPlane(qw, qh, W.mat('pool_ceil'), qcx, wallH, qcz, false));
           // 台阶：每条 stepEdge 占 1 tile 宽带，n 级；从 fromY（默认甲板 0）走向 pit.floorY
-          //   （可上：deck 平台；可下：普通/分层）。每级做实到坑底（或 fromY），无悬空缝。
+          //   （可上：deck 平台；可下：普通/分层）。实心楼梯：每级只填"本级踏面→上一级踏面"
+          //   （k=0 时到 fromY），各级无缝衔接、无重叠、无透视缝。
+          //   v2.1：四边台阶转角归 N/S（与 pitFloorAt 一致），E/W 带 z 向内收 1 tile。
           var steps = pit.steps || (pit.step ? [pit.step] : null);
           if (steps) {
+            var hasNS = !!(stepEdges.N || stepEdges.S);
+            var hasEW = !!(stepEdges.W || stepEdges.E);
+            var cornerCut = hasNS && hasEW;
             for (var si = 0; si < steps.length; si++) {
               var st = steps[si], n = st.n;
               var fromY = (st.fromY != null ? st.fromY : 0);
               var riser = Math.abs(pit.floorY - fromY) / n;
               var dir = pit.floorY < fromY ? -1 : 1;
-              var lo = Math.min(fromY, pit.floorY);
               var edge = st.edge, k;
               for (k = 0; k < n; k++) {
                 var skTop = fromY + dir * (k + 1) * riser;
+                var outerH = (k === 0) ? fromY : (fromY + dir * k * riser);
                 var sx0, sx1, sz0, sz1;
                 if (edge === 'N') { sx0 = qx0; sx1 = qx1; sz0 = pz0 + k * TILE / n; sz1 = pz0 + (k + 1) * TILE / n; }
                 else if (edge === 'S') { sx0 = qx0; sx1 = qx1; sz0 = pz1 - (k + 1) * TILE / n; sz1 = pz1 - k * TILE / n; }
-                else if (edge === 'W') { sz0 = qz0; sz1 = qz1; sx0 = px0 + k * TILE / n; sx1 = px0 + (k + 1) * TILE / n; }
-                else { sz0 = qz0; sz1 = qz1; sx0 = px1 - (k + 1) * TILE / n; sx1 = px1 - k * TILE / n; }
+                else if (edge === 'W') {
+                  sz0 = qz0; sz1 = qz1;
+                  if (cornerCut) { sz0 = Math.max(sz0, pz0 + TILE); sz1 = Math.min(sz1, pz1 - TILE); }
+                  sx0 = px0 + k * TILE / n; sx1 = px0 + (k + 1) * TILE / n;
+                }
+                else {
+                  sz0 = qz0; sz1 = qz1;
+                  if (cornerCut) { sz0 = Math.max(sz0, pz0 + TILE); sz1 = Math.min(sz1, pz1 - TILE); }
+                  sx0 = px1 - (k + 1) * TILE / n; sx1 = px1 - k * TILE / n;
+                }
                 var cx0 = Math.max(sx0, qx0), cx1 = Math.min(sx1, qx1);
                 var cz0 = Math.max(sz0, qz0), cz1 = Math.min(sz1, qz1);
                 if (cx1 - cx0 < 0.01 || cz1 - cz0 < 0.01) continue;
                 var bw = cx1 - cx0, bd = cz1 - cz0;
-                var bTop = Math.max(skTop, lo), bBot = Math.min(skTop, lo);
+                var bTop = Math.max(skTop, outerH), bBot = Math.min(skTop, outerH);
                 var bh = bTop - bBot;
                 if (bh < 0.01) continue;
                 var box = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), M.pitWall);
@@ -935,7 +999,8 @@
   }
 
   // 瓷柱阵：tile=0 真实碰撞；这里 skipWall + 自建 0.8m 细柱（从甲板升出水面）
-  function buildPillars(W, L, M) {
+  // v2.1：柱体穿出水面处加一圈水线涟漪（每 chunk 独立几何，随 chunk 正常释放；只在有水时建）
+  function buildPillars(W, L, M, map) {
     L.pillars.forEach(function (pt) {
       var tx = pt[0], ty = pt[1];
       W.skipWall(tx, ty);
@@ -946,6 +1011,15 @@
         var cap = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.18, 1.0), M.pillar);
         cap.position.set(BR.tileCX(tx), 3.15, BR.tileCZ(ty));
         W.reg(group, cap);
+        if (map && M.waterline && BR.Gen && BR.Gen.L37waterAt) {
+          var wq = BR.Gen.L37waterAt(map, BR.tileCX(tx), BR.tileCZ(ty));
+          if (wq && wq.depth > 0.05) {
+            var ring = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.64, 20), M.waterline);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.set(BR.tileCX(tx), SURF + 0.012, BR.tileCZ(ty));
+            W.reg(group, ring);
+          }
+        }
       });
     });
   }
@@ -1339,11 +1413,14 @@
         x1: (dp.tx1 + 1) * TILE, z1: (dp.ty1 + 1) * TILE
       });
     }
-    for (i = 0; i < L.pits.length; i++) {
-      var p = L.pits[i];
+    // v2.1：坑按深度降序注册 —— zoneAt 按注册顺序返回，重叠区（如下沉庭院内核）
+    // 取最深者；旧坑互不重叠，顺序变化无影响
+    var pitsByDepth = L.pits.slice().sort(function (a, b) { return a.floorY - b.floorY; });
+    for (i = 0; i < pitsByDepth.length; i++) {
+      var p = pitsByDepth[i];
       if (p.floorY > 0) continue; // deck 平台：不注册水域（干区）
       BR.Swim.registerZone({
-        kind: p.kind === 'deep' ? 'deep' : 'pool',
+        kind: (p.kind === 'deep' || p.kind === 'dive') ? 'deep' : 'pool',
         x0: p.tx0 * TILE, z0: p.ty0 * TILE,
         x1: (p.tx1 + 1) * TILE, z1: (p.ty1 + 1) * TILE,
         depth: +(SURF - p.floorY).toFixed(2), waterY: SURF
@@ -1696,6 +1773,61 @@
     W._l37fx.anomDoor = { tx: tx, ty: ty, dest: dest, id: aid };
   }
 
+  /* ============ v2.1 W-l37：Sunlit Gate（→L37.2「Sunlit Pools」入口预留） ============
+   * Fandom 主站依据：Level 37 墙上异常发光的开口，常藏于柱子或旋转楼梯后。
+   * gen_l37.js 已生成位置（POI 'sunlit_gate' + meta.l37.gate）；这里建发光视觉并暴露：
+   *   BR.World.l37_sunlitGate / BR.Levels.L37.sunlitGate   开口 {tx,ty,edge,x,y,z,yaw,dest}
+   *   BR.World.l37_sunlitReturn / BR.Levels.L37.sunlitReturn 返回落点 {x,z,yaw}
+   * （W-l372 按"BR.World.l37_sunlitGate || BR.Levels.L37.sunlitGate"读取做一致性校验。）
+   * 具体跳转逻辑由总协调统一接线：交互物 id 'l37_sunlit_gate' / kind 'sunlit_gate' 已注册，
+   * 当前 canUse=false（未接线），use() 仅提示。 */
+  function buildSunlitGate(W, p, M) {
+    var d = p.data || {};
+    var px = (d.wx != null) ? d.wx : BR.tileCX(p.tx);
+    var pz = (d.wz != null) ? d.wz : BR.tileCZ(p.ty);
+    var py = (d.wy != null) ? d.wy : 1.45;
+    var yaw = d.yaw || 0;
+    W.addChunkContent(p.tx, p.ty, function (group) {
+      var glow = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 2.3), M.gateGlow);
+      glow.position.set(px, py, pz);
+      glow.rotation.y = yaw;
+      W.reg(group, glow);
+      // 光晕：稍大一圈，加色，朝房间内侧偏移 0.05（克制呼吸动画，不做廉价泛光）
+      var halo = new THREE.Mesh(new THREE.PlaneGeometry(2.9, 3.7), M.gateHalo);
+      halo.position.set(px + Math.sin(yaw) * 0.05, py, pz + Math.cos(yaw) * 0.05);
+      halo.rotation.y = yaw;
+      W.reg(group, halo);
+      W.addInteractable({
+        id: 'l37_sunlit_gate', kind: 'sunlit_gate', chunkKey: W.chunkKeyOf(p.tx, p.ty),
+        meshes: [glow],
+        pos: new THREE.Vector3(px, py, pz), radius: 3.0,
+        prompt: function () { return (BR.interactKeyLabel ? BR.interactKeyLabel() : 'E') + ' 踏入发光的开口（前往 Level 37.2）'; },
+        canUse: function () { return !BR.Cutout || !BR.Cutout.busy; },
+        use: function () {
+          // v2.1：CONNECTIONS 契约 L37→L37.2（Fandom 原著：墙面异常发光开口）。
+          // 到 L372 落在出生房开口旁（lv_l372 onEnter 读 _cameFrom 搬运）。
+          BR.Game._cameFrom = 'L37';
+          travelTo('L372', 'rift');
+        }
+      });
+    });
+    BR.World.l37_sunlitGate = {
+      tx: p.tx, ty: p.ty, edge: d.edge || null,
+      x: px, y: py, z: pz, yaw: yaw, dest: d.dest || 'L37.2'
+    };
+    // 兼容 W-l372 的回退读取位（BR.World.l37_sunlitGate || BR.Levels.L37.sunlitGate）
+    BR.Levels.L37.sunlitGate = BR.World.l37_sunlitGate;
+    BR.World.l37_sunlitReturn = {
+      x: (d.retX != null ? d.retX : px),
+      z: (d.retZ != null ? d.retZ : pz),
+      yaw: (d.retYaw != null ? d.retYaw : yaw + Math.PI)
+    };
+    BR.Levels.L37.sunlitReturn = BR.World.l37_sunlitReturn;
+    W._l37fx = W._l37fx || {};
+    W._l37fx.sunlitGate = BR.World.l37_sunlitGate;
+    W._l37fx.sunlitReturn = BR.World.l37_sunlitReturn;
+  }
+
   BR.Levels.L37 = {
     name: 'Level 37 ——「泳池房」',
     theme: {
@@ -1723,6 +1855,9 @@
         FX37.caustTex = null;
         FX37.ladders = [];
         FX37.laneBalls = [];
+        FX37._fogCat = null;      // v2.1：水下雾深浅分类（tick 内按 zone 深度切换）
+        FX37.waterlineMat = null; // v2.1：makeMats 里重设
+        FX37.gateHaloMat = null;  // v2.1：makeMats 里重设
         if (FX37.splashGeo) { FX37.splashGeo.dispose(); FX37.splashGeo = null; }
         if (FX37.splashMat) { FX37.splashMat.dispose(); FX37.splashMat = null; }
       })();
@@ -1731,7 +1866,7 @@
       if (L) {
         buildWaterPlanes(W, L, M);
         buildPits(W, L, M, map);
-        buildPillars(W, L, M);
+        buildPillars(W, L, M, map);
         buildLadders(W, L, M, map);
         buildLaneDividers(W, L);
         buildDucks(W, map);
@@ -1750,6 +1885,7 @@
         else if (p.type === 'tunnel') buildTunnel(W, p);
         else if (p.type === 'deep_zone') buildDeepZone(W, p, map);
         else if (p.type === 'shallow_exit') buildShallowExit(W, p);
+        else if (p.type === 'sunlit_gate') buildSunlitGate(W, p, M);
       }
       // 无意义台阶：纯装饰，种子确定（干燥非泳池房）
       var srng = new BR.RNG(BR.hashSeed(map.seed + ':l37steps'));
@@ -1797,6 +1933,24 @@
       try {
         var cf = BR.Game && BR.Game._cameFrom;
         var from = (typeof cf === 'string') ? cf : (cf && cf.from);
+        if (from === 'L372' && BR.World && BR.World.map && BR.Player) {
+          // v2.1：从 L37.2 黑暗开口回来 → 落在发光开口内侧（面向开口）。
+          // 只在"刚被放到出生点"时搬运，读档/死亡重试（存档坐标）不动。
+          var spR = BR.World.spawnOf(BR.World.map);
+          var PR = BR.Player;
+          if (Math.hypot(PR.pos.x - spR.x, PR.pos.z - spR.z) < 0.6) {
+            var ret = BR.World.l37_sunlitReturn || (BR.Levels.L37 && BR.Levels.L37.sunlitReturn);
+            if (ret && ret.x != null && BR.World.circleFree && BR.World.circleFree(ret.x, ret.z, 0.4)) {
+              PR.pos.set(ret.x, 0.1, ret.z);
+              PR.vel.set(0, 0, 0);
+              PR.yaw = ret.yaw || 0;
+              setTimeout(function () {
+                if (BR.Game.state === 'playing')
+                  BR.UI.toast('你从阳光里退了回来，瓷砖的嗡鸣声重新响起。', 3200);
+              }, 1200);
+            }
+          }
+        }
         if (from === 'L7' && BR.World && BR.World.map && BR.Player) {
           var sp0 = BR.World.spawnOf(BR.World.map);
           var P0 = BR.Player;
@@ -1843,10 +1997,38 @@
     },
 
     tick: function (dt) {
+      // v2.1：按所在水域深度选水下雾 —— 深水（≥1.5m）更暗更近，浅水明亮；
+      // _fogCfg 供 BR.Swim.tick 在入水瞬间读取（L7 不设，保持原值）
+      (function depthFogCfg() {
+        var sw = BR.Swim, W0 = BR.World, P0 = BR.Player;
+        if (!sw || !W0 || !W0.map || !P0 || !P0.pos || !sw.zones.length) return;
+        var zn = sw.zoneAt(P0.pos.x, P0.pos.z);
+        sw._fogCfg = (zn && zn.depth >= 1.5)
+          ? { near: 0.6, far: 11, color: 0x0e4a66 }
+          : { near: 1.2, far: 24, color: 0x2f9cc4 };
+      })();
       BR.Swim.tick(dt);
       var W = BR.World, P = BR.Player;
       if (!P || !W || !BR.Game || BR.Game.state !== 'playing') return;
       FX37.t += dt;
+      // v2.1：潜水中途跨越深浅带时直接换雾（_fogSaved 仍是干燥值，出水恢复不受影响）
+      (function depthFogApply() {
+        var sw = BR.Swim;
+        if (!sw || !W.scene || !W.scene.fog) return;
+        if (sw.headUnder && P.pos) {
+          var zn = sw.zones.length ? sw.zoneAt(P.pos.x, P.pos.z) : null;
+          var cat = (zn && zn.depth >= 1.5) ? 'deep' : 'shallow';
+          if (FX37._fogCat !== cat) {
+            FX37._fogCat = cat;
+            var fog = W.scene.fog;
+            if (cat === 'deep') { fog.near = 0.6; fog.far = 11; fog.color.setHex(0x0e4a66); }
+            else { fog.near = 1.2; fog.far = 24; fog.color.setHex(0x2f9cc4); }
+          }
+        } else FX37._fogCat = null;
+      })();
+      // v2.1：柱体水线圈轻微呼吸 / 日光门光晕轻微呼吸（共享材质，一次设置）
+      if (FX37.waterlineMat) FX37.waterlineMat.opacity = 0.28 + 0.08 * Math.sin(FX37.t * 1.8);
+      if (FX37.gateHaloMat) FX37.gateHaloMat.opacity = 0.30 + 0.10 * Math.sin(FX37.t * 1.1);
       // F1：池水波纹 —— 共享 pool_water 贴图 UV 滚动（轻量，无 chunk 重建泄漏风险）
       var pw = BR.Textures.get('pool_water');
       if (pw) { pw.offset.x = (FX37.t * 0.008) % 1; pw.offset.y = (FX37.t * 0.006) % 1; }
