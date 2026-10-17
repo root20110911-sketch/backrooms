@@ -33,7 +33,7 @@ window.addEventListener('unhandledrejection', function (e) {
   var r = e.reason; showBrErr('REJ: ' + (r && (r.message || r) || '?'));
 });
 </script>
-<link rel="stylesheet" href="css/style.css?v=1.5.1">
+<link rel="stylesheet" href="css/style.css?v=2.0.0">
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
@@ -124,7 +124,15 @@ window.addEventListener('unhandledrejection', function (e) {
 
 <!-- 加载 -->
 <div id="screen-loading" class="screen">
-  <div class="panel"><div id="loading-text">正在生成……</div><div class="spin">◌</div></div>
+  <div class="panel"><div id="loading-text">正在生成……</div><div class="spin" id="loading-spinner">◌</div>
+    <!-- P0-4：加载失败界面（main.js G._loadFailed 显示；正常加载时隐藏） -->
+    <div id="loadfail-box" style="display:none">
+      <div id="loadfail-msg"></div>
+      <button id="btn-load-retry" class="big">重试本关</button>
+      <button id="btn-load-rollback" class="ghost wide">返回上一关</button>
+      <button id="btn-load-title" class="ghost wide">回到标题</button>
+    </div>
+  </div>
 </div>
 
 <!-- 暂停 -->
@@ -148,7 +156,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <div id="bindings-list"></div>
     <div class="binding-note">浏览器可能拦截部分 Ctrl 组合键（如 Ctrl+W），可自行改键。</div>
     <button id="btn-bindings-reset" class="ghost wide">恢复默认按键</button>
-    <div class="pause-note">手机建议横屏 + 全屏游玩。<br>画质更改在下次进入关卡时生效。</div>
+    <div class="pause-note">手机建议横屏 + 全屏游玩。<br>画质即时生效（雾效/灯具密度下次进入关卡生效）。</div>
     <button id="btn-dev" class="ghost wide" style="opacity:.5;font-size:12px;margin-top:12px">开发者选项</button>
   </div>
 </div>
@@ -201,36 +209,42 @@ window.addEventListener('unhandledrejection', function (e) {
 <script>window.THREE || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>')</script>
 <script>window.THREE || document.write('<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>')</script>
 <script>window.THREE || showBrErr('3D 引擎加载失败：请检查网络后刷新重试')</script>
-<script src="js/config.js?v=1.5.1"></script>
-<script src="js/utils.js?v=1.5.1"></script>
-  <script src="js/items.js?v=1.5.1"></script>
-<script src="js/textures.js?v=1.5.1"></script>
-<script src="js/audio.js?v=1.5.1"></script>
-<script src="js/gen.js?v=1.5.1"></script>
-<script src="js/gen_l188.js?v=1.5.1"></script>
-<script src="js/gen_l37.js?v=1.5.1"></script>
+<script src="js/config.js?v=2.0.0"></script>
+<script src="js/utils.js?v=2.0.0"></script>
+  <script src="js/items.js?v=2.0.0"></script>
+<script src="js/textures.js?v=2.0.0"></script>
+<script src="js/audio.js?v=2.0.0"></script>
+<script src="js/gen.js?v=2.0.0"></script>
+<script src="js/gen_l4.js?v=2.0.0"></script>
+<script src="js/gen_l188.js?v=2.0.0"></script>
+<script src="js/gen_l37.js?v=2.0.0"></script>
 <!-- v1.5 W6：Level 94「动画」退役（被 Level ! 'bang' 替换），gen_l94.js 不再加载 -->
-<script src="js/gen_l7.js?v=1.5.1"></script>
-<script src="js/gen_l11.js?v=1.5.1"></script>
-<script src="js/gen_bang.js?v=1.5.1"></script>
-<script src="js/world.js?v=1.5.1"></script>
-<script src="js/player.js?v=1.5.1"></script>
-<script src="js/input.js?v=1.5.1"></script>
-<script src="js/entities.js?v=1.5.1"></script>
-<script src="js/transitions.js?v=1.5.1"></script>
-<script src="js/cutout.js?v=1.5.1"></script>
-<script src="js/levels.js?v=1.5.1"></script>
-<script src="js/levels2.js?v=1.5.1"></script>
-<script src="js/lv_l188.js?v=1.5.1"></script>
-<script src="js/lv_l37.js?v=1.5.1"></script>
+<script src="js/gen_l7.js?v=2.0.0"></script>
+<script src="js/gen_l11.js?v=2.0.0"></script>
+<script src="js/gen_l25.js?v=2.0.0"></script>
+<script src="js/gen_bang.js?v=2.0.0"></script>
+<script src="js/gen_l6.js?v=2.0.0"></script>
+<script src="js/world.js?v=2.0.0"></script>
+<script src="js/player.js?v=2.0.0"></script>
+<script src="js/input.js?v=2.0.0"></script>
+<script src="js/entities.js?v=2.0.0"></script>
+<script src="js/transitions.js?v=2.0.0"></script>
+<script src="js/cutout.js?v=2.0.0"></script>
+<script src="js/levels.js?v=2.0.0"></script>
+<script src="js/levels2.js?v=2.0.0"></script>
+<script src="js/lv_l4.js?v=2.0.0"></script>
+<script src="js/lv_l188.js?v=2.0.0"></script>
+<script src="js/lv_l37.js?v=2.0.0"></script>
 <!-- v1.5 W6：Level 94「动画」退役（被 Level ! 'bang' 替换），lv_l94.js 不再加载 -->
-<script src="js/lv_l7.js?v=1.5.1"></script>
-<script src="js/lv_l11.js?v=1.5.1"></script>
-<script src="js/lv_bang.js?v=1.5.1"></script>
-<script src="js/sanityEvents.js?v=1.5.1"></script>
-<script src="js/ui.js?v=1.5.1"></script>
-<script src="js/dev.js?v=1.5.1"></script>
-<script src="js/save.js?v=1.5.1"></script>
-<script src="js/main.js?v=1.5.1"></script>
+<script src="js/lv_l7.js?v=2.0.0"></script>
+<script src="js/lv_l11.js?v=2.0.0"></script>
+<script src="js/lv_l25.js?v=2.0.0"></script>
+<script src="js/lv_bang.js?v=2.0.0"></script>
+<script src="js/lv_l6.js?v=2.0.0"></script>
+<script src="js/sanityEvents.js?v=2.0.0"></script>
+<script src="js/ui.js?v=2.0.0"></script>
+<script src="js/dev.js?v=2.0.0"></script>
+<script src="js/save.js?v=2.0.0"></script>
+<script src="js/main.js?v=2.0.0"></script>
 </body>
 </html>
