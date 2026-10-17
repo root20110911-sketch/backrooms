@@ -368,6 +368,15 @@
           var lfo = R.osc('square', 9), lg = R.gain(0.35);
           lfo.connect(lg); lg.connect(g.gain); // 闪烁调制
         });
+      } else if (type === 'waves') {// 海浪（L6 楼梯线索）：低通噪声 + 慢速涨落
+        rig = this._loopRig(function (R) {
+          var n = R.noise(), lp = R.filter('lowpass', 750, 0.7), g = R.gain(0.65);
+          n.connect(lp); lp.connect(g); g.connect(R.group);
+          var lfo = R.osc('sine', 0.11), lg = R.gain(0.42);
+          lfo.connect(lg); lg.connect(g.gain); // 海浪涨落
+          var n2 = R.noise(), bp2 = R.filter('bandpass', 2600, 1.2), g2 = R.gain(0.10);
+          n2.connect(bp2); bp2.connect(g2); g2.connect(R.group); // 浪花嘶嘶
+        });
       } else {
         return; // 未知类型：静默忽略
       }
@@ -429,7 +438,7 @@
       var v = 0.9 + Math.random() * 0.2; // 每次脚步轻微随机，避免机械感
       this._nz({ f: cfg.f * v, ft: cfg.ft, q: 1.2, dur: 0.11, vol: cfg.vol });
       this._tone({ f: 68 * v, type: 'sine', dur: 0.08, vol: 0.10 });
-      var ec = this._echoFor(level);
+      var ec = this._echoOverride || this._echoFor(level);
       if (ec) {
         this._nz({ f: cfg.f * v, ft: cfg.ft, q: 1.2, dur: 0.11, vol: cfg.vol * ec.vol, at: ec.delay });
         if (ec.delay2) this._nz({ f: cfg.f * v, ft: cfg.ft, q: 1.2, dur: 0.12, vol: cfg.vol * ec.vol2, at: ec.delay2 });
@@ -442,9 +451,13 @@
         case 'L37':  return { delay: 0.14, vol: 0.40, delay2: 0.23, vol2: 0.20 };  // 瓷砖回响
         case 'L188': return { delay: 0.12, vol: 0.30 };                            // 走廊回声
         case 'L11':  return { delay: 0.06, vol: 0.22 };                            // 城市短促反射
+        case 'L6':   return { delay: 0.16, vol: 0.42, delay2: 0.28, vol2: 0.20 };  // 大厅混响（默认；分区覆盖见下）
         default: return null;
       }
     },
+    // L6 分区回声覆盖（null=用关卡默认 _echoFor；关卡 tick 按玩家所在分区设置）
+    _echoOverride: null,
+    setEchoOverride: function (ec) { this._echoOverride = ec || null; },
     jump: function () { // 起跳：轻微衣物摩擦 + 上升气流（W10：bus 'jump' 订阅）
       if (!this._ok) return;
       this._nz({ f: 700, f1: 1500, ft: 'bandpass', q: 1, dur: 0.14, vol: 0.09 });

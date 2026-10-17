@@ -268,9 +268,18 @@
     // 此处不再 spawn('leviathan', …)；buildLeviathan/updateLeviathan 保留未用。
   };
 
+  // v2.0 P2：释放几何体与材质（审计遗留：只 remove 不 dispose 会跨关累积 GPU 缓冲）。
+  // 实体材质均为 lam()/basic() 逐实体新建，贴图走 BR.Textures 共享缓存（此处不碰贴图）。
   E.dispose = function () {
     for (const e of this.list) {
       if (e.group.parent) e.group.parent.remove(e.group);
+      e.group.traverse(function (o) {
+        if (o.geometry) { try { o.geometry.dispose(); } catch (err) {} }
+        if (o.material) {
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of ms) { try { m.dispose(); } catch (err2) {} }
+        }
+      });
     }
     this.list = [];
   };
