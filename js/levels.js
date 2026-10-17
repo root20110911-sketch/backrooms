@@ -10,7 +10,9 @@
     // W9 新增 9 种（显示名；数值与逻辑在 js/items.js 注册表）
     energy_bar: '能量棒', medkit: '急救包', glowstick: '荧光棒',
     chalk: '标记粉笔', oxygen_tank: '便携氧气瓶', dive_light: '水下照明灯',
-    life_vest: '救生衣', dry_bag: '防水物资袋', adrenaline: '肾上腺素'
+    life_vest: '救生衣', dry_bag: '防水物资袋', adrenaline: '肾上腺素',
+    // v2.0 P2 新增：深海潜水服
+    diving_suit: '深海潜水服'
   };
 
   /* ================= 主题 ================= */
@@ -618,6 +620,262 @@
     }, 16);
   }
 
+  /* ================= BR.Container：通用容器机制（v2.0 P1-B） =================
+   * 把已有的两段式容器交互（板条箱 wireCrateTwoStage / 柜子 addCabinetTwoStage）
+   * 抽成的通用引擎。旧函数现为薄封装，行为/文案/音效/id 方案/存档语义逐项保留。
+   *
+   * ---- API ----
+   *   BR.Container.create(W, opts) → 容器 id
+   *   opts = {
+   *     id,                          // 容器 id（驱动 openedCrates / RNG 种子 / cabinetOpen；老存档 id 方案原样保留）
+   *     kind: 'cabinet'|'crate'|'drawer', // 决定默认文案/动画/交互 kind；drawer 为 P2 预留
+   *     tx, ty,                      // 所在 tile（算 chunkKey）
+   *     group,                       // addChunkContent 的 chunk group（柜内拾取 mesh 走 W.reg，随区块卸载）
+   *     visual,                      // 动画目标：crate 传 {lid}，cabinet 传 {pivot}（doorPivot）
+   *     anim,                        // 可选覆盖 {setOpen,setClosed,animOpen,animClose}；缺省按 kind 取内置
+   *     meshes,                      // 开门交互的射线目标（柜体展平 mesh / 箱体 parts）
+   *     doorMeshes,                   // 可关闭容器：关门交互的射线目标（缺省用 meshes）
+   *     pos,                         // Vector3：开门交互中心
+   *     closePos,                     // Vector3：关门交互中心（缺省 = pos）
+   *     radius,                       // 交互半径（缺省 2.6）
+   *     interactKind,                 // addInteractable 的 kind（缺省 crate→'crate'，其余→'cabinet'，均已在 world.js 登记）
+   *     contents: [{item, count, dx, dz, y, label}],
+   *                                  // 内容物；item==='empty'/缺省 = 空位；count>1 展开为多件逐件拾取
+   *                                  // dx/dz/y 可逐件定死落点，不给则按 id 派生种子 RNG 确定性排布（不用 Math.random）
+   *     pickIdOf(idx, entry),          // 逐件拾取 id；缺省 id+'_pick_'+idx（确定性；旧容器由封装层传 legacy 方案）
+   *     innerPosOf(idx, entry),        // 逐件落点 Vector3；缺省见上
+   *     legacyPicked(),                // 老存档兼容钩子：true 视为"已取完"（如柜子旧一步流程 picked 里记的是原 fpick id）
+   *     closable,                      // true → 开后可关闭；开关态记 W.state.cabinetOpen[id]（进存档）
+   *     text: {open, close, openedToast, emptyToast, closedToast}, // 覆盖默认文案
+   *     sfxOpen, sfxClose,             // 覆盖默认 doorCreak
+   *     autosave,                      // 开/关后直接调 BR.Game.autosave()
+   *     onOpen(id), onClose(id), onPickup(pickId, entry, item)
+   *   }
+   * ---- 状态（全部走 W.state，自动进按关存档；world.js/save.js 不许动，只用已有字段） ----
+   *   openedCrates: 容器 id → 曾经开过；picked: 逐件 pickId → 该件已取；
+   *   cabinetOpen: {容器id: 当前开/关}（可关闭容器；老存档无此字段时视为开着，走旧规则）。
+   * ---- 区块卸载重建 ----
+   *   chunk unload 按 chunkKey 清掉交互点；重建时 create() 按 W.state 恢复姿态与未取物品。
+   *   非关闭式容器沿用旧规则：老存档（非本 session 开）的已开容器视为已处理完，不重建箱内拾取；
+   *   本 session 内开过的，未取物品重建。可关闭容器按 cabinetOpen 精确恢复（含读档）。
+   * ---- P2（L7 破损储物柜）调用示例 ----
+   *   BR.Container.create(W, {
+   *     id: 'locker_l7_' + tx + '_' + ty, kind: 'cabinet', closable: true,
+   *     tx: tx, ty: ty, group: group, visual: { pivot: lockerMesh.userData.doorPivot },
+   *     meshes: lockerMeshes, pos: new THREE.Vector3(fx, 1.0, fz),
+   *     contents: [{ item: 'diving_suit' }, { item: 'oxygen_tank' }, { item: 'bandage', count: 2 }],
+   *     text: { open: '打开储物柜', openedToast: '储物柜打开了，看看里面有什么' },
+   *     onPickup: function (pickId, entry) { BR.log('locker picked', pickId); }
+   *   });
+   *   // 必出潜水服：contents 里写死 {item:'diving_suit'} 即可，不走随机；
+   *   // 落点想手工摆就给每件 dx/dz/y，否则引擎按 id 种子 RNG 自动排（确定性，读档/重建一致）。
+   * ============================================================================ */
+  BR.Container = (function () {
+    // 各 kind 默认文案（调用方 text 可覆盖任一项；保持与旧实现逐字一致）
+    const KIND_TEXT = {
+      crate:   { open: '打开板条箱', openedToast: '箱子打开了，看看里面有什么', emptyToast: '箱子里只有灰尘。' },
+      cabinet: { open: '打开柜门', close: '关上柜门', openedToast: '柜门打开了，看看里面有什么',
+                 emptyToast: '柜门打开了，里面是空的。', closedToast: '柜门关上了' },
+      drawer:  { open: '打开抽屉', close: '关上抽屉', openedToast: '抽屉打开了，看看里面有什么',
+                 emptyToast: '抽屉是空的。', closedToast: '抽屉关上了' }
+    };
+    // 各 kind 默认动画（复用本文件既有函数；visual 缺目标时静默跳过）
+    const KIND_ANIM = {
+      crate: {
+        setOpen: (v) => { if (v && v.lid) setLidOpenPose(v.lid); },
+        setClosed: () => {},
+        animOpen: (v) => { if (v && v.lid) animLidOpen(v.lid); },
+        animClose: () => {}
+      },
+      cabinet: {
+        setOpen: (v) => { if (v && v.pivot) setCabinetDoorOpen(v.pivot); },
+        setClosed: (v) => { if (v && v.pivot) setCabinetDoorClosed(v.pivot); },
+        animOpen: (v) => { if (v && v.pivot) animCabinetDoor(v.pivot); },
+        animClose: (v) => { if (v && v.pivot) animCabinetDoorClose(v.pivot); }
+      },
+      drawer: { setOpen: () => {}, setClosed: () => {}, animOpen: () => {}, animClose: () => {} }
+    };
+    const txt = (kind, key, over) =>
+      (over && over[key] != null) ? over[key] : ((KIND_TEXT[kind] || KIND_TEXT.crate)[key] || '');
+
+    // contents 展平：[{item,count}] → 每件独立条目（count>1 展开为多件，各自独立 picked）
+    function expandContents(contents) {
+      const out = [];
+      (contents || []).forEach((e, i) => {
+        const n = Math.max(1, (e.count | 0) || 1);
+        for (let k = 0; k < n; k++)
+          out.push({ item: e.item, src: i, sub: k, dx: e.dx, dz: e.dz, y: e.y, label: e.label });
+      });
+      return out;
+    }
+    const spawnable = (e) => e.item && e.item !== 'empty';
+
+    // 默认逐件落点：每件序号独立派生种子（id+':lx'+idx），任意子集重建都落在同一位置；
+    // 基点取 opts.innerBase（缺省 opts.pos 的 x/z，y 缺省 0.5）。全程 BR.RNG，不用 Math.random。
+    function defaultInnerPosOf(opts, id) {
+      return (idx, entry) => {
+        const rx = new BR.RNG(BR.hashSeed(id + ':lx' + idx));
+        const rz = new BR.RNG(BR.hashSeed(id + ':lz' + idx));
+        const base = opts.innerBase || opts.pos || { x: 0, y: 0.5, z: 0 };
+        const dx = entry.dx != null ? entry.dx : (rx.next() - 0.5) * 0.55;
+        const dz = entry.dz != null ? entry.dz : (rz.next() - 0.5) * 0.45;
+        const y = entry.y != null ? entry.y : (base.y != null ? base.y : 0.5);
+        return new THREE.Vector3(base.x + dx, y, base.z + dz);
+      };
+    }
+
+    function create(W, opts) {
+      opts = opts || {};
+      const id = opts.id;
+      const kind = opts.kind || 'crate';
+      const tx = opts.tx, ty = opts.ty;
+      const chunkKey = W.chunkKeyOf(tx, ty);
+      const group = opts.group;
+      const visual = opts.visual || {};
+      const anim = opts.anim || KIND_ANIM[kind] || KIND_ANIM.crate;
+      const text = opts.text || {};
+      const closable = !!opts.closable;
+      const entries = expandContents(opts.contents);
+      const radius = opts.radius || 2.6;
+      const iKind = opts.interactKind || (kind === 'crate' ? 'crate' : 'cabinet');
+      const pickIdOf = opts.pickIdOf || ((idx) => id + '_pick_' + idx);
+      const pickIds = entries.map((e, idx) => pickIdOf(idx, e));
+      const entryOf = {};
+      pickIds.forEach((pid, idx) => { entryOf[pid] = entries[idx]; });
+      const innerPosOf = opts.innerPosOf || defaultInnerPosOf(opts, id);
+      const legacyPicked = (typeof opts.legacyPicked === 'function') ? opts.legacyPicked : (() => false);
+      const spIdx = entries.map((e, i) => spawnable(e) ? i : -1).filter((i) => i >= 0);
+      const allPicked = () => {
+        if (legacyPicked()) return true;
+        for (const i of spIdx) if (!W.state.picked.includes(pickIds[i])) return false;
+        return true;
+      };
+
+      // 状态字段沿用旧方案（全部进 W.state，随按关存档）
+      W.state.cabinetOpen = W.state.cabinetOpen || {};
+      const isOpenNow = () => W.state.cabinetOpen[id] === true;
+
+      // 柜内逐件 mesh 引用（可关闭容器：关门时移除 mesh；区块重建时旧引用失效，先清）
+      const innerMap = () => (W._containerInner = W._containerInner || {});
+      const setInnerRefs = (refs) => { if (refs) innerMap()[id] = refs; else delete innerMap()[id]; };
+      const clearInnerMeshes = () => {
+        const refs = innerMap()[id];
+        if (refs) refs.forEach((r) => { if (r && r.group && r.group.parent) r.group.parent.remove(r.group); });
+        setInnerRefs(null);
+      };
+      setInnerRefs(null);
+
+      function spawnAllUnpicked() {
+        const refs = [];
+        for (const i of spIdx) {
+          if (W.state.picked.includes(pickIds[i])) continue; // 已取：不重建
+          const r = spawnInnerPickup(W, group, innerPosOf(i, entries[i]), pickIds[i],
+            entries[i].item, tx, ty,
+            (pid, it) => { if (typeof opts.onPickup === 'function') opts.onPickup(pid, entryOf[pid], it); });
+          if (r && r.group) refs.push(r);
+        }
+        if (refs.length) setInnerRefs(refs);
+        return refs.length;
+      }
+
+      function registerOpen() {
+        W.removeInteractable(id);
+        W.addInteractable({
+          id, kind: iKind, chunkKey,
+          meshes: opts.meshes || [],
+          pos: opts.pos.clone(), radius,
+          prompt: () => BR.interactKeyLabel() + txt(kind, 'open', text),
+          canUse: () => closable ? !isOpenNow() : !W.state.openedCrates.includes(id),
+          use: () => { open(); }
+        });
+      }
+      const closeId = id + '_close';
+      function registerClose() {
+        W.removeInteractable(closeId);
+        W.addInteractable({
+          id: closeId, kind: iKind, chunkKey,
+          meshes: (opts.doorMeshes && opts.doorMeshes.length) ? opts.doorMeshes : (opts.meshes || []),
+          pos: (opts.closePos || opts.pos).clone(), radius,
+          prompt: () => BR.interactKeyLabel() + txt(kind, 'close', text),
+          canUse: () => isOpenNow(),
+          use: () => { close(); }
+        });
+      }
+
+      function open() {
+        if (closable ? isOpenNow() : W.state.openedCrates.includes(id)) return;
+        if (anim.animOpen) anim.animOpen(visual);
+        (opts.sfxOpen || (() => BR.Audio.doorCreak()))();
+        if (!W.state.openedCrates.includes(id)) W.state.openedCrates.push(id);
+        markLiveOpened(W, id);
+        if (closable) W.state.cabinetOpen[id] = true;
+        BR.bus.emit('crate:opened', { id, kind });
+        if (typeof opts.onOpen === 'function') opts.onOpen(id);
+        W.removeInteractable(id); // 开后容器本体移出射线检测，避免挡住柜内物资
+        // 文案保持旧语义：无内容物 / 老存档一步拾取过 → emptyToast 且不刷出，否则 openedToast
+        if (spIdx.length === 0 || legacyPicked()) BR.UI.toast(txt(kind, 'emptyToast', text));
+        else { BR.UI.toast(txt(kind, 'openedToast', text)); spawnAllUnpicked(); }
+        if (closable) registerClose();
+        if (opts.autosave && BR.Game.autosave) BR.Game.autosave();
+      }
+
+      function close() {
+        if (!closable || !isOpenNow()) return;
+        if (anim.animClose) anim.animClose(visual);
+        (opts.sfxClose || (() => BR.Audio.doorCreak()))();
+        W.state.cabinetOpen[id] = false;
+        // 关闭态：柜内拾取移出射线检测 + 移除 mesh（不许隔门拿；重开时重建）
+        pickIds.forEach((pid) => W.removeInteractable(pid));
+        clearInnerMeshes();
+        W.removeInteractable(closeId);
+        registerOpen();
+        BR.UI.toast(txt(kind, 'closedToast', text));
+        if (typeof opts.onClose === 'function') opts.onClose(id);
+        if (opts.autosave && BR.Game.autosave) BR.Game.autosave();
+      }
+
+      // —— 初始装配（区块构建 / 重建 / 读档） ——
+      const opened = W.state.openedCrates.includes(id);
+      if (!opened) {
+        if (anim.setClosed) anim.setClosed(visual);
+        registerOpen();
+      } else if (allPicked()) {
+        // 已取完：纯装饰，按开合姿态
+        if (closable) {
+          if (isOpenNow()) { if (anim.setOpen) anim.setOpen(visual); registerClose(); }
+          else { if (anim.setClosed) anim.setClosed(visual); registerOpen(); }
+        } else if (anim.setOpen) anim.setOpen(visual);
+      } else if (closable) {
+        // 开过但未取完：按 cabinetOpen 恢复（老存档无该字段 → 默认开着，走旧规则）
+        const shouldOpen = W.state.cabinetOpen[id] !== false;
+        W.state.cabinetOpen[id] = shouldOpen;
+        if (shouldOpen) {
+          if (anim.setOpen) anim.setOpen(visual);
+          spawnAllUnpicked();
+          registerClose();
+        } else {
+          if (anim.setClosed) anim.setClosed(visual);
+          registerOpen();
+        }
+      } else {
+        // 非关闭式 + 开过未取完：沿用旧规则——仅本 session 内开过的才重建箱内拾取；
+        // 老存档（openedCrates 有 id 但非本 session 开）视为已处理完，不重建，避免已拿物资复活。
+        // 箱体不再注册交互，避免挡住箱内物资的射线。
+        if (anim.setOpen) anim.setOpen(visual);
+        if (wasLiveOpened(W, id)) spawnAllUnpicked();
+      }
+
+      // 对外控制句柄（测试/其它调用方），沿用旧 W._cabCtl 挂载点
+      if (closable) {
+        W._cabCtl = W._cabCtl || {};
+        W._cabCtl[id] = { open, close, isOpen: isOpenNow };
+      }
+      return id;
+    }
+
+    return { create };
+  })();
+
   // H 路：几何体复用缓存（性能）。
   // 根因：旧代码里箱/柜/桌/椅/灌木/拾取每次构建都 new 一批几何体，
   // 而 world.js unloadChunkMeshes 只 dispose 顶层 disposable 自身的 geometry
@@ -678,7 +936,8 @@
 
   // 容器内物资拾取（两段式的第二段）：可见 itemMesh + 隐形命中代理，kind 'pickup'。
   // pos 为物资底部中心世界坐标；chunkGroup 为 addChunkContent 的 group（随区块卸载，走 W.reg）。
-  function spawnInnerPickup(W, chunkGroup, pos, pickId, item, tx, ty) {
+  // onUse(pickId, item)：可选，BR.Container 的 onPickup 钩子透传。
+  function spawnInnerPickup(W, chunkGroup, pos, pickId, item, tx, ty, onUse) {
     if (W.state.picked.includes(pickId)) return null; // 已拾取：不重建
     const ig = itemMesh(item);
     ig.position.copy(pos);
@@ -720,6 +979,7 @@
         W.removeInteractable(pickId);
         chunkGroup.remove(ig);
         BR.UI.updateInv();
+        if (typeof onUse === 'function') onUse(pickId, item);
       }
     });
     return { pickId: pickId, group: ig };
@@ -732,39 +992,17 @@
   //  第二段：准星对准箱内物资交互 → 进物品栏，记 picked，移除 mesh 与交互点。
   //  区块重建/读档：已开盖（本 session 内开过）且未拾取 → 重建箱内拾取；
   //    老存档（openedCrates 有 id 但非本 session 开）视为已处理完，不重建，避免已拿物资复活。
+  //  v2.0 P1-B：实现迁移到 BR.Container.create（单物品容器；行为/文案/音效/id/存档语义不变）。
   function wireCrateTwoStage(W, chunkGroup, cm, o) {
     const id = o.id, item = o.item;
-    const pickId = 'cratepick_' + id;
-    const opened = W.state.openedCrates.includes(id);
-    if (opened) setLidOpenPose(cm.lid);
-    const innerPos = new THREE.Vector3(cm.group.position.x, 0.10, cm.group.position.z);
-    if (opened && wasLiveOpened(W, id) && item !== 'empty' && !W.state.picked.includes(pickId)) {
-      // 本 session 开过、还没拿：重建箱内拾取；箱体不再注册交互，避免挡住箱内物资的射线
-      spawnInnerPickup(W, chunkGroup, innerPos, pickId, item, o.tx, o.ty);
-      return;
-    }
-    if (opened) return; // 老存档已开 / 已拾取 / 空箱：纯装饰
-    W.addInteractable({
-      id, kind: 'crate', chunkKey: W.chunkKeyOf(o.tx, o.ty),
+    return BR.Container.create(W, {
+      id, kind: 'crate', tx: o.tx, ty: o.ty, group: chunkGroup,
+      visual: { lid: cm.lid },
       meshes: cm.parts,
-      pos: cm.group.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
-      prompt: () => BR.interactKeyLabel() + '打开板条箱',
-      canUse: () => !W.state.openedCrates.includes(id),
-      use: () => {
-        if (W.state.openedCrates.includes(id)) return;
-        animLidOpen(cm.lid);
-        BR.Audio.doorCreak();
-        W.state.openedCrates.push(id);
-        markLiveOpened(W, id);
-        BR.bus.emit('crate:opened', { id });
-        W.removeInteractable(id); // 开盖后箱体移出射线检测，避免挡住箱内物资
-        if (item === 'empty') {
-          BR.UI.toast('箱子里只有灰尘。');
-        } else {
-          BR.UI.toast('箱子打开了，看看里面有什么');
-          spawnInnerPickup(W, chunkGroup, innerPos, pickId, item, o.tx, o.ty);
-        }
-      }
+      pos: cm.group.position.clone().add(new THREE.Vector3(0, 1, 0)),
+      contents: [{ item }],
+      pickIdOf: () => 'cratepick_' + id, // 老存档 id 方案保留
+      innerPosOf: () => new THREE.Vector3(cm.group.position.x, 0.10, cm.group.position.z)
     });
   }
   BR.wireCrateTwoStage = wireCrateTwoStage;
@@ -1023,14 +1261,12 @@
   //  关闭态柜内拾取移出射线检测（不许隔门拿）；再打开恢复。
   //  状态：openedCrates=曾经开过（旧语义）；W.state.cabinetOpen[cabId]=当前开合（新，入存档）。
   //  区块重建/读档按 cabinetOpen 恢复姿态与拾取；老存档无 cabinetOpen 时 opened 即视为开着走旧规则。
+  //  v2.0 P1-B：实现迁移到 BR.Container.create（可关闭单物品容器；行为/文案/音效/id/存档语义不变）。
   function addCabinetTwoStage(W, opts, id, item) {
     const cabId = 'cab_' + opts.tx + '_' + opts.ty + '_' + (opts.suffix || 'furn');
-    const pickId = 'cabpick_' + id;
-    const closeId = cabId + '_close';
-    // H 路：柜体底部接触阴影
+    // H 路：柜体底部接触阴影（原位置保留）
     addPropShadow(W, opts.group, opts.fx, opts.fz, 0.75);
     const pivot = opts.furniture ? opts.furniture.userData.doorPivot : null;
-    W.state.cabinetOpen = W.state.cabinetOpen || {};
     const innerPos = (() => {
       const f = opts.furniture;
       if (f) {
@@ -1047,110 +1283,21 @@
     });
     const doorMeshes = [];
     if (pivot) pivot.children.forEach(c => doorMeshes.push(c));
-    // 含老存档一步拾取（picked 里记的是原 id）：视为已拾取，不重建
-    const picked = () => W.state.picked.includes(pickId) || W.state.picked.includes(id);
-    const isOpenNow = () => W.state.cabinetOpen[cabId] === true;
-
-    function registerOpen() {
-      W.removeInteractable(cabId);
-      W.addInteractable({
-        id: cabId, kind: 'cabinet', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
-        meshes: cabMeshes.length ? cabMeshes : [],
-        pos: new THREE.Vector3(opts.fx, 1.0, opts.fz), radius: 2.6,
-        prompt: () => BR.interactKeyLabel() + '打开柜门',
-        canUse: () => !isOpenNow(),
-        use: () => { openCabinet(); }
-      });
-    }
-    function registerClose() {
-      W.removeInteractable(closeId);
-      W.addInteractable({
-        id: closeId, kind: 'cabinet', chunkKey: W.chunkKeyOf(opts.tx, opts.ty),
-        meshes: doorMeshes.length ? doorMeshes : cabMeshes,
-        pos: new THREE.Vector3(opts.fx, 1.2, opts.fz), radius: 2.6,
-        prompt: () => BR.interactKeyLabel() + '关上柜门',
-        canUse: () => isOpenNow(),
-        use: () => { closeCabinet(); }
-      });
-    }
-    function spawnInner() {
-      // 柜内拾取（两段式第二段）；返回 {pickId, group}，供关门时移除
-      if (picked()) return null;
-      const r = spawnInnerPickup(W, opts.group, innerPos, pickId, item, opts.tx, opts.ty);
-      return r && r.group ? r : null;
-    }
-    // 本 cabinet 的柜内 mesh 引用（关门时移除；重开时重建）
-    function setInnerRef(ref) {
-      W._cabInner = W._cabInner || {};
-      if (ref) W._cabInner[cabId] = ref;
-      else delete W._cabInner[cabId];
-    }
-    function openCabinet() {
-      if (isOpenNow()) return;
-      if (pivot) animCabinetDoor(pivot);
-      BR.Audio.doorCreak();
-      if (!W.state.openedCrates.includes(cabId)) W.state.openedCrates.push(cabId);
-      markLiveOpened(W, cabId);
-      W.state.cabinetOpen[cabId] = true;
-      // main.js 的自动存档只监听 'crate:opened'，柜子开门同样触发一次，保证开门状态落盘
-      BR.bus.emit('crate:opened', { id: cabId });
-      W.removeInteractable(cabId);
-      if (W.state.picked.includes(id)) {
-        // 老存档：旧一步流程已拾取过（picked 里记的是原 id），不再刷出，避免物资复活
-        BR.UI.toast('柜门打开了，里面是空的。');
-      } else {
-        BR.UI.toast('柜门打开了，看看里面有什么');
-        const r = spawnInner();
-        setInnerRef(r);
-      }
-      registerClose();
-      if (BR.Game.autosave) BR.Game.autosave();
-    }
-    function closeCabinet() {
-      if (!isOpenNow()) return;
-      if (pivot) animCabinetDoorClose(pivot);
-      BR.Audio.doorCreak();
-      W.state.cabinetOpen[cabId] = false;
-      // 关闭态：柜内拾取移出射线检测 + 移除 mesh（不许隔门拿；重开时重建）
-      W.removeInteractable(pickId);
-      const ref = W._cabInner && W._cabInner[cabId];
-      if (ref && ref.group && ref.group.parent) ref.group.parent.remove(ref.group);
-      setInnerRef(null);
-      W.removeInteractable(closeId);
-      registerOpen();
-      BR.UI.toast('柜门关上了');
-      if (BR.Game.autosave) BR.Game.autosave();
-    }
-    // 对外（测试/其它调用方）挂载；区块重建时旧 inner 引用失效，先清
-    W._cabCtl = W._cabCtl || {};
-    W._cabCtl[cabId] = { open: openCabinet, close: closeCabinet };
-    if (W._cabInner) delete W._cabInner[cabId];
-
-    // —— 初始装配（区块构建 / 重建 / 读档） ——
-    const opened = W.state.openedCrates.includes(cabId);
-    if (!opened) {
-      if (pivot) setCabinetDoorClosed(pivot);
-      registerOpen();
-      return cabId;
-    }
-    if (picked()) {
-      // 已拾取：按开合姿态纯装饰
-      if (pivot) { if (isOpenNow()) setCabinetDoorOpen(pivot); else setCabinetDoorClosed(pivot); }
-      if (isOpenNow()) registerClose(); else registerOpen();
-      return cabId;
-    }
-    // 开过但未拾取：按 cabinetOpen 恢复（老存档无该字段 → 默认开着，走旧规则重建拾取）
-    const shouldOpen = W.state.cabinetOpen[cabId] !== false;
-    W.state.cabinetOpen[cabId] = shouldOpen;
-    if (pivot) { if (shouldOpen) setCabinetDoorOpen(pivot); else setCabinetDoorClosed(pivot); }
-    if (shouldOpen) {
-      const r = spawnInner();
-      setInnerRef(r);
-      registerClose();
-    } else {
-      registerOpen();
-    }
-    return cabId;
+    return BR.Container.create(W, {
+      id: cabId, kind: 'cabinet', closable: true,
+      tx: opts.tx, ty: opts.ty, group: opts.group,
+      visual: { pivot },
+      meshes: cabMeshes.length ? cabMeshes : [],
+      doorMeshes: doorMeshes.length ? doorMeshes : cabMeshes,
+      pos: new THREE.Vector3(opts.fx, 1.0, opts.fz),
+      closePos: new THREE.Vector3(opts.fx, 1.2, opts.fz),
+      contents: [{ item }],
+      pickIdOf: () => 'cabpick_' + id, // 老存档 id 方案保留
+      // 老存档一步拾取（picked 里记的是原 fpick id）：视为已拾取，不重建
+      legacyPicked: () => W.state.picked.includes(id),
+      innerPosOf: () => innerPos.clone(),
+      autosave: true // 旧实现开/关后直接调 BR.Game.autosave()（main.js 只监听 'crate:opened' 做自动存档）
+    });
   }
 
   // 所有门：按 exitTo 赋予转场行为
@@ -2052,5 +2199,5 @@
   };
 
   /* v1.5: levels.js 拆分，共享 helpers 给 levels2.js */
-  BR._lvShare = { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList };
+  BR._lvShare = { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList, Container: BR.Container };
 })();
