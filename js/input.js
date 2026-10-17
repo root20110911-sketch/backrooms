@@ -59,8 +59,9 @@
   // 动作表：id → 中文名
   // v1.5 W8 新默认键位（替换旧默认）：
   //   E=交互/拾取/上下坐骑（鼠标左键保留副键）、Shift=疾跑、Space=陆地跳跃/水中上浮、
-  //   C=下潜（陆地上按一下=蹲/起身）、Tab或I=背包、数字键 1-5=快捷栏选择、
-  //   Q=使用快捷道具（独立可绑定）、F=手电、Esc=暂停、V=第三人称。
+  //   C=下潜（陆地上按一下=蹲/起身）、Tab或I=背包、F=手电、Esc=暂停、V=第三人称。
+  // v1.5.1 起全局快捷栏（数字键 1-5 / Q）已删除：DEFAULT_BINDINGS 里不再有 Digit code；
+  // 关卡若需要数字键走 BR.Input.levelKeyHandler（P1 统一交互管线），不许自己监听 keydown。
   // 全部动作可改键：冲突提示、恢复默认、localStorage 保存、刷新保持、
   // HUD/说明提示全部读 bindingLabel 实时渲染、自动同步新键。
   I.BINDINGS_VERSION = 2; // 键位表版本：v1 旧默认（Ctrl 疾跑/Shift 蹲/B 背包）→ v2 新默认
@@ -182,6 +183,19 @@
       this.firstHint(action);
     }
   };
+
+  /* ---------- 关卡级按键钩子（P1 统一交互管线） ----------
+   * 契约：
+   *   - 关卡在 onEnter 里设置 I.levelKeyHandler = fn，离开（cleanup）时清 null；
+   *     同一时刻最多一个关卡持有（目前只有 Level ! 用）。
+   *   - input.js 的 keydown 分发只在「游玩态 && 未锁定 && code 未被全局改键绑定」
+   *     时调用它。用户把该 code 改绑到任何动作后，钩子不再吃它——改键系统永远优先，
+   *     关卡永远不与改键冲突。
+   *   - 钩子收到的是原 KeyboardEvent；关卡自己再守 level/阶段（防御性，
+   *     防钩子在异常切换路径下泄漏到别关）。
+   *   - 新关卡需要数字键/特殊键：一律走这个钩子，不许自己 window.addEventListener('keydown')。
+   */
+  I.levelKeyHandler = null;
 
   /* ---------- 首次动作提示（v1.5 W2） ----------
    * 每个动作首次执行时 toast 短暂提示后自动淡出；无强制教学任务。
@@ -403,7 +417,11 @@
         if (this.actionForCode(e.code) === 'pause') BR.UI.togglePause();
         return;
       }
-      this.dispatchAction(this.actionForCode(e.code));
+      // 统一分发：全局改键绑定优先；code 未被任何动作占用时才走关卡级钩子
+      // （P1 交互管线：Level ! 的 Digit1/2 快捷用药经此进入，改键系统永远优先）
+      const action = this.actionForCode(e.code);
+      if (action) this.dispatchAction(action);
+      else if (this.levelKeyHandler) this.levelKeyHandler(e);
       if (['Space', 'ArrowUp', 'ArrowDown', 'Tab'].includes(e.code)) e.preventDefault();
     });
     addEventListener('keyup', (e) => { this.keys[e.code] = false; });
@@ -467,10 +485,22 @@
   };
 
   /* ---------- 触控 UI ---------- */
+  // C（v2.0 P1）情境化按键规则表（只读玩家状态、不改游戏逻辑；显隐走 body 类 + 按钮类，由 CSS 落地）：
+  //   常驻        ：背包 / 暂停 / 手电 / 第三人称 / 疾跑（触屏开关式）/ 跳跃
+  //                 ——跳跃在游泳时语义变"上浮（长按）"，样式/文案随 .swim 切换
+  //   仅游泳      ：下潜按钮（.swim-only ← body.swimming）；坐骑时强制抑制
+  //                 （坐骑在水上时 BR.Swim.inWater 仍为真，但那是"开船"不是"游泳"，
+  //                 下潜/上浮按钮此时出现会与坐骑操作打架）
+  //   陆地非坐骑  ：蹲伏按钮（.land-only；body.swimming 或 body.mounted 时隐藏）
+  //   仅坐骑      ：下坐骑按钮（.mount-only ← body.mounted）；驾驶走左摇杆 + 疾跑开关
+  //   交互按钮    ：常驻但情境高亮——准星有目标（P._curIt）→ .ready 高亮放大；
+  //                 无目标 → .idle 置灰（不直接隐藏，避免玩家找不到按钮）
+  //   桌面端      ：以下全部经 isTouch 门控，桌面键位习惯零改动。
   I.buildTouchUI = function () {
     const root = BR.$('touch-ui');
     // G（v1.3 触屏补齐）：按钮与 PC 改键走同一动作语义（全部经 dispatchAction 分发）；
-    // 从上到下：背包 / 第三人称 / 手电 / 蹲下（仅陆地） / 道具 / 下坐骑（仅坐骑） / 疾跑 / 交互（大钮在最下，贴近拇指自然位）
+    // 从上到下：背包 / 第三人称 / 手电 / 蹲下（仅陆地非坐骑） / 道具 / 下坐骑（仅坐骑） /
+    //           疾跑 / 交互（大钮在最下，贴近拇指自然位；无目标时置灰、有目标高亮）
     root.innerHTML =
       '<div id="joy-zone"><div id="joy-base"><div id="joy-knob"></div></div></div>' +
       '<div id="touch-btns">' +
@@ -480,7 +510,7 @@
       '<button id="btn-crouch" class="tbtn land-only" aria-label="蹲下" title="蹲下（陆地）">' + ICONS.crouch + '</button>' +
       '<button id="btn-dismount" class="tbtn mount-only" aria-label="下坐骑" title="下坐骑">' + ICONS.dismount + '</button>' +
       '<button id="btn-run" class="tbtn" aria-label="奔跑" title="疾跑">' + ICONS.run + '</button>' +
-      '<button id="btn-interact" class="tbtn big" aria-label="交互" title="交互">' + ICONS.interact + '</button>' +
+      '<button id="btn-interact" class="tbtn big idle" aria-label="交互" title="交互">' + ICONS.interact + '</button>' +
       '</div>' +
       // F（v1.4）：跳跃/下潜簇——交互大钮左侧的横排拇指区；下潜仅游泳时显示（body.swimming）
       '<div id="touch-jump-cluster">' +
@@ -506,6 +536,11 @@
       base.style.left = (t.clientX - R()) + 'px';
       base.style.top = (t.clientY - R()) + 'px';
       base.style.width = base.style.height = (R() * 2) + 'px';
+      // C（v2.0 P1）：旋钮直径随摇杆大小设置缩放（默认 120→约53px，与 CSS 默认 52px 对齐），
+      // 保证 set-joysize 改的是"整个摇杆"而不只是底座
+      const kd = Math.max(36, Math.round(this.settings.joySize * 0.44));
+      knob.style.width = knob.style.height = kd + 'px';
+      knob.style.margin = (-kd / 2) + 'px 0 0 ' + (-kd / 2) + 'px';
       setKnob(0, 0);
     }, { passive: false });
     const joyMove = (e) => {
@@ -537,12 +572,15 @@
     joyZone.addEventListener('touchend', joyEnd);
     joyZone.addEventListener('touchcancel', joyEnd);
 
-    // 视角：画布右侧区域拖动（按钮已 stopPropagation，不会误触）
+    // 视角：画布拖动（按钮已 stopPropagation 且目标不是画布，不会误触）
+    // C（v2.0 P1）：摇杆放右侧（set-joyside=right）时视角区镜像到左侧，
+    // 否则左侧 38% 会变成"既非摇杆也非视角"的死区
     const cv = BR.$('game-canvas');
     cv.addEventListener('touchstart', (e) => {
       if (this.locked || BR.Game.state !== 'playing') return;
+      const jright = document.body.classList.contains('joy-right');
       for (const t of e.changedTouches) {
-        if (t.clientX < innerWidth * 0.38) continue; // 左侧留给摇杆
+        if (jright ? t.clientX > innerWidth * 0.62 : t.clientX < innerWidth * 0.38) continue; // 摇杆侧留给摇杆
         if (this.lookId === null) {
           this.lookId = t.identifier; this.lookLX = t.clientX; this.lookLY = t.clientY;
         }
@@ -682,11 +720,23 @@
     tgl('btn-thirdperson', P.thirdPerson);
     tgl('btn-use', P.flashlightOn);
     tgl('btn-run', this.runToggle);
-    // F（v1.4）：游泳时显示下潜按钮；跳跃按钮语义切换为"上浮"（长按）
-    const swimming = this.isSwimming();
+    // C（v2.0 P1）情境化规则落地（见 buildTouchUI 头部规则表）：
+    //   swimming：坐骑时强制为 false——坐骑在水上时 BR.Swim.inWater 仍为真，
+    //             但那是"开船/骑鸭"不是"游泳"，下潜按钮冒出来会与坐骑操作打架
+    //   mounted ：body.mounted → CSS 显示下坐骑（.mount-only）、隐藏蹲伏（.land-only）
+    //   交互    ：P._curIt（player.js 准星射线每 0.12s 更新）有目标 → .ready 高亮放大，
+    //             无目标 → .idle 置灰；按钮本身常驻不隐藏
+    const mounted = !!P.mountHandle;
+    const swimming = !mounted && this.isSwimming();
     document.body.classList.toggle('swimming', swimming);
-    // v1.5 W8：坐骑时显示下坐骑按钮（body.mounted → CSS 显示 .mount-only）
-    document.body.classList.toggle('mounted', !!(P.mountHandle));
+    document.body.classList.toggle('mounted', mounted);
+    const ib = BR.$('btn-interact');
+    if (ib) {
+      const hasTarget = !!P._curIt;
+      ib.classList.toggle('ready', hasTarget);
+      ib.classList.toggle('idle', !hasTarget);
+      ib.setAttribute('aria-label', hasTarget ? '交互（有可用目标）' : '交互');
+    }
     const jb = BR.$('btn-jump');
     if (jb) {
       jb.classList.toggle('swim', swimming);
@@ -717,7 +767,10 @@
     if (m > 0.05 && this.firstHint) this.firstHint('move'); // v1.5 W2：首次移动提示
     return { x, z };
   };
-  Object.defineProperty(I, 'runHeld', { get() { const k = this.keys; return (this.bindings.run || []).some(c => !!k[c]); } });
+  // C（v2.0 P1）：触屏疾跑是"开关式"（runToggle），把它纳入 runHeld——
+  // 否则骑鸭时触屏疾跑无效（lv_l37 鸭子只读 runHeld 判加速；player.js 步行已两者都读）。
+  // 桌面端 runToggle 永不置位（触屏按钮 isTouch 门控），桌面行为零变化。
+  Object.defineProperty(I, 'runHeld', { get() { const k = this.keys; return (this.bindings.run || []).some(c => !!k[c]) || !!this.runToggle; } });
   // E 路（v1.4）：跳跃（陆地=点按起跳，水中=按住上浮）/ 下潜（水中按住=下沉）；
   // 触屏标志兼容两套命名：touchJump/touchDive（E 路预留）与 touchJumpHold/touchDiveHold
   // （F 路触摸按钮实际写入）；物理层只做边沿/按住轮询，dispatchAction('jump'/'dive')

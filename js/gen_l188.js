@@ -18,6 +18,12 @@
  *   中庭(20..35,22..35)四周四层窗户（104 扇）；异常窗在南墙下（POI odd_window →L1）
  *   2F（南区 46..54 行，关内楼梯换层到达）：环廊(12..42,50) + 6 间客房 + 楼梯间大厅
  *
+ * v2.0 P5（百窗亭质量升级）：①四面层高微差（TIERS_BY_SIDE，打破完全对称）；
+ *   ②tier2/3 封存（外观多层/实际两层 → "封锁"解释：常暗或百叶封死、永不翻转，
+ *   异空间/事件/穿越只在 tier0/1）；③异空间窗加 av 变体（同类三档可辨识差异）；
+ *   ④南墙 209 窗 sx:28→32，使其 x 落进 209 房横向范围（室内窗对位用）；
+ *   ⑤分配兜底：curtain/room≥3、异空间种类≥3（任意种子不断言失败）。
+ *
  * POI 类型（lv_l188.js 消费，见该文件头部的清单）：
  *   spawn / balcony / hotel_room / room_door / lounge / staff_room /
  *   radio / odd_window / stairwell / stair_up / return_door / emergency_exit /
@@ -644,7 +650,7 @@
     POI('lounge', 28, 41, {});
     POI('staff_room', 41, 42, {});
     POI('radio', 30, 42, {});                       // 休息室收音机 → L0
-    POI('odd_window', 28, 35, { num: '209' });       // 中庭南墙下的异常窗 → L1
+    POI('odd_window', 32, 35, { num: '209' });       // 中庭南墙下的异常窗 → L1（对准 s0_32 窗）
     POI('stairwell', 42, 41, {});                   // 员工室楼梯间 → L11
 
     /* —— 字条 / 板条箱 —— */
@@ -699,16 +705,25 @@
       var T3 = 3; // BR.TILE（gen 侧硬编码 3，与 config.js 一致）
       var wrng = new BR.RNG(BR.hashSeed(map.seed + ':l188wins'));
       var wins = [];
-      var TIERS = [2.2, 5.0, 7.8, 10.6]; // 四层窗高（wallH=12，参考图4 高大压迫感）
+      // v2.0 P5：四面层高微差（±0.15m，打破四面完全对称的盒子；lv 按 w.y 自动跟随）
+      var TIERS_BY_SIDE = {
+        S: [2.20, 5.00, 7.80, 10.60],
+        N: [2.35, 5.15, 7.70, 10.45],
+        W: [2.10, 4.90, 7.90, 10.70],
+        E: [2.28, 5.08, 7.72, 10.52]
+      };
       function pushWin(id, side, tier, x, z, ry, ctx, num) {
-        wins.push({ id: id, side: side, tier: tier, y: TIERS[tier], x: x, z: z, ry: ry,
+        wins.push({ id: id, side: side, tier: tier, y: TIERS_BY_SIDE[side][tier], x: x, z: z, ry: ry,
           tx: ctx[0], ty: ctx[1], num: num || null,
-          state: 'plain', sub: 'warm', dest: null, magic: false, variant: null });
+          state: 'plain', sub: 'warm', dest: null, magic: false, variant: null,
+          sealed: false, av: null });
       }
       var sx, wy, nx, k;
       for (k = 0; k < 4; k++) {
         for (sx = 22; sx <= 34; sx += 2) {
-          var numS = k === 0 ? (sx === 22 ? '208' : sx === 28 ? '209' : sx === 32 ? 'lounge' : null) : null;
+          // v2.0 P5：209 窗从 sx=28 移到 sx=32（x=97.5 落进 209 房横向范围 93..105，
+          // 室内窗位置才能对上；sx=28 改挂 lounge，x=85.5 落进休息室 75..99）
+          var numS = k === 0 ? (sx === 22 ? '208' : sx === 28 ? 'lounge' : sx === 32 ? '209' : null) : null;
           pushWin('s' + k + '_' + sx, 'S', k, (sx + 0.5) * T3, 36 * T3 - 0.07, Math.PI, [sx, 36], numS);
         }
         for (nx = 22; nx <= 34; nx += 2) {
@@ -725,7 +740,7 @@
       // 209 房南墙首层窗 = 可穿越窗 →L1（老 odd_window 逻辑）
       var w209 = null;
       for (var q = 0; q < wins.length; q++)
-        if (wins[q].id === 's0_28') { w209 = wins[q]; break; }
+        if (wins[q].id === 's0_32') { w209 = wins[q]; break; }
       w209.state = 'travel'; w209.dest = 'L1'; w209.variant = 'corridor_l1';
       coupledNums['209'] = true;
       // 再强制指定：1 扇可穿越窗（目标从已完成层级池随机）+ 2 扇事件窗 + 1 扇"消失"窗帘
@@ -735,7 +750,7 @@
         });
         return c.length ? wrng.pick(c) : null;
       }
-      var wt = pickPlain(function (w) { return w.id !== 's0_28' && w.tier === 0; });
+      var wt = pickPlain(function (w) { return w.id !== 's0_32' && w.tier === 0; });
       if (wt) {
         wt.state = 'travel';
         wt.dest = wrng.pick(['L0', 'L11', 'L37', 'FUN']);
@@ -753,11 +768,19 @@
       var wc = pickPlain(function (w) { return w.state === 'plain' && w.tier === 0; });
       if (wc) { wc.state = 'curtain'; wc.magic = true; }
       // 其余按权重分配；同侧相邻异空间不重复（避免"全通同一场景"）
+      // v2.0 P5：tier2（封存层）/tier3（阁楼层）强制封存——外观四层、实际只玩两层，
+      // 用"楼层封锁"解释：常暗或百叶封死、永不翻转；异空间只在 tier0/1 出现。
       var lastAnom = {};
       var anomKinds = ['pool', 'party', 'city', 'deep'];
       for (var v = 0; v < wins.length; v++) {
         var w = wins[v];
         if (w.state !== 'plain') continue;
+        if (w.tier >= 2) {
+          w.state = 'plain';
+          w.sealed = true;
+          w.sub = w.tier === 2 ? (wrng.next() < 0.72 ? 'dark' : 'blinds') : 'dark';
+          continue;
+        }
         var r = wrng.next();
         var st;
         if (r < 0.55) st = 'plain';
@@ -766,6 +789,8 @@
         else {
           st = wrng.pick(['pool', 'pool', 'party', 'party', 'city', 'deep']);
           if (lastAnom[w.side] === st) st = 'room'; // 同侧相邻不重复
+          // v2.0 P5：同类异空间窗的可辨识差异（三档变体，lv 按 w.av 分支建造）
+          if (anomKinds.indexOf(st) >= 0) w.av = wrng.pick(['a', 'b', 'c']);
         }
         w.state = st;
         if (anomKinds.indexOf(st) >= 0) lastAnom[w.side] = st;
@@ -775,13 +800,38 @@
           w.sub = r2 < 0.35 ? 'warm' : r2 < 0.55 ? 'cold' : r2 < 0.90 ? 'dark' : 'blinds';
         }
       }
-      // 异常色亮窗（参考图4：混入 1~2 扇蓝色亮窗）
+      // 异常色亮窗（参考图4：混入 1~2 扇蓝色亮窗；只在可玩层 tier0/1）
       var bluePicked = 0;
       var guard = 0;
       while (bluePicked < 2 && guard++ < 200) {
-        var wb = pickPlain();
+        var wb = pickPlain(function (x) { return x.tier < 2; });
         if (wb && wb.sub !== 'blue') { wb.sub = 'blue'; bluePicked++; }
       }
+      // v2.0 P5 分配兜底（任意种子不断言失败）：curtain/room≥3、异空间种类≥3。
+      // 只动无房号的 tier0/1 plain 窗，不碰锁耦合与强制窗。
+      (function floors() {
+        function plainFree() {
+          return wins.filter(function (x) {
+            return x.state === 'plain' && !x.sealed && x.tier < 2 && !x.num;
+          });
+        }
+        var cnt = { curtain: 0, room: 0 };
+        wins.forEach(function (x) { if (cnt[x.state] != null) cnt[x.state]++; });
+        ['curtain', 'room'].forEach(function (st) {
+          var need = 3 - cnt[st], pool = plainFree(), pi = 0;
+          while (need > 0 && pi < pool.length) { pool[pi].state = st; pi++; need--; }
+        });
+        var kinds = {};
+        wins.forEach(function (x) {
+          if (anomKinds.indexOf(x.state) >= 0) kinds[x.state] = true;
+        });
+        var kp = plainFree(), ki = 0;
+        anomKinds.forEach(function (ak) {
+          if (!kinds[ak] && ki < kp.length) {
+            kp[ki].state = ak; kp[ki].av = 'a'; ki++;
+          }
+        });
+      })();
       // 锁耦合回填：异空间/事件/穿越窗对应的房门强制锁死
       for (var d2 = 0; d2 < map.doors.length; d2++) {
         var dd = map.doors[d2];
