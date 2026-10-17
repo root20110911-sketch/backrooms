@@ -51,14 +51,28 @@
     }
     var steps = pit.steps || (pit.step ? [pit.step] : null);
     if (steps) {
+      // v2.1：四边台阶（下沉庭院）时，转角归 N/S 边所有 —— E/W 边带在 z 向内收 1 tile，
+      // 与 buildPits 几何一致（转角不双重建模，避免 z-fighting）
+      var hasNS = false, hasEW = false, s0;
+      for (s0 = 0; s0 < steps.length; s0++) {
+        if (steps[s0].edge === 'N' || steps[s0].edge === 'S') hasNS = true;
+        else hasEW = true;
+      }
+      var cornerCut = hasNS && hasEW;
       for (var s = 0; s < steps.length; s++) {
         var st = steps[s], n = st.n;
         var fromY = (st.fromY != null ? st.fromY : 0);
         var riser = Math.abs(pit.floorY - fromY) / n, k = -1;
         if (st.edge === 'N') { if (z < pz0 + TILE) k = Math.floor((z - pz0) / TILE * n); }
         else if (st.edge === 'S') { if (z > pz1 - TILE) k = Math.floor((pz1 - z) / TILE * n); }
-        else if (st.edge === 'W') { if (x < px0 + TILE) k = Math.floor((x - px0) / TILE * n); }
-        else if (st.edge === 'E') { if (x > px1 - TILE) k = Math.floor((px1 - x) / TILE * n); }
+        else if (st.edge === 'W') {
+          if (x < px0 + TILE && (!cornerCut || (z >= pz0 + TILE && z <= pz1 - TILE)))
+            k = Math.floor((x - px0) / TILE * n);
+        }
+        else if (st.edge === 'E') {
+          if (x > px1 - TILE && (!cornerCut || (z >= pz0 + TILE && z <= pz1 - TILE)))
+            k = Math.floor((px1 - x) / TILE * n);
+        }
         if (k >= 0) {
           if (k > n - 1) k = n - 1;
           var dir = pit.floorY < fromY ? -1 : 1;
@@ -69,7 +83,8 @@
     return pit.floorY;
   }
   function pitAt(L, x, z) {
-    for (var i = 0; i < L.pits.length; i++) {
+    // v2.1：反向遍历 —— 后压入的坑优先（下沉庭院内核坑覆盖外环，互不干扰旧坑：旧坑互不重叠）
+    for (var i = L.pits.length - 1; i >= 0; i--) {
       var p = L.pits[i];
       if (x >= p.tx0 * TILE && x < (p.tx1 + 1) * TILE &&
           z >= p.ty0 * TILE && z < (p.ty1 + 1) * TILE) return p;
@@ -468,6 +483,182 @@
     for (var ri3 = 0; ri3 < chanRects.length; ri3++) rects.push(chanRects[ri3]);
     map.meta.l37 = { surface: SURF, rects: rects, pits: pits, pillars: pillars, chanRects: chanRects };
 
+    /* ---- v2.1 W-l37 空间重塑：水域塑造建筑 ----
+     * 在剩余干燥房间（非出生房/泳池房/水道厅）里按面积挑选特征房，
+     * 尺寸不够则该类型空缺（不许硬塞小房间）：
+     *  - submerged_hall 半淹没大厅：整间浅淹 0.5m，中央架空步道（deck 0.55）+ 两侧柱列成柱廊，
+     *    另有 2 块被水隔开的踏步平台；
+     *  - sunken_court 下沉庭院：大房间阶梯式下沉泳池（外环 -0.6 + 内核 -1.8，
+     *    内核后压入 pitAt 反向优先），四周 1 tile 干环为临水平台；
+     *  - stair_hall 浸水台阶厅：宽台阶从干燥地面直降深水坑（原著「楼梯直接通向深水坑」），两侧立柱；
+     *  - dive_channel 水下连通水道：最长水道中段挖深 -2.0（避开缓降坑），需潜穿；
+     * 柱廊另由 lane 长泳道两侧柱列承担（已存在）。柱子试放均带房间连通性回退。
+     * （放在 meta 赋值之后：rects/pits/pillars 均已声明；数组引用共享，push 即时生效。） */
+    (function shapeWaterArchitecture() {
+      var featRooms = rooms.filter(function (r) {
+        return r !== spawnR && !r.tag && !flooded[r.id];
+      }).sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+      function take(minW, minH) {
+        for (var i = 0; i < featRooms.length; i++) {
+          var r = featRooms[i];
+          if (r.w >= minW && r.h >= minH) { featRooms.splice(i, 1); return r; }
+        }
+        return null;
+      }
+      function roomConnected(r) {
+        var seen = {}, cnt = 0, total = 0, sx = -1, sy = -1, xx, yy;
+        for (yy = r.y; yy < r.y + r.h; yy++) for (xx = r.x; xx < r.x + r.w; xx++) {
+          if (tiles[T(xx, yy)] !== 1) continue;
+          total++;
+          if (sx < 0) { sx = xx; sy = yy; }
+        }
+        if (!total) return true;
+        var q = [[sx, sy]]; seen[sx + ',' + sy] = 1; cnt = 1;
+        var nb = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var h = 0; h < q.length; h++) for (var d = 0; d < 4; d++) {
+          var nx = q[h][0] + nb[d][0], ny = q[h][1] + nb[d][1];
+          if (nx < r.x || nx >= r.x + r.w || ny < r.y || ny >= r.y + r.h) continue;
+          if (tiles[T(nx, ny)] !== 1 || seen[nx + ',' + ny]) continue;
+          seen[nx + ',' + ny] = 1; cnt++; q.push([nx, ny]);
+        }
+        return cnt === total;
+      }
+      function tryPillar(r, tx, ty) {
+        if (tx < r.x || tx >= r.x + r.w || ty < r.y || ty >= r.y + r.h) return false;
+        if (tiles[T(tx, ty)] !== 1) return false;
+        tiles[T(tx, ty)] = 0;
+        if (roomConnected(r)) { pillars.push([tx, ty]); return true; }
+        tiles[T(tx, ty)] = 1;
+        return false;
+      }
+      // ---- 下沉庭院（阶梯式下沉泳池；最先挑：尺寸要求最高，防被大厅抢走） ----
+      var court = take(9, 9);
+      if (court) {
+        var ax0 = court.x + 1, ay0 = court.y + 1, ax1 = court.x + court.w - 2, ay1 = court.y + court.h - 2;
+        var bx0 = ax0 + 2, by0 = ay0 + 2, bx1 = ax1 - 2, by1 = ay1 - 2;
+        if (bx1 - bx0 + 1 >= 2 && by1 - by0 + 1 >= 2) {
+          court.tag = 'pool_court';
+          var pitA = { tx0: ax0, ty0: ay0, tx1: ax1, ty1: ay1, floorY: -0.6, kind: 'swim',
+                       steps: [{ edge: 'N', n: 3 }, { edge: 'S', n: 3 },
+                               { edge: 'E', n: 3 }, { edge: 'W', n: 3 }],
+                       ramp: null, role: 'court_shelf' };
+          var pitB = { tx0: bx0, ty0: by0, tx1: bx1, ty1: by1, floorY: -1.8, kind: 'swim',
+                       steps: [{ edge: 'N', n: 3, fromY: -0.6 }, { edge: 'S', n: 3, fromY: -0.6 },
+                               { edge: 'E', n: 3, fromY: -0.6 }, { edge: 'W', n: 3, fromY: -0.6 }],
+                       ramp: null, role: 'court_core' };
+          carvePitTiles(pitA); carvePitTiles(pitB);
+          pits.push(pitA); pits.push(pitB); // 内核后压：pitAt 反向优先
+          rects.push({ x0: ax0, y0: ay0, x1: ax1, y1: ay1 });
+          flooded[court.id] = true;
+          poolDepths.push(+(SURF - (-1.8)).toFixed(2));
+        } else {
+          court.tag = null; // 内核放不下：回退为普通干燥房
+        }
+      }
+      // ---- 半淹没大厅 ----
+      var hall = take(7, 7);
+      if (hall) {
+        hall.tag = 'pool_submerged';
+        rects.push({ x0: hall.x, y0: hall.y, x1: hall.x + hall.w - 1, y1: hall.y + hall.h - 1 });
+        flooded[hall.id] = true;
+        var hHoriz = hall.w >= hall.h;
+        var bw;
+        if (hHoriz) {
+          var hby = Math.round(hall.cy);
+          bw = { tx0: hall.x + 1, ty0: hby, tx1: hall.x + hall.w - 2, ty1: hby,
+                 floorY: 0.55, kind: 'deck', steps: [{ edge: 'W', n: 2 }, { edge: 'E', n: 2 }],
+                 ramp: null, role: 'hall_bridge' };
+          carvePitTiles(bw); pits.push(bw);
+          for (var ht = bw.tx0 + 1; ht <= bw.tx1 - 1; ht += 2) {
+            tryPillar(hall, ht, hby - 1); tryPillar(hall, ht, hby + 1);
+          }
+        } else {
+          var hbx = Math.round(hall.cx);
+          bw = { tx0: hbx, ty0: hall.y + 1, tx1: hbx, ty1: hall.y + hall.h - 2,
+                 floorY: 0.55, kind: 'deck', steps: [{ edge: 'N', n: 2 }, { edge: 'S', n: 2 }],
+                 ramp: null, role: 'hall_bridge' };
+          carvePitTiles(bw); pits.push(bw);
+          for (var ht2 = bw.ty0 + 1; ht2 <= bw.ty1 - 1; ht2 += 2) {
+            tryPillar(hall, hbx - 1, ht2); tryPillar(hall, hbx + 1, ht2);
+          }
+        }
+        // 被水隔开的踏步平台：2 块 1x1 deck（0.55），一侧台阶下水（涉水前往）
+        var pads = 0, tries = 0;
+        while (pads < 2 && tries < 24) {
+          tries++;
+          var ppx = hall.x + 1 + Math.floor(rng.next() * Math.max(1, hall.w - 2));
+          var ppy = hall.y + 1 + Math.floor(rng.next() * Math.max(1, hall.h - 2));
+          if (tiles[T(ppx, ppy)] !== 1) continue;
+          if (ppx >= bw.tx0 - 1 && ppx <= bw.tx1 + 1 && ppy >= bw.ty0 - 1 && ppy <= bw.ty1 + 1) continue;
+          var pe = hHoriz ? (ppy < bw.ty0 ? 'S' : 'N') : (ppx < bw.tx0 ? 'E' : 'W');
+          var pad = { tx0: ppx, ty0: ppy, tx1: ppx, ty1: ppy,
+                      floorY: 0.55, kind: 'deck', steps: [{ edge: pe, n: 2 }],
+                      ramp: null, role: 'hall_pad' };
+          carvePitTiles(pad); pits.push(pad);
+          pads++;
+        }
+      }
+      // ---- 浸水台阶厅（宽台阶直降深水坑） ----
+      var sth = take(5, 5);
+      if (sth) {
+        var sHoriz = sth.w >= sth.h;
+        var sp;
+        if (sHoriz) {
+          var smx = sth.x + (sth.w >> 1);
+          sp = { tx0: smx, ty0: sth.y + 1, tx1: sth.x + sth.w - 2, ty1: sth.y + sth.h - 2,
+                 floorY: PIT_DEEP, kind: 'deep', steps: [{ edge: 'W', n: 5 }],
+                 ramp: null, role: 'stair_hall' };
+        } else {
+          var smz = sth.y + (sth.h >> 1);
+          sp = { tx0: sth.x + 1, ty0: smz, tx1: sth.x + sth.w - 2, ty1: sth.y + sth.h - 2,
+                 floorY: PIT_DEEP, kind: 'deep', steps: [{ edge: 'N', n: 5 }],
+                 ramp: null, role: 'stair_hall' };
+        }
+        if ((sp.tx1 - sp.tx0 + 1) >= 2 && (sp.ty1 - sp.ty0 + 1) >= 2) {
+          sth.tag = 'pool_stairs';
+          carvePitTiles(sp); pits.push(sp);
+          rects.push({ x0: sp.tx0, y0: sp.ty0, x1: sp.tx1, y1: sp.ty1 });
+          flooded[sth.id] = true;
+          poolDepths.push(+(SURF - PIT_DEEP).toFixed(2));
+          var st3;
+          if (sHoriz) {
+            for (st3 = sp.tx0; st3 <= sp.tx1; st3 += 2) {
+              tryPillar(sth, st3, sp.ty0 - 1); tryPillar(sth, st3, sp.ty1 + 1);
+            }
+          } else {
+            for (st3 = sp.ty0; st3 <= sp.ty1; st3 += 2) {
+              tryPillar(sth, sp.tx0 - 1, st3); tryPillar(sth, sp.tx1 + 1, st3);
+            }
+          }
+        } else {
+          sth.tag = null;
+        }
+      }
+      // ---- 水下连通水道（最长水道中段挖深 -2.0，避开缓降坑） ----
+      (function diveChannel() {
+        if (!chanRects.length) return;
+        var best = null, bi;
+        for (bi = 0; bi < chanRects.length; bi++) {
+          var cr = chanRects[bi], len = cr.x1 - cr.x0 + 1;
+          if (len >= 6 && (!best || len > best.x1 - best.x0 + 1)) best = cr;
+        }
+        if (!best) return;
+        for (var d0 = best.x0 + 1; d0 + 2 <= best.x1 - 1; d0++) {
+          var free = true;
+          for (var pi = 0; pi < pits.length; pi++) {
+            var ep = pits[pi];
+            if (d0 <= ep.tx1 && d0 + 2 >= ep.tx0 && best.y0 <= ep.ty1 && best.y0 >= ep.ty0) { free = false; break; }
+          }
+          if (!free) continue;
+          var dv = { tx0: d0, ty0: best.y0, tx1: d0 + 2, ty1: best.y0,
+                     floorY: -2.0, kind: 'dive', steps: [{ edge: 'W', n: 5 }, { edge: 'E', n: 5 }],
+                     ramp: null, role: 'dive_channel' };
+          carvePitTiles(dv); pits.push(dv);
+          return;
+        }
+      })();
+    })();
+
     /* ---- POI（落脚 tile 必须为 tile-1，保证可达性断言） ---- */
     function nearestFloorTile(r, tx, ty) {
       if (tileAt(tx, ty) === 1) return [tx, ty];
@@ -571,6 +762,52 @@
         addPOI('duck_spawn', rt[0], rt[1],
           { wx: wx, wz: wz, yaw: drng.range(0, 6.2832), zone: spot.zone });
         placed++;
+      }
+    })();
+    /* ---- v2.1 W-l37：Sunlit Gate（→L37.2「Sunlit Pools」入口预留） ----
+     * Fandom 主站依据：Level 37 墙上异常发光的开口，常藏于柱子或旋转楼梯后，
+     * 是 secret 子层 Level 37.2 的入口。
+     * 本函数只生成位置并暴露：POI 'sunlit_gate'（tile=1 可达）+ meta.l37.gate；
+     * lv 侧据此建发光视觉并置 BR.World.l37_sunlitGate / l37_sunlitReturn，
+     * 具体跳转逻辑由总协调统一接线。返回落点 = 开口内侧 2.5m、面向开口。 */
+    (function placeSunlitGate() {
+      var dry = rooms.filter(function (r) {
+        return r !== spawnR && !(r.tag && r.tag.indexOf('pool_') === 0) && !flooded[r.id];
+      }).sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+      if (!dry.length) return;
+      var start = BR.hashSeed(map.seed + ':l37gate') % dry.length;
+      for (var di = 0; di < dry.length; di++) {
+        var pick = dry[(start + di) % dry.length];
+        var edges = [
+          { e: 'N', gx: pick.x + (pick.w >> 1), gy: pick.y, ox: 0, oy: -1 },
+          { e: 'S', gx: pick.x + (pick.w >> 1), gy: pick.y + pick.h - 1, ox: 0, oy: 1 },
+          { e: 'W', gx: pick.x, gy: pick.y + (pick.h >> 1), ox: -1, oy: 0 },
+          { e: 'E', gx: pick.x + pick.w - 1, gy: pick.y + (pick.h >> 1), ox: 1, oy: 0 }
+        ];
+        var rot = BR.hashSeed(map.seed + ':l37gateEdge');
+        var sel = null;
+        for (var i = 0; i < 4; i++) {
+          var c = edges[(rot + i) % 4];
+          if (tileAt(c.gx, c.gy) !== 1) continue;
+          if (tileAt(c.gx + c.ox, c.gy + c.oy) !== 0) continue; // 外侧必须是墙
+          sel = c; break;
+        }
+        if (!sel) continue;
+        // 开口平面：墙面内侧 0.06m；返回落点：内侧 2.5m
+        var px = (sel.gx + 0.5) * TILE + sel.ox * (TILE / 2 - 0.06);
+        var pz = (sel.gy + 0.5) * TILE + sel.oy * (TILE / 2 - 0.06);
+        var yaw = sel.e === 'N' ? 0 : sel.e === 'S' ? Math.PI : sel.e === 'W' ? Math.PI / 2 : -Math.PI / 2;
+        var gate = {
+          tx: sel.gx, ty: sel.gy, edge: sel.e,
+          wx: +px.toFixed(3), wy: 1.45, wz: +pz.toFixed(3), yaw: +yaw.toFixed(4),
+          dest: 'L37.2',
+          retX: +(px - sel.ox * 2.5).toFixed(3),
+          retZ: +(pz - sel.oy * 2.5).toFixed(3),
+          retYaw: +Math.atan2(-sel.ox, -sel.oy).toFixed(4)
+        };
+        addPOI('sunlit_gate', sel.gx, sel.gy, gate);
+        map.meta.l37.gate = gate;
+        return;
       }
     })();
     // 拱洞：深水厅 + 浅水厅东缘（tunnel 所在厅标青色）

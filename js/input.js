@@ -400,6 +400,8 @@
 
   I.init = function () {
     this.loadSettings();
+    // W-ui（v2.1）：触屏标识类，供 CSS 做触屏专属布局（桌面端无此类别无影响）
+    try { document.body.classList.toggle('is-touch', !!this.isTouch); } catch (e) {}
     this.buildTouchUI();
     // —— 键盘：走按键绑定分发 ——
     addEventListener('keydown', (e) => {
@@ -485,39 +487,48 @@
   };
 
   /* ---------- 触控 UI ---------- */
-  // C（v2.0 P1）情境化按键规则表（只读玩家状态、不改游戏逻辑；显隐走 body 类 + 按钮类，由 CSS 落地）：
-  //   常驻        ：背包 / 暂停 / 手电 / 第三人称 / 疾跑（触屏开关式）/ 跳跃
-  //                 ——跳跃在游泳时语义变"上浮（长按）"，样式/文案随 .swim 切换
-  //   仅游泳      ：下潜按钮（.swim-only ← body.swimming）；坐骑时强制抑制
-  //                 （坐骑在水上时 BR.Swim.inWater 仍为真，但那是"开船"不是"游泳"，
-  //                 下潜/上浮按钮此时出现会与坐骑操作打架）
-  //   陆地非坐骑  ：蹲伏按钮（.land-only；body.swimming 或 body.mounted 时隐藏）
-  //   仅坐骑      ：下坐骑按钮（.mount-only ← body.mounted）；驾驶走左摇杆 + 疾跑开关
-  //   交互按钮    ：常驻但情境高亮——准星有目标（P._curIt）→ .ready 高亮放大；
-  //                 无目标 → .idle 置灰（不直接隐藏，避免玩家找不到按钮）
-  //   桌面端      ：以下全部经 isTouch 门控，桌面键位习惯零改动。
+  // W-ui（v2.1）情境化按键规则表（只读玩家状态、不改游戏逻辑；显隐走 body 类 + 按钮类，由 CSS 落地）：
+  //   #touch-sys（右上系统区 mini 横排，常驻不占主视野）
+  //             ：暂停 / 背包 / 手电 / 疾跑（触屏开关式）/ 第三人称
+  //               ——疾跑在乘船时保留（鸭/船加速读 runHeld）；手电/背包/暂停始终可达
+  //   #touch-btns（右下主操作区，只放当前情境真正需要的操作）
+  //     交互（big）：常驻但情境高亮——准星有目标（P._curIt）→ .ready 高亮放大；
+  //               无目标 → .idle 置灰（不直接隐藏，避免玩家找不到按钮）
+  //     蹲伏     ：陆地非坐骑（.land-only；body.swimming 或 body.mounted 时隐藏）
+  //     下坐骑   ：仅坐骑（.mount-only ← body.mounted）；驾驶走左摇杆 + 疾跑开关
+  //   #touch-jump-cluster（右下拇指区）
+  //     跳跃/上浮（big）：陆地=跳跃，深水=上浮（长按，.swim 水蓝样式）；
+  //               乘船隐藏（body.mounted → 整簇 display:none，坐骑 handle 从不读 jumpHeld）
+  //     下潜（big）：仅深水（.swim-only ← body.swimming）；坐骑时强制抑制
+  //               （坐骑在水上时 BR.Swim.inWater 仍为真，但那是"开船"不是"游泳"，
+  //               下潜/上浮按钮此时出现会与坐骑操作打架）
+  //   桌面端    ：以下全部经 isTouch 门控，桌面键位习惯零改动。
   I.buildTouchUI = function () {
     const root = BR.$('touch-ui');
-    // G（v1.3 触屏补齐）：按钮与 PC 改键走同一动作语义（全部经 dispatchAction 分发）；
-    // 从上到下：背包 / 第三人称 / 手电 / 蹲下（仅陆地非坐骑） / 道具 / 下坐骑（仅坐骑） /
-    //           疾跑 / 交互（大钮在最下，贴近拇指自然位；无目标时置灰、有目标高亮）
+    // G（v1.3 触屏补齐）：按钮与 PC 改键走同一动作语义（全部经 dispatchAction 分发）。
+    // W-ui（v2.1）：按钮分区——右上系统区（mini 横排，常驻但不臃肿）+
+    // 右下主操作区（情境化）+ 右下拇指区（跳跃/下潜簇）；无"道具"按钮
+    // （v1.5.1 起道具使用只走背包，文案不再提幽灵按钮）。
     root.innerHTML =
       '<div id="joy-zone"><div id="joy-base"><div id="joy-knob"></div></div></div>' +
+      '<div id="touch-sys">' +
+      '<button id="btn-pause-t" class="tbtn mini" aria-label="暂停" title="暂停">' + ICONS.pause + '</button>' +
+      '<button id="btn-backpack" class="tbtn mini" aria-label="背包" title="背包">' + ICONS.backpack + '</button>' +
+      '<button id="btn-use" class="tbtn mini" aria-label="手电筒" title="手电筒">' + ICONS.flashlight + '</button>' +
+      '<button id="btn-run" class="tbtn mini" aria-label="奔跑" title="疾跑">' + ICONS.run + '</button>' +
+      '<button id="btn-thirdperson" class="tbtn mini" aria-label="第三人称" title="第三人称">' + ICONS.thirdperson + '</button>' +
+      '</div>' +
       '<div id="touch-btns">' +
-      '<button id="btn-backpack" class="tbtn" aria-label="背包" title="背包">' + ICONS.backpack + '</button>' +
-      '<button id="btn-thirdperson" class="tbtn" aria-label="第三人称" title="第三人称">' + ICONS.thirdperson + '</button>' +
-      '<button id="btn-use" class="tbtn" aria-label="手电筒" title="手电筒">' + ICONS.flashlight + '</button>' +
       '<button id="btn-crouch" class="tbtn land-only" aria-label="蹲下" title="蹲下（陆地）">' + ICONS.crouch + '</button>' +
       '<button id="btn-dismount" class="tbtn mount-only" aria-label="下坐骑" title="下坐骑">' + ICONS.dismount + '</button>' +
-      '<button id="btn-run" class="tbtn" aria-label="奔跑" title="疾跑">' + ICONS.run + '</button>' +
       '<button id="btn-interact" class="tbtn big idle" aria-label="交互" title="交互">' + ICONS.interact + '</button>' +
       '</div>' +
-      // F（v1.4）：跳跃/下潜簇——交互大钮左侧的横排拇指区；下潜仅游泳时显示（body.swimming）
+      // F（v1.4）：跳跃/下潜簇——交互大钮左侧的横排拇指区；下潜仅游泳时显示（body.swimming）；
+      // W-ui（v2.1）：乘船时整簇隐藏（body.mounted）
       '<div id="touch-jump-cluster">' +
       '<button id="btn-dive" class="tbtn big swim-only" aria-label="下潜" title="下潜（长按）">' + ICONS.dive + '</button>' +
       '<button id="btn-jump" class="tbtn big" aria-label="跳跃" title="跳跃">' + ICONS.jump + '</button>' +
-      '</div>' +
-      '<button id="btn-pause-t" class="tbtn mini" aria-label="暂停" title="暂停">' + ICONS.pause + '</button>';
+      '</div>';
     const joyZone = BR.$('joy-zone'), base = BR.$('joy-base'), knob = BR.$('joy-knob');
     const R = () => this.settings.joySize / 2;
 
@@ -720,16 +731,30 @@
     tgl('btn-thirdperson', P.thirdPerson);
     tgl('btn-use', P.flashlightOn);
     tgl('btn-run', this.runToggle);
-    // C（v2.0 P1）情境化规则落地（见 buildTouchUI 头部规则表）：
+    // W-ui（v2.1）情境化规则落地（规则表见 buildTouchUI 头部）：
     //   swimming：坐骑时强制为 false——坐骑在水上时 BR.Swim.inWater 仍为真，
     //             但那是"开船/骑鸭"不是"游泳"，下潜按钮冒出来会与坐骑操作打架
-    //   mounted ：body.mounted → CSS 显示下坐骑（.mount-only）、隐藏蹲伏（.land-only）
+    //   mounted ：body.mounted → CSS 显示下坐骑（.mount-only）、隐藏蹲伏（.land-only）、
+    //             隐藏跳跃/下潜簇（坐骑 handle 只读 runHeld，跳跃无操作意义）
     //   交互    ：P._curIt（player.js 准星射线每 0.12s 更新）有目标 → .ready 高亮放大，
     //             无目标 → .idle 置灰；按钮本身常驻不隐藏
+    //   系统区  ：暂停/背包/手电/疾跑/第三人称在右上 mini 横排常驻（不参与情境显隐）
     const mounted = !!P.mountHandle;
     const swimming = !mounted && this.isSwimming();
     document.body.classList.toggle('swimming', swimming);
     document.body.classList.toggle('mounted', mounted);
+    if (mounted && (this.touchJumpHold || this.touchDiveHold ||
+        this._holdIds['btn-jump'] != null || this._holdIds['btn-dive'] != null)) {
+      // W-ui（v2.1）：乘船时跳跃/下潜簇已隐藏（CSS），同时释放可能残留的按住态——
+      // 防"按住跳跃/下潜时上船→隐藏导致松开事件丢失→下船后跳跃/下潜粘滞"
+      this.touchJumpHold = false;
+      this.touchDiveHold = false;
+      this._holdIds['btn-jump'] = null;
+      this._holdIds['btn-dive'] = null;
+      const jj = BR.$('btn-jump'), dd = BR.$('btn-dive');
+      if (jj) jj.classList.remove('on');
+      if (dd) dd.classList.remove('on');
+    }
     const ib = BR.$('btn-interact');
     if (ib) {
       const hasTarget = !!P._curIt;
