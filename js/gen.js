@@ -951,18 +951,25 @@
   // v1.5.1：L0 无限区程序化 tile。超出 56×56 的部分按"种子+tile 坐标"确定性生成，
   // 与加载顺序/次数无关。风格与 L0 一致：大面积地板 + 12×12 超块内的隔墙段/柱子/小广场。
   // doors: map.meta.l0BorderDoors（豁口列表），豁口外 3 格强制地板，保证进出顺畅。
-  BR.Gen.l0InfiniteTile = function (seed, tx, ty, doors) {
-    var i, d, ox, oy, along, perp;
-    if (doors) for (i = 0; i < doors.length; i++) {
-      d = doors[i];
-      ox = d.tx === 55 ? 1 : (d.tx === 0 ? -1 : 0);
-      oy = d.ty === 55 ? 1 : (d.ty === 0 ? -1 : 0);
-      along = (tx - d.tx) * ox + (ty - d.ty) * oy;
-      perp = Math.abs((tx - d.tx) * oy + (ty - d.ty) * ox);
-      if (along >= 1 && along <= 3 && perp <= 1) return 1;
+  //
+  // v2.0 P5：超块粒度缓存。超块布局（墙段/柱子/广场）是 (seed, bx, by) 的纯函数，
+  // 同一超块多次查询只算一次：Map 缓存 + LRU 上限 512 条防爆。门豁口 3 格强制地板
+  // 是逐 tile 的便宜判定，走缓存之外，不影响确定性。换种子自动清缓存；
+  // 世界重建时调 BR.Gen.clearL0InfiniteCache() 手动清（generate('L0') 内已调用）。
+  var _l0infCache = new Map(); // key: seed+':'+bx+','+by → {walls, hasPlaza, px, py}
+  var _l0infSeed = null;       // 上次命中的 seed；变化即视为换种子，清缓存
+  var _l0infHits = 0, _l0infMisses = 0;
+  var L0INF_CACHE_MAX = 512;
+  function _l0infBlock(seed, bx, by) {
+    var key = seed + ':' + bx + ',' + by;
+    var hit = _l0infCache.get(key);
+    if (hit !== undefined) {
+      _l0infHits++;
+      _l0infCache.delete(key); _l0infCache.set(key, hit); // LRU：命中刷新为最新
+      return hit;
     }
-    var bx = Math.floor(tx / 12), by = Math.floor(ty / 12);
-    var lx = tx - bx * 12, ly = ty - by * 12;
+    _l0infMisses++;
+    // —— 与旧实现逐字一致的超块推导（RNG 消费顺序不可变，否则逐 tile 结果漂移）——
     var rng = new BR.RNG(BR.hashSeed(seed + ':l0inf:' + bx + ',' + by));
     var hasPlaza = rng.chance(0.3), px = 0, py = 0;
     if (hasPlaza) { px = rng.int(0, 9); py = rng.int(0, 9); }
@@ -978,8 +985,39 @@
       }
     }
     for (var c = 0; c < 2; c++) walls[rng.int(0, 11) + ',' + rng.int(0, 11)] = 1;
-    if (hasPlaza && lx >= px && lx < px + 3 && ly >= py && ly < py + 3) return 1;
-    return walls[lx + ',' + ly] ? 0 : 1;
+    var blk = { walls: walls, hasPlaza: hasPlaza, px: px, py: py };
+    _l0infCache.set(key, blk);
+    if (_l0infCache.size > L0INF_CACHE_MAX) {
+      _l0infCache.delete(_l0infCache.keys().next().value); // 淘汰最久未用
+    }
+    return blk;
+  }
+  BR.Gen.l0InfiniteTile = function (seed, tx, ty, doors) {
+    var i, d, ox, oy, along, perp;
+    if (seed !== _l0infSeed) { // 换种子：清缓存（结果只与 seed 有关，旧条目必然失效）
+      _l0infCache.clear(); _l0infSeed = seed; _l0infHits = 0; _l0infMisses = 0;
+    }
+    if (doors) for (i = 0; i < doors.length; i++) {
+      d = doors[i];
+      ox = d.tx === 55 ? 1 : (d.tx === 0 ? -1 : 0);
+      oy = d.ty === 55 ? 1 : (d.ty === 0 ? -1 : 0);
+      along = (tx - d.tx) * ox + (ty - d.ty) * oy;
+      perp = Math.abs((tx - d.tx) * oy + (ty - d.ty) * ox);
+      if (along >= 1 && along <= 3 && perp <= 1) return 1;
+    }
+    var bx = Math.floor(tx / 12), by = Math.floor(ty / 12);
+    var blk = _l0infBlock(seed, bx, by);
+    var lx = tx - bx * 12, ly = ty - by * 12;
+    if (blk.hasPlaza && lx >= blk.px && lx < blk.px + 3 && ly >= blk.py && ly < blk.py + 3) return 1;
+    return blk.walls[lx + ',' + ly] ? 0 : 1;
+  };
+  // 世界重建时手动清缓存（换种子已自动清）。generate('L0') 内自动调用。
+  BR.Gen.clearL0InfiniteCache = function () {
+    _l0infCache.clear(); _l0infSeed = null; _l0infHits = 0; _l0infMisses = 0;
+  };
+  // 缓存命中统计（测试/调优用）
+  BR.Gen.l0InfiniteCacheStats = function () {
+    return { hits: _l0infHits, misses: _l0infMisses, size: _l0infCache.size, max: L0INF_CACHE_MAX };
   };
 
   // L1 出口长走廊：从靠边的远房间向地图边缘打一条 10~14 格直走廊
@@ -1312,6 +1350,10 @@
     if (L === 'L7') { p = firstPoiOf(map, 'deep_exit'); return p ? [p.tx, p.ty] : null; }
     if (L === 'bang') { p = firstPoiOf(map, 'bang_exit'); return p ? [p.tx, p.ty] : null; } // v1.5 W6：94→! 替换
     if (L === 'L188') { p = firstPoiOf(map, 'odd_window'); return p ? [p.tx, p.ty] : null; }
+    // v2.0：L4 电梯（→L3）、L6 楼梯间（→L7）、L25 红街机（→L37，先看清标签）
+    if (L === 'L4') { p = firstPoiOf(map, 'exit_elevator'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'L6') { p = firstPoiOf(map, 'l6_stairwell'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'L25') { p = firstPoiOf(map, 'cab_t37'); return p ? [p.tx, p.ty] : null; }
     return null;
   }
   // 各关"安全点"的目标 tile（部分真提示指向安全方向；没有安全点的关返回 null）
@@ -1320,6 +1362,7 @@
     if (L === 'L0') { p = firstPoiOf(map, 'manila_room'); return p ? [p.data.doorTx, p.data.doorTy] : null; }
     if (L === 'L1') { p = firstPoiOf(map, 'safe_room'); return p ? [p.tx, p.ty] : null; }
     if (L === 'L11') { p = firstPoiOf(map, 'meg_post'); return p ? [p.tx, p.ty] : null; }
+    if (L === 'L4') { p = firstPoiOf(map, 'spawn'); return p ? [p.tx, p.ty] : null; } // v2.0：L4 安全点=出生点
     return null;
   }
 
@@ -1327,6 +1370,10 @@
   var G_TRUE_SAFE = ['SAFE ROOM', 'safe here', 'rest here'];
   // v1.5.1：L0 指引类涂鸦优先——钢琴声/暖光指引马尼拉房间
   var G_TRUE_SAFE_L0 = ['follow the piano', 'listen for the piano', 'warm light is safe', 'SAFE ROOM'];
+  // v2.0：L6 真提示词表（海浪→楼梯间→L7）
+  var G_TRUE_EXIT_L6 = ['follow the waves', 'listen for the sea', 'down the stairs'];
+  // v2.0：L25 真提示固定文案（红机→37 / 橙机→11 / 蓝机→188，先看机身标签）
+  var G_TRUE_EXIT_L25 = ['红机去 37，橙机去 11，蓝机去 188——先看清机身上的标签再投币'];
   var G_FAKE = ["it's a lie", "DON'T MOVE", 'turn back', 'NO EXIT', 'trust no one', 'GO BACK', 'wrong way', 'no one leaves'];
   var G_CALM = ['the end is near', 'level !', "don't count the lights", 'it hears you', 'the humming never stops', 'day 143', 'stay quiet', 'nothing is real'];
   var G_COLORS = ['#d8d2c0', '#1b1b1d', '#a02723', '#c08a1e', '#3d6b8e'];
@@ -1428,10 +1475,15 @@
             if (tScore === 2) {
               bestArrow = tArr; bestSub = null;
               // v1.5.1：L0 安全指引（马尼拉）优先用钢琴/暖光文案
-              bestText = rng.pick(useSafe ? (map.level === 'L0' ? G_TRUE_SAFE_L0 : G_TRUE_SAFE) : G_TRUE_EXIT);
+              // v2.0：L6/L25 按关选用真提示词表
+              var exitList = G_TRUE_EXIT;
+              if (map.level === 'L6') exitList = G_TRUE_EXIT_L6;
+              else if (map.level === 'L25') exitList = G_TRUE_EXIT_L25;
+              bestText = rng.pick(useSafe ? (map.level === 'L0' ? G_TRUE_SAFE_L0 : G_TRUE_SAFE) : exitList);
             } else if (tScore === 1) {
               bestArrow = 'back'; bestSub = 'behind you';
-              bestText = useSafe ? 'SAFE ROOM' : 'EXIT';
+              // v2.0：L25 背身指引也沿用固定文案
+              bestText = useSafe ? 'SAFE ROOM' : (map.level === 'L25' ? G_TRUE_EXIT_L25[0] : 'EXIT');
             }
           }
         }
@@ -1518,6 +1570,7 @@
   BR.Gen.generate = function (level, seed) {
     if (!BR.RNG) throw new Error('gen.js 需要先加载 utils.js（BR.RNG）');
     if (!LEVEL_CFG[level]) throw new Error('未知关卡: ' + level);
+    if (level === 'L0') BR.Gen.clearL0InfiniteCache(); // v2.0 P5：世界（重）建时清无限区缓存
     var rng = new BR.RNG(seed >>> 0);
     var map = createMap(level, seed);
     map._segs = [];
