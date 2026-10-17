@@ -285,6 +285,21 @@ button.ghost.bind-key.capturing {
   padding: 0 5px; margin-right: 4px; color: #d3ba72;
   background: rgba(20,21,25,0.9); font-family: inherit; font-size: 10px; line-height: 1.6;
 }
+/* ---------- W-ui（v2.1）：触屏教学 pill ---------- */
+/* 替代原来常驻右下角的说明框（与按钮列视觉重叠）：只在首次进入游戏时出现，
+   点击或 30 秒后自动收起并持久化（localStorage br_tut_seen），收起后不再占屏。
+   位置：顶部目标文本下方居中，不遮挡右下按钮区与右上系统区。 */
+#key-hint.touch-tut {
+  left: 50%; right: auto; bottom: auto;
+  top: calc(104px + env(safe-area-inset-top));
+  transform: translateX(-50%);
+  flex-direction: column; gap: 6px; align-items: center; text-align: center;
+  max-width: 88vw; white-space: normal; line-height: 1.7;
+  background: rgba(8,9,11,0.92); border-color: #6d5a26;
+  padding: 12px 18px; font-size: 12px;
+  pointer-events: auto; cursor: pointer;
+}
+#key-hint.touch-tut .tut-ok { color: #d3ba72; letter-spacing: 3px; font-size: 11px; }
 #toasts { position: absolute; left: 50%; top: 20%; transform: translateX(-50%); width: max-content; max-width: 88vw; }
 .toast {
   background: rgba(8,9,11,0.88); border: 1px solid #4a463a; border-radius: 6px;
@@ -355,11 +370,20 @@ body.mounted .tbtn.land-only { display: none; }
 .tbtn.big { width: 82px; height: 82px; background: rgba(90,74,32,0.55); border-color: rgba(205,184,114,0.5); }
 .tbtn.big svg { width: 34px; height: 34px; }
 .tbtn.on { border-color: #cdb872; background: rgba(90,74,32,0.85); color: #f2e9cf; box-shadow: 0 0 14px rgba(205,184,114,0.35); }
+/* ---------- W-ui（v2.1）：右上系统按钮区 ---------- */
+/* 暂停 / 背包 / 手电 / 疾跑 / 第三人称：mini 横排常驻右上，始终可达但不占主视野；
+   主操作（交互/跳跃/蹲伏/下潜/下坐骑）留在右下 #touch-btns 情境化显示。
+   安全区：top/right 均叠加 env(safe-area-inset-*)，适配刘海/挖孔/系统导航栏。 */
+#touch-sys {
+  position: absolute; top: calc(8px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right));
+  display: flex; flex-direction: row; gap: 8px; pointer-events: auto;
+}
 .tbtn.mini {
-  position: fixed; right: calc(12px + env(safe-area-inset-right)); top: calc(52px + env(safe-area-inset-top));
   width: 44px; height: 44px; pointer-events: auto;
 }
 .tbtn.mini svg { width: 18px; height: 18px; }
+/* W-ui（v2.1）：触屏下目标文本移到状态条下方，避免被血条压住（桌面端不动） */
+body.is-touch #objective { top: calc(96px + env(safe-area-inset-top)); }
 
 
 /* ---------- F（v1.4）：跳跃/下潜触控簇 ---------- */
@@ -374,6 +398,9 @@ body.joy-right #touch-jump-cluster { right: auto; left: calc(14px + env(safe-are
 /* 下潜按钮：仅游泳时显示（input.js syncTouchStates 切 body.swimming） */
 .tbtn.swim-only { display: none; }
 body.swimming .tbtn.swim-only { display: flex; }
+/* W-ui（v2.1）：乘船时跳跃/下潜簇整簇隐藏（坐骑 handle 只读 runHeld，跳跃无操作意义）；
+   残留按住态由 input.js syncTouchStates 在 mounted 时强制释放 */
+body.mounted #touch-jump-cluster { display: none; }
 /* 游泳时跳跃按钮=上浮：水蓝色高亮，区别于陆地跳跃 */
 .tbtn.swim { border-color: rgba(120,190,220,0.65); background: rgba(24,52,72,0.62); color: #d5ecf7; }
 /* 长按防 iOS 弹出菜单（body 已全局禁选/touch-action:none，这里补 callout） */
@@ -457,6 +484,12 @@ body.need-orient #screen-orient { display: flex; }
   }
   #touch-jump-cluster .tbtn.big { width: 64px; height: 64px; }
   #touch-jump-cluster .tbtn.big svg { width: 28px; height: 28px; }
+  /* W-ui（v2.1）：矮屏横屏下系统区 mini 缩小，目标文本/教学 pill 跟随上移 */
+  #touch-sys { gap: 6px; top: calc(6px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right)); }
+  #touch-sys .tbtn.mini { width: 40px; height: 40px; }
+  #touch-sys .tbtn.mini svg { width: 17px; height: 17px; }
+  body.is-touch #objective { top: calc(92px + env(safe-area-inset-top)); font-size: 11px; }
+  #key-hint.touch-tut { top: calc(92px + env(safe-area-inset-top)); font-size: 11px; padding: 9px 14px; }
 }
 /* 窄屏竖屏：面板收紧 */
 @media (max-width: 420px) {
