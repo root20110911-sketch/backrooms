@@ -20,8 +20,12 @@
  *   BR.Swim.zoneAt(x,z)        查玩家所在水域
  *   BR.Swim.waterYFor(depth)   按水深算水面世界高度（L7 旧契约保留）
  *   BR.Swim.speedMul / inWater / headUnder / isSwimming() / isWading()
- *   BR.Swim.breath             0~100 闭气
+ *   BR.Swim.breath             0~oxygenMax 闭气（默认 100；潜水服 10000）
+ *   BR.Swim.breathNeeded(inWater, headUnder) 呼吸条显示规则（v2.0 P2 新增，加法 API）
  *   BR.Swim.tick(dt) / reset() / _dryAmb（关卡在 onEnter 里设环境音名）
+ *   BR.Swim._fogCfg            关卡可配水下雾 {near,far,color}（v2.0 P3 加法 API；
+ *                             未设置时 tick 回退 near 0.5/far 13/color 0x0e3d52，L7 行为不变；
+ *                             clearZones() 清零，L37 在 registerSwimZones 里设明亮浅水值）
  * ============================================================ */
 (function () {
   var BR = window.BR;
@@ -388,6 +392,7 @@
     headUnder: false,
     _dryAmb: null,
     _fogSaved: null,
+    _fogCfg: null, // v2.0 P3：关卡可配水下雾 {near,far,color}（null=用默认值，L7 不设）
     _drownT: 0,
     _wasIn: false,
     _wasHead: false,
@@ -421,6 +426,7 @@
       this.speedMul = 1;
       this.inWater = false;
       this.headUnder = false;
+      this._fogCfg = null; // v2.0 P3：关卡水下雾配置随切关清零（L7 从不设置，保持原值）
       if (typeof document !== 'undefined') {
         document.body.classList.remove('underwater');
         var wrap = document.getElementById('breath-wrap');
@@ -449,6 +455,16 @@
 
     isSwimming: function () { return this.headUnder; },
     isWading: function () { return this.inWater && !this.headUnder; },
+
+    // v2.0 P2：呼吸条显示规则——平时不占屏，只在真正需要时显示：
+    //   头部在水下（未穿潜水服时也一样显示），或装备了氧气瓶/潜水服且在水下时。
+    // （穿潜水服时 breath=10000，按 oxygenMax 归一化后呼吸条显示为满/极长，见 tick 的 fill 逻辑。）
+    breathNeeded: function (inWater, headUnder) {
+      var It = (typeof BR !== 'undefined') ? BR.Items : null;
+      var suitOn = !!(It && It.equipped && It.equipped.suit);
+      var tankOn = !!(It && It.equipped && It.equipped.o2);
+      return !!(inWater && (headUnder || suitOn || tankOn));
+    },
 
     reset: function () {
       this.zones.length = 0;
@@ -522,7 +538,8 @@
       if (typeof document !== 'undefined') {
         var wrap = document.getElementById('breath-wrap');
         var fill = document.getElementById('breath-fill');
-        if (wrap) wrap.classList.toggle('need', headUnder);
+        // v2.0 P2：呼吸条只在真正需要时显示（headUnder，或氧气瓶/潜水服装备且在水下）
+        if (wrap) wrap.classList.toggle('need', this.breathNeeded(inWater, headUnder));
         // v1.5 W8：呼吸条按氧气上限归一化（氧气瓶时上限>100，条不满溢）
         if (fill) {
           var omax2 = (P.oxygenMax != null && P.oxygenMax > 0) ? P.oxygenMax : 100;
@@ -531,11 +548,13 @@
       }
 
       // 水下视线：fog 拉近；出水恢复
+      // v2.0 P3：关卡可配（_fogCfg；未设置回退原硬编码值，L7 行为不变）
       var fog = W.scene && W.scene.fog;
       if (fog) {
         if (headUnder && !this._fogSaved) {
           this._fogSaved = { near: fog.near, far: fog.far, color: fog.color.getHex() };
-          fog.near = 0.5; fog.far = 13; fog.color.setHex(0x0e3d52);
+          var fgc = this._fogCfg || { near: 0.5, far: 13, color: 0x0e3d52 };
+          fog.near = fgc.near; fog.far = fgc.far; fog.color.setHex(fgc.color);
         } else if (!headUnder && this._fogSaved) {
           fog.near = this._fogSaved.near;
           fog.far = this._fogSaved.far;
@@ -612,22 +631,28 @@
   // 关卡级共享材质（buildContent 创建，随 W._levelMats 在 dispose 释放；chunk 卸载不碰）
   function makeMats(W) {
     var M = {};
+    // v2.0 P3：水面更通透 —— 站在池边能看清池底瓷砖与台阶轮廓
+    //   （opacity 0.8→0.52；颜色略提亮，减少"一层蓝盖住池底"的感觉）。
+    //   不完全透明：pool_water 波纹贴图质感保留。
     M.water = new THREE.MeshBasicMaterial({
       map: BR.Textures.get('pool_water'),
-      transparent: true, opacity: 0.8, color: 0x8fd0e0,
+      transparent: true, opacity: 0.52, color: 0xa5dcea,
       side: THREE.DoubleSide, depthWrite: false
     });
     var caTex = BR.Textures.get('caustics'); // gen_l7 注册；_test_l37.html 里无则为 null
     FX37.caustTex = caTex || null;
     M.caust = caTex ? new THREE.MeshBasicMaterial({
-      map: caTex, transparent: true, opacity: 0.30,
+      // v2.0 P3：浅水区过曝微调 0.30→0.24（波光保留，死白减轻）
+      map: caTex, transparent: true, opacity: 0.24,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     }) : null;
     M.pitWall = new THREE.MeshLambertMaterial({
       map: BR.Textures.get('pool_tile'), color: 0xdfe8ea, side: THREE.DoubleSide
     });
+    // v2.0 P3：提亮 —— 深水仍有深度感，但配合更通透的水面，池底保持可见
+    //   （opacity 0.32→0.22；颜色提亮，过渡更自然）
     M.deepShade = new THREE.MeshBasicMaterial({
-      color: 0x0d3a52, transparent: true, opacity: 0.32, depthWrite: false
+      color: 0x166b8a, transparent: true, opacity: 0.22, depthWrite: false
     });
     // v1.5 W5：柱面改用马赛克小砖（参考图1）；~5cm/块（0.8m 柱面 16 块）
     var mozTex = BR.Textures.get('pool_mosaic');
@@ -641,10 +666,12 @@
     // v1.5 W5 新增材质
     M.trim = new THREE.MeshLambertMaterial({ map: BR.Textures.get('pool_trim') }); // 池沿蓝小砖
     M.midShade = new THREE.MeshBasicMaterial({ // 较暗深水区中层 shade
-      color: 0x0a2f44, transparent: true, opacity: 0.20, depthWrite: false, side: THREE.DoubleSide
+      // v2.0 P3：提亮（opacity 0.20→0.14），深水过渡更自然
+      color: 0x135f7d, transparent: true, opacity: 0.14, depthWrite: false, side: THREE.DoubleSide
     });
     M.streak = new THREE.MeshBasicMaterial({ // 水面灯带倒影（参考图1/2：顶部灯带明亮倒影）
-      color: 0xd8f2ff, transparent: true, opacity: 0.20,
+      // v2.0 P3：浅水区过曝微调 0.20→0.14（水面更通透后加色层更显，压一点防死白）
+      color: 0xd8f2ff, transparent: true, opacity: 0.14,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     });
     M.streakCol = new THREE.MeshBasicMaterial({ // 柱倒影
@@ -1301,6 +1328,9 @@
   // v1.5 W5：deck 平台（floorY>0）记为干区洞 —— 站在平台上不算"在水里"
   function registerSwimZones(L) {
     var i, j;
+    // v2.0 P3：关卡级水下雾 —— 明亮浅水：2.7m 能见度好、仍有水下感
+    //   （clearZones 已在 buildContent 先调，_fogCfg 从 null 开始；L7 不设，保持原值）
+    BR.Swim._fogCfg = { near: 1.2, far: 24, color: 0x2f9cc4 };
     var deckHoles = [];
     for (i = 0; i < L.pits.length; i++) {
       var dp = L.pits[i];
@@ -1399,7 +1429,16 @@
         radius: 3.5,
         prompt: function () { return BR.Swim.headUnder ? '潜入水下通道' : '水下通道（潜入水中才能进入）'; },
         canUse: function () { return BR.Swim.headUnder; },
-        use: function () { travelTo('L7', 'water'); }
+        use: function () {
+          // v2.0 P3：deep_channel（CONNECTIONS 契约：L37→L7，mode swim，cond deep 已由 headUnder 保证）。
+          // 到 L7 落在深处出口结构旁水下（lv_l7 onEnter 读 _cameFrom 搬运）。
+          BR.Game._cameFrom = 'L37';
+          if (BR.Cutout && typeof BR.Cutout.travelTo === 'function') {
+            BR.Cutout.travelTo('L7', { mode: 'swim' });
+          } else {
+            travelTo('L7', 'water');
+          }
+        }
       });
     });
   }
@@ -1752,6 +1791,55 @@
       BR.Swim._dryAmb = 'L37';
       BR.UI.setObjective(BR.World.objective || '在泳池房里找到离开的方法');
       if (BR.Audio && BR.Audio.setAmbient) BR.Audio.setAmbient('L37');
+      // v2.0 P3：从 L7 深处出口（deep_exit）游过来 → 落在深水坑水下（tunnel
+      // 所在深水坑中心，保证水深足够、头部在水下），而非干燥出生房（水→水连续性）。
+      // 只在"刚被放到出生点"时搬运，读档/死亡重试（存档坐标）不动。
+      try {
+        var cf = BR.Game && BR.Game._cameFrom;
+        var from = (typeof cf === 'string') ? cf : (cf && cf.from);
+        if (from === 'L7' && BR.World && BR.World.map && BR.Player) {
+          var sp0 = BR.World.spawnOf(BR.World.map);
+          var P0 = BR.Player;
+          if (Math.hypot(P0.pos.x - sp0.x, P0.pos.z - sp0.z) < 0.6) {
+            var pois0 = BR.World.map.pois || [], tp0 = null, qi;
+            for (qi = 0; qi < pois0.length; qi++) {
+              if (pois0[qi].type === 'tunnel') { tp0 = pois0[qi]; break; }
+            }
+            if (tp0) {
+              // 落点：tunnel 所在深水坑中心（水深 2.7，无台阶）；
+              // tunnel 的 wx/wz 在坑边台阶上（水深<1），不能直接用。
+              var L37m = BR.World.map.meta && BR.World.map.meta.l37;
+              var pits0 = (L37m && L37m.pits) || [], pitC = null, qk;
+              for (qk = 0; qk < pits0.length; qk++) {
+                if (pits0[qk].kind === 'deep') { pitC = pits0[qk]; break; }
+              }
+              var lx, lz, usePitC = false;
+              if (pitC) {
+                lx = (pitC.tx0 + pitC.tx1 + 1) / 2 * BR.TILE;
+                lz = (pitC.ty0 + pitC.ty1 + 1) / 2 * BR.TILE;
+                var wChk = BR.Gen.L37waterAt(BR.World.map, lx, lz);
+                if (wChk && wChk.depth >= 1.5 && BR.World.circleFree &&
+                    BR.World.circleFree(lx, lz, 0.4)) usePitC = true;
+              }
+              if (!usePitC && tp0.data && tp0.data.wx != null) {
+                lx = tp0.data.wx; lz = tp0.data.wz; // 兜底：通道口
+              }
+              if (lx != null) {
+                P0.pos.set(lx, SURF - 1.7, lz); // 头部在水下
+                P0.vel.set(0, 0, 0);
+                if (tp0.data && tp0.data.wx != null) {
+                  // 面向水下通道圆环
+                  P0.yaw = Math.atan2(-(tp0.data.wx - lx), -(tp0.data.wz - lz));
+                }
+                setTimeout(function () {
+                  if (BR.Game.state === 'playing')
+                    BR.UI.toast('你顺着水流穿过深水通道，来到一片明亮的水域。', 3200);
+                }, 1500);
+              }
+            }
+          }
+        }
+      } catch (e) { if (BR.warn) BR.warn('[L37] deep arrival failed', e); }
     },
 
     tick: function (dt) {
