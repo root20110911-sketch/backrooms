@@ -4,9 +4,10 @@
  *
  * 玩法：载入即面向逃跑方向；警报 + 身后动静预热 6 秒；随后追逐者沿路线
  *   BFS 追击（真追逐，不是只放声音）。被抓到：-30 生命 + 击退 + 追逐者硬直 4.5s
- *   （不许必败）。追逐者移速为距离橡皮筋（>20m:6.4 / 10~20m:6.2 / 5~10m:5.8 /
- *   <5m:5.0，终段 lane7~8 各 +0.3；玩家疾跑 5.6，本关肾上腺素不耗耐力），
- *   目标全程 3~8m 压迫感：干净跑位缓慢拉开、1~2 次小失误可逃脱、连续犯错会被抓。
+ *   （不许必败）。追逐者移速为距离橡皮筋（>20m:6.6 / 10~20m:6.4 / 5~10m:6.0 /
+ *   <5m:5.2，终段 lane7~8 各 +0.3；玩家疾跑 5.6，本关肾上腺素不耗耐力），
+ *   目标全程 3~8m 压迫感：干净跑位与追逐者维持 4~7m 均势、小失误可拉回、
+ *   大失误/连续犯错会被抓（-30 血可承受）。
  *   障碍/转弯/大失误会吃掉优势（不许无脑冲刺无压力，不许瞬移/穿墙）。
  * 障碍：半开门/病床/椅子（高，需绕行）+ 整幅杂物堆（低，h=0.8，必须跳，
  *   玩家跳跃顶点 1.11m）。碰撞为运行时推挤（tile 碰撞之外），跳起越过低障碍。
@@ -488,11 +489,17 @@
         // 终段（lane 7~8）+0.3 收官压迫。不许瞬移/穿墙：全程仍走 BFS 路径。
         var finale = (P.pos.z > 112) ? 0.3 : 0; // laneY0(7)=39 → cz=120；z>112 即最后两条走廊
         var speed;
-        if (dist > 20) speed = 6.4 + finale;      // 掉太远：强力回追（> 疾跑 5.6）
-        else if (dist > 10) speed = 6.2 + finale; // 中距离：明显快于玩家，持续施压
-        else if (dist > 5) speed = 5.8 + finale;  // 压迫带：略快于疾跑，缓慢磨进抓取区
-        else speed = 5.0 + finale;               // 贴身：略减速，给反应/小失误空间
-        if (ch.path && ch.pathI < ch.path.length) {
+        if (dist > 20) speed = 6.6 + finale;      // 掉太远：强力回追（> 疾跑 5.6）
+        else if (dist > 10) speed = 6.4 + finale; // 中距离：明显快于玩家，持续施压
+        else if (dist > 5) speed = 6.0 + finale;  // 压迫带：快于疾跑，磨进抓取区
+        else speed = 5.2 + finale;               // 贴身：略减速，给反应/小失误空间
+        // P5：直线可见时直接追玩家（走走廊中心线，不蹭 tile 中心 waypoint 旁的高障碍推挤圈；
+        // 实测 tile 中心线离高障碍仅 0.1m，每 ~30m 被推挤一次拖慢约 0.6m/s）。看不见时走 BFS。
+        // 不是穿墙：W.los 逐 tile 判阻挡，直线无墙才直追。
+        if (dist > 0.01 && W.los(ch.x, ch.z, P.pos.x, P.pos.z)) {
+          ch.x += dx / dist * speed * dt; ch.z += dz / dist * speed * dt;
+          ch.yaw = Math.atan2(dx, dz);
+        } else if (ch.path && ch.pathI < ch.path.length) {
           var wp = ch.path[ch.pathI];
           var wx = wp.x - ch.x, wz = wp.z - ch.z;
           var wd = Math.hypot(wx, wz);

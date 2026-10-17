@@ -405,18 +405,43 @@
     this.updateInv();
   };
 
+  // W-ui（v2.1）：触屏教学 pill——按需出现，收起后持久化（localStorage br_tut_seen）。
+  // 替代原来常驻右下角的说明框（与按钮列视觉重叠，文案还提到不存在的"道具"按钮）；
+  // 桌面端 HUD 角落常驻键位提示分支保持不动。
+  U._tutSeen = function () {
+    try { return localStorage.getItem('br_tut_seen') === '1'; } catch (e) { return true; }
+  };
+  U._dismissTut = function () {
+    try { localStorage.setItem('br_tut_seen', '1'); } catch (e) {}
+    const el = BR.$('key-hint');
+    if (el) { el.style.display = 'none'; el.classList.remove('touch-tut'); }
+  };
   // 桌面端 HUD 角落常驻键位提示：全部读按键绑定实时渲染，不写死；
-  // 触屏端：显示触控操作说明（摇杆/视角/右侧按钮），不再隐藏
+  // 触屏端：首次进入游戏显示教学 pill（顶部居中），点击/30秒后收起
   U.renderKeyHint = function () {
     const el = BR.$('key-hint');
     if (!el || !BR.Input || !BR.Input.bindings) return;
     const I = BR.Input;
     if (I.isTouch) {
+      if (this._tutSeen()) { el.style.display = 'none'; return; }
+      el.classList.add('touch-tut');
       el.innerHTML =
-        '<span>左侧摇杆：移动</span><span>右侧拖动：视角</span>' +
-        '<span>右侧按钮：交互 / 跳跃 / 奔跑 / 蹲下 / 手电 / 道具 / 背包 / 视角切换</span>' +
-        '<span>游泳：上浮 / 下潜按钮 · 坐骑：下坐骑按钮</span>';
+        '<span>左摇杆：移动 · 右半屏拖动：转视角</span>' +
+        '<span>右下：交互（有目标时高亮）/ 跳跃 / 蹲下 · 右上：暂停 / 背包 / 手电 / 疾跑 / 视角</span>' +
+        '<span>深水：上浮 / 下潜 · 乘船：摇杆驾驶 / 下船</span>' +
+        '<span class="tut-ok">知道了 · 点击收起</span>';
       el.style.display = 'flex';
+      if (!el._tutBound) {
+        el._tutBound = true;
+        const dismiss = () => this._dismissTut();
+        el.addEventListener('click', dismiss);
+        el.addEventListener('touchstart', (e) => { e.preventDefault(); dismiss(); }, { passive: false });
+        // 完成教学后自动收起：30 秒后不再占屏
+        setTimeout(() => {
+          const cur = BR.$('key-hint');
+          if (cur && cur.classList.contains('touch-tut')) dismiss();
+        }, 30000);
+      }
       return;
     }
     const kb = (label) => `<kbd>${label}</kbd>`;
@@ -440,13 +465,15 @@
 
   // 玩法说明里的键位表：按动作表动态生成行（index.html 只留空 table 容器）
   // G（v1.3）：双平台说明——电脑端 / 手机端 两栏；电脑端读当前改键绑定，手机端读触控操作
+  // W-ui（v2.1）：触控操作说明与新布局对齐（右上系统区 / 右下情境操作区）
   U.TOUCH_OP = {
-    move: '左侧摇杆', look: '右侧区域拖动', run: '跑步按钮（开关）',
-    crouch: '蹲下按钮（仅陆地）', interact: '交互按钮', flashlight: '手电筒按钮',
-    backpack: '背包按钮', thirdperson: '视角按钮（右列）',
-    jump: '跳跃按钮（水中按住=上浮）', dive: '下潜按钮（按住）',
-    pause: '右上角暂停按钮',
-    dismount: '下坐骑按钮（坐骑时出现）'
+    move: '左侧摇杆', look: '右侧区域拖动', run: '右上疾跑钮（开关）',
+    crouch: '右下蹲下钮（仅陆地）', interact: '右下交互钮（有目标时高亮）',
+    flashlight: '右上手电钮',
+    backpack: '右上背包钮（点道具直接使用）', thirdperson: '右上视角钮',
+    jump: '右下跳跃钮（水中长按=上浮）', dive: '右下下潜钮（按住，仅深水）',
+    pause: '右上暂停钮',
+    dismount: '右下下船钮（乘船时出现）'
   };
   U.renderKeysTable = function () {
     const tb = this.$keys_table;
@@ -584,7 +611,7 @@
       el.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); use(); }, { passive: false });
     });
     if (this.$bp_key_hint && BR.Input)
-      this.$bp_key_hint.textContent = '（' + BR.Input.bindingLabel('backpack') + ' / Esc 关闭）';
+      this.$bp_key_hint.textContent = (BR.Input.isTouch ? '（点右上背包按钮或下方关闭）' : '（' + BR.Input.bindingLabel('backpack') + ' / Esc 关闭）');
   };
 
   /* ---------- M.E.G. 前哨交易站（L1 POI 'meg_shop' 的商店交互打开） ----------
