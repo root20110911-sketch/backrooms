@@ -27,15 +27,199 @@
  *   emergency_exit{dx,dz,dest}（位置随机→已完成层级池） / note / crate / thin_wall
  *   2F 内容不走 POI（可达性抽查要求全部 POI 从 spawn 可达），经 map.meta.l188f2 构建。
  *
+ * v2.0 P5（百窗亭质量升级，特色全部保留）：
+ *   建筑：裙座+三道层间腰线+柱间壁柱+转角柱+顶部檐口/女儿墙，四面屋顶体量各异
+ *   （南阁楼/北楼梯间/西水箱/东亭阁），阳台入口做门厅（门柱+雨棚+门槛）；
+ *   北侧假立面 z 修正（原 66.15 会盖住北窗，改 65.93）。
+ *   窗：异空间盒加深到 1.6m（近看不穿帮）+ 中棂视差层；窗帘加窗帘盒/系带；
+ *   可观察房加顶灯/窗台小物；事件窗加裂纹罩；pool/party/city/deep 各三档变体。
+ *   室内：客房室内窗按 ROOM_WIN 落到朝庭院的墙、对准庭院窗坐标；客房铺木地板
+ *   （不再沿用走廊地毯材质）；tier2/3 为封存层（常暗/百叶、永不翻转），
+ *   二楼楼梯间加"通往三楼"水泥封门（带解释）。
+ *
  * interactable kind 清单：
  *   'radio'/'odd_window'/'stairwell'（旧）/ 'stair_up' / 'stair_down' /
  *   'return_door' / 'emergency_exit' / 'event_window' / 'travel_window' /
- *   'magic_curtain' / 'cabinet'（客房衣柜，拾取）
+ *   'magic_curtain' / 'cabinet'（客房衣柜，拾取）/ 'sealed_door'（三楼封门，纯解释）
  */
 (function () {
   var BR = window.BR;
   var T = BR.TILE;
   var ITEM_NAME = { almond: '杏仁水', bandage: '绷带' };
+
+  /* ============ v2.0 P5 本地贴图（canvas 确定性生成；不碰 js/textures.js） ============ */
+  function l188lcg(seed) {
+    var s = seed >>> 0;
+    return function () {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+  function l188mk(w, h) {
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    return c;
+  }
+  function l188grain(x, w, h, R, n, alpha) {
+    for (var i = 0; i < n; i++) {
+      var a = alpha * (0.4 + R() * 0.6);
+      x.fillStyle = R() < 0.55 ? 'rgba(0,0,0,' + a.toFixed(3) + ')'
+        : 'rgba(255,255,255,' + (a * 0.7).toFixed(3) + ')';
+      var s = 1 + ((R() * 2) | 0);
+      x.fillRect((R() * w) | 0, (R() * h) | 0, s, s);
+    }
+  }
+  // 裙座石材：深灰石块 + 灰缝
+  BR.Textures.registerTex('l188_plinth', function (w, h) {
+    var R = l188lcg(188101), c = l188mk(w, h), x = c.getContext('2d');
+    x.fillStyle = '#33302c'; x.fillRect(0, 0, w, h);
+    var bh = h / 3;
+    for (var r = 0; r < 3; r++) {
+      var off = (r % 2) * 32;
+      for (var bx = -32; bx < w; bx += 64) {
+        var v = 44 + ((R() * 14) | 0);
+        x.fillStyle = 'rgb(' + v + ',' + (v - 2) + ',' + (v - 5) + ')';
+        x.fillRect(bx + off + 2, r * bh + 2, 60, bh - 4);
+        x.fillStyle = 'rgba(255,255,255,0.06)';
+        x.fillRect(bx + off + 2, r * bh + 2, 60, 3);
+      }
+    }
+    l188grain(x, w, h, R, 300, 0.08);
+    return c;
+  });
+  // 客房木地板：棕色木板 + 纹理
+  BR.Textures.registerTex('l188_woodfloor', function (w, h) {
+    var R = l188lcg(188102), c = l188mk(w, h), x = c.getContext('2d');
+    x.fillStyle = '#4a3423'; x.fillRect(0, 0, w, h);
+    var pw = w / 4;
+    for (var p = 0; p < 4; p++) {
+      var v = 66 + ((R() * 16) | 0);
+      x.fillStyle = 'rgb(' + v + ',' + (v * 0.72 | 0) + ',' + (v * 0.5 | 0) + ')';
+      x.fillRect(p * pw + 1, 0, pw - 2, h);
+      x.strokeStyle = 'rgba(30,18,10,0.5)';
+      for (var gl = 0; gl < 7; gl++) {
+        x.lineWidth = 1;
+        x.beginPath();
+        var gx = p * pw + 4 + R() * (pw - 8);
+        x.moveTo(gx, 0);
+        x.bezierCurveTo(gx + 6, h * 0.3, gx - 6, h * 0.6, gx + 3, h);
+        x.stroke();
+      }
+      x.fillStyle = 'rgba(15,8,4,0.8)'; x.fillRect(p * pw, 0, 2, h);
+      var jy = R() * h; // 板缝错缝
+      x.fillRect(p * pw + 1, jy, pw - 2, 2);
+    }
+    l188grain(x, w, h, R, 260, 0.07);
+    return c;
+  });
+  // 裂纹罩（事件窗用，透明底）
+  BR.Textures.registerTex('l188_crack', function (w, h) {
+    var R = l188lcg(188103), c = l188mk(w, h), x = c.getContext('2d');
+    x.clearRect(0, 0, w, h);
+    var cx = w * (0.4 + R() * 0.2), cy = h * (0.4 + R() * 0.2);
+    x.strokeStyle = 'rgba(220,230,240,0.55)';
+    for (var i = 0; i < 9; i++) {
+      var a = (i / 9) * 6.2832 + R() * 0.4, len = w * (0.25 + R() * 0.3);
+      x.lineWidth = 1 + R() * 1.5;
+      x.beginPath(); x.moveTo(cx, cy);
+      var mx = cx + Math.cos(a) * len * 0.5 + (R() - 0.5) * 20,
+        my = cy + Math.sin(a) * len * 0.5 + (R() - 0.5) * 20;
+      x.quadraticCurveTo(mx, my, cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+      x.stroke();
+    }
+    x.strokeStyle = 'rgba(220,230,240,0.35)';
+    x.lineWidth = 1;
+    x.beginPath(); x.arc(cx, cy, 7, 0, 6.2832); x.stroke();
+    return c;
+  });
+  // 泳池变体 B 背板：瓷砖 + 扶梯阴影 + 水深标记
+  BR.Textures.registerTex('l188_pool_b', function (w, h) {
+    var R = l188lcg(188104), c = l188mk(w, h), x = c.getContext('2d');
+    x.fillStyle = '#cfe4e2'; x.fillRect(0, 0, w, h);
+    var s = 16;
+    for (var ty = 0; ty < h; ty += s) for (var tx = 0; tx < w; tx += s) {
+      var v = 200 + ((R() * 40) | 0);
+      x.fillStyle = 'rgb(' + (v - 30) + ',' + v + ',' + (v - 8) + ')';
+      x.fillRect(tx + 1, ty + 1, s - 2, s - 2);
+    }
+    x.fillStyle = 'rgba(30,60,70,0.5)'; // 扶梯阴影
+    x.fillRect(w * 0.3, 0, 5, h); x.fillRect(w * 0.62, 0, 5, h);
+    x.fillStyle = '#1e4a56'; x.font = 'bold 22px sans-serif'; // 水深标记
+    x.textAlign = 'center';
+    x.fillText('2.0m', w * 0.82, h * 0.3);
+    x.fillStyle = 'rgba(40,120,130,0.28)'; x.fillRect(0, h * 0.7, w, h * 0.3);
+    l188grain(x, w, h, R, 180, 0.05);
+    return c;
+  });
+  // 派对变体 B 背板：彩旗串
+  BR.Textures.registerTex('l188_party_b', function (w, h) {
+    var R = l188lcg(188105), c = l188mk(w, h), x = c.getContext('2d');
+    x.fillStyle = '#1d0e14'; x.fillRect(0, 0, w, h);
+    var cols = ['#ff5b5b', '#ffd75b', '#5bff8a', '#5bb8ff', '#c97bff'];
+    for (var row = 0; row < 3; row++) {
+      var y0 = 12 + row * 38;
+      x.strokeStyle = 'rgba(200,180,160,0.5)'; x.lineWidth = 2;
+      x.beginPath(); x.moveTo(0, y0); x.quadraticCurveTo(w / 2, y0 + 14, w, y0); x.stroke();
+      for (var i = 0; i < 8; i++) {
+        var fx = 4 + i * (w - 8) / 7;
+        x.fillStyle = cols[((i + row) % cols.length)];
+        x.beginPath(); x.moveTo(fx - 7, y0 + 3); x.lineTo(fx + 7, y0 + 3); x.lineTo(fx, y0 + 17);
+        x.closePath(); x.fill();
+      }
+    }
+    l188grain(x, w, h, R, 180, 0.06);
+    return c;
+  });
+  // 夜城变体 B 背板：月亮 + 另一组天际线
+  BR.Textures.registerTex('l188_city_b', function (w, h) {
+    var R = l188lcg(188106), c = l188mk(w, h), x = c.getContext('2d');
+    var g = x.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#0a0e1c'); g.addColorStop(1, '#141a2e');
+    x.fillStyle = g; x.fillRect(0, 0, w, h);
+    x.fillStyle = '#e8ecf5'; // 月亮
+    x.beginPath(); x.arc(w * 0.78, h * 0.2, 11, 0, 6.2832); x.fill();
+    x.fillStyle = 'rgba(232,236,245,0.25)';
+    x.beginPath(); x.arc(w * 0.78, h * 0.2, 17, 0, 6.2832); x.fill();
+    for (var b = 0; b < 5; b++) { // 瘦高塔楼（与 city_night 的矮胖剪影区分）
+      var bw = 10 + R() * 10, bx = 6 + b * (w - 12) / 5 + R() * 8, bh = h * (0.55 + R() * 0.35);
+      x.fillStyle = '#05070d'; x.fillRect(bx, h - bh, bw, bh);
+      x.fillStyle = '#d84a4a'; x.fillRect(bx + bw / 2 - 1, h - bh - 5, 2, 5); // 航空障碍灯
+      for (var wy = h - bh + 5; wy < h - 4; wy += 8)
+        for (var wx = bx + 2; wx < bx + bw - 2; wx += 5)
+          if (R() < 0.3) { x.fillStyle = '#9fc0ff'; x.fillRect(wx, wy, 2, 3); }
+    }
+    return c;
+  });
+  // 深海变体 B 背板：丁达尔光柱
+  BR.Textures.registerTex('l188_deep_b', function (w, h) {
+    var R = l188lcg(188107), c = l188mk(w, h), x = c.getContext('2d');
+    var g = x.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#0e2a40'); g.addColorStop(0.55, '#081826'); g.addColorStop(1, '#030709');
+    x.fillStyle = g; x.fillRect(0, 0, w, h);
+    for (var i = 0; i < 4; i++) { // 斜射光柱
+      var sx = w * (0.15 + i * 0.22);
+      var lg = x.createLinearGradient(sx, 0, sx + 26, 0);
+      lg.addColorStop(0, 'rgba(140,200,240,0)');
+      lg.addColorStop(0.5, 'rgba(140,200,240,0.20)');
+      lg.addColorStop(1, 'rgba(140,200,240,0)');
+      x.fillStyle = lg;
+      x.save(); x.translate(sx, 0); x.rotate(0.28); x.fillRect(-13, -20, 26, h + 40); x.restore();
+    }
+    l188grain(x, w, h, R, 260, 0.06);
+    return c;
+  });
+  // 夜城变体 C：霓虹招牌
+  BR.Textures.registerTex('l188_billboard', function (w, h) {
+    var c = l188mk(w, h), x = c.getContext('2d');
+    x.fillStyle = '#0c0a12'; x.fillRect(0, 0, w, h);
+    x.strokeStyle = '#ff5bd8'; x.lineWidth = 3; x.strokeRect(4, 4, w - 8, h - 8);
+    x.fillStyle = '#ff9ae4'; x.font = 'bold 26px sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText('派对进行中', w / 2, h / 2 - 8);
+    x.fillStyle = '#7dffd8'; x.font = 'bold 15px sans-serif';
+    x.fillText('OPEN →', w / 2, h / 2 + 18);
+    return c;
+  });
 
   function px(tx) { return BR.tileCX(tx); }
   function pz(ty) { return BR.tileCZ(ty); }
@@ -94,6 +278,7 @@
     L188_note1: ['员工守则（残页）',
       '……中庭一端的楼梯间只许员工通行。往上走，别回头，别应声。\n' +
       '失物招领处的收音机谁都不许动，它调的不是台，是"方向"。\n' +
+      '三楼以上的楼梯间早被水泥封死了。别去数三楼的窗——它们不属于任何房间。\n' +
       '——夜班主管'],
     L188_note2: ['褪色的入住登记卡',
       '百窗庭旅馆，188 号登记簿。\n' +
@@ -298,27 +483,51 @@
         });
       })();
 
-      /* ---------- 阳台栏杆（俯瞰中庭） ---------- */
+      /* ---------- 阳台栏杆（俯瞰中庭；中央留 8m 门洞 → 门厅） ---------- */
       W.addChunkContent(27, 21, function (group) {
         var wood = 0x2e2018, z = 22 * T; // 中庭北边缘
         for (var x = 20 * T; x <= 36 * T; x += 3) {
+          if (x >= 80 && x < 88) continue; // 门洞：跳过立柱
           var post = box(0.13, 1.1, 0.13, wood);
           post.position.set(x, 0.55, z);
           W.reg(group, post);
         }
-        var railTop = box(36 * T - 20 * T, 0.1, 0.15, wood);
-        railTop.position.set(28 * T, 1.08, z);
-        W.reg(group, railTop);
-        var railMid = box(36 * T - 20 * T, 0.08, 0.1, wood);
-        railMid.position.set(28 * T, 0.55, z);
-        W.reg(group, railMid);
+        [[70, 20], [98, 20]].forEach(function (sg) { // 两段扶手（门洞处断开）
+          var railTop = box(sg[1], 0.1, 0.15, wood);
+          railTop.position.set(sg[0], 1.08, z);
+          W.reg(group, railTop);
+          var railMid = box(sg[1], 0.08, 0.1, wood);
+          railMid.position.set(sg[0], 0.55, z);
+          W.reg(group, railMid);
+        });
+        // 入口门厅：门柱 + 雨棚 + 门槛 + 吊灯（庭院与楼体的真实过渡）
+        [80, 88].forEach(function (cx) {
+          var col = box(0.34, 3.4, 0.34, 0x3a3128);
+          col.position.set(cx, 1.7, z);
+          W.reg(group, col);
+          var cap = box(0.5, 0.18, 0.5, 0x4a4034);
+          cap.position.set(cx, 3.45, z);
+          W.reg(group, cap);
+        });
+        var canopy = box(9.4, 0.18, 3.0, 0x2c2620);
+        canopy.position.set(84, 3.62, z);
+        W.reg(group, canopy);
+        var lampM = glowPlane(0.5, 0.35, 'win_warm');
+        lampM.rotation.x = Math.PI / 2; // 朝下
+        lampM.position.set(84, 3.48, z);
+        W.reg(group, lampM);
+        var sill = box(8.4, 0.14, 1.5, 0x4a4a4e);
+        sill.position.set(84, 0.07, z);
+        W.reg(group, sill);
       });
       // 北立面（阳台上方假立面，12m 高墙体感，参考图4 的高度压迫感）
+      // v2.0 P5 修正：北窗窗面在 z=66.07，假立面原先 z=66.15 会盖住全部北窗；
+      // 改为 65.93（窗后 14cm），北窗得以显现。
       W.addChunkContent(27, 21, function (group) {
         var fac = new THREE.Mesh(new THREE.PlaneGeometry(48, 12),
           new THREE.MeshBasicMaterial({ color: 0x0b0a08 }));
         fac._ownMat = true;
-        fac.position.set(28 * T, 6.0, 66.15);
+        fac.position.set(28 * T, 6.0, 65.93);
         W.reg(group, fac);
       });
 
@@ -453,6 +662,86 @@
         });
       })();
 
+      /* ---------- v2.0 P5 建筑立面体系：裙座/腰线/壁柱/转角/檐口/女儿墙/屋顶差异 ----------
+       * 四面不再是完全对称的盒子：统一的裙座+腰线保证整体感，
+       * 顶部收分与屋顶附加体量按面各异（南阁楼/北楼梯间/西水箱/东亭阁）。
+       * 庭院范围：x 60..108，z 66..108（南墙面 z=108，北 z=66，西 x=60，东 x=108） */
+      (function buildFacade() {
+        var trimMat = new THREE.MeshLambertMaterial({ color: 0x3b332a });
+        var corniceMat = new THREE.MeshLambertMaterial({ color: 0x4a4034 });
+        var plinthMat = new THREE.MeshLambertMaterial({ map: BR.Textures.get('l188_plinth') });
+        var darkMat = new THREE.MeshLambertMaterial({ color: 0x1a1512 });
+        W._levelMats = W._levelMats || [];
+        W._levelMats.push(trimMat, corniceMat, plinthMat, darkMat);
+        W.addChunkContent(27, 28, function (group) {
+          function fbox(w, h, d, mat, x, y, z) {
+            var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+            m.position.set(x, y, z);
+            W.reg(group, m);
+            return m;
+          }
+          // 裙座（0→0.85m 石材）
+          fbox(48, 0.85, 0.3, plinthMat, 84, 0.425, 107.85);
+          fbox(48, 0.85, 0.3, plinthMat, 84, 0.425, 66.15);
+          fbox(0.3, 0.85, 42, plinthMat, 60.15, 0.425, 87);
+          fbox(0.3, 0.85, 42, plinthMat, 107.85, 0.425, 87);
+          // 三道层间腰线（3.66 / 6.6 / 9.2；最高一道兼做阁楼层收分线）
+          [3.66, 6.6, 9.2].forEach(function (wy) {
+            fbox(48, 0.26, 0.18, trimMat, 84, wy, 107.91);
+            fbox(48, 0.26, 0.18, trimMat, 84, wy, 66.09);
+            fbox(0.18, 0.26, 42, trimMat, 60.09, wy, 87);
+            fbox(0.18, 0.26, 42, trimMat, 107.91, wy, 87);
+          });
+          // 柱间壁柱（窗列之间，1.0→11.35m；仰视的竖向线条）
+          var sx;
+          for (sx = 70.5; sx <= 100.5; sx += 6) {
+            fbox(0.32, 10.35, 0.18, trimMat, sx, 6.175, 107.91);
+            fbox(0.32, 10.35, 0.18, trimMat, sx, 6.175, 66.09);
+          }
+          var sz;
+          for (sz = 76.5; sz <= 100.5; sz += 6) {
+            fbox(0.18, 10.35, 0.32, trimMat, 60.09, 6.175, sz);
+            fbox(0.18, 10.35, 0.32, trimMat, 107.91, 6.175, sz);
+          }
+          // 转角柱（柱身/柱础/柱头）
+          [[60.15, 66.15], [107.85, 66.15], [60.15, 107.85], [107.85, 107.85]]
+            .forEach(function (cn) {
+              fbox(0.55, 12, 0.55, trimMat, cn[0], 6, cn[1]);
+              fbox(0.78, 1.0, 0.78, corniceMat, cn[0], 0.5, cn[1]);
+              fbox(0.78, 0.45, 0.78, corniceMat, cn[0], 11.55, cn[1]);
+            });
+          // 顶部檐口 + 女儿墙
+          fbox(48.6, 0.34, 0.3, corniceMat, 84, 11.75, 107.85);
+          fbox(48.6, 0.34, 0.3, corniceMat, 84, 11.75, 66.15);
+          fbox(0.3, 0.34, 42.6, corniceMat, 60.15, 11.75, 87);
+          fbox(0.3, 0.34, 42.6, corniceMat, 107.85, 11.75, 87);
+          fbox(48.6, 0.5, 0.18, trimMat, 84, 12.25, 107.91);
+          fbox(48.6, 0.5, 0.18, trimMat, 84, 12.25, 66.09);
+          fbox(0.18, 0.5, 42.6, trimMat, 60.09, 12.25, 87);
+          fbox(0.18, 0.5, 42.6, trimMat, 107.91, 12.25, 87);
+          // 屋顶附加体量（四面各异，打破对称）
+          fbox(30, 1.8, 6, darkMat, 84, 12.9, 111);       // 南：退台阁楼
+          [76, 84, 92].forEach(function (vx) {
+            fbox(0.8, 0.7, 0.8, trimMat, vx, 14.1, 111);  // 阁楼气窗
+          });
+          fbox(4, 2.2, 3, darkMat, 72, 13.1, 62.5);       // 北：楼梯间
+          var pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.5, 8), trimMat);
+          pipe.position.set(75.5, 13.2, 62.5);
+          W.reg(group, pipe);
+          var tank = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 2.2, 12), darkMat);
+          tank.position.set(56.5, 13.1, 87);              // 西：水箱
+          W.reg(group, tank);
+          var tankTop = new THREE.Mesh(new THREE.ConeGeometry(1.5, 0.8, 12), trimMat);
+          tankTop.position.set(56.5, 14.6, 87);
+          W.reg(group, tankTop);
+          fbox(5, 1.7, 4, darkMat, 111.5, 12.85, 87);     // 东：亭阁
+          var pavTop = new THREE.Mesh(new THREE.ConeGeometry(3.6, 1.2, 4), corniceMat);
+          pavTop.rotation.y = Math.PI / 4;
+          pavTop.position.set(111.5, 14.3, 87);
+          W.reg(group, pavTop);
+        });
+      })();
+
       /* ================= Part 2：窗户四态 / 楼梯 / 出口 / 客房 / 装扮 / 旧内容 ================= */
 
       /* ---------- 窗户四态构建器（map.meta.l188wins；104 扇；确定性分配；状态进存档） ----------
@@ -512,6 +801,14 @@
           bayBoxMesh(group, w, 0.12, bh + 0.24, 0.18, fc, -hw - 0.06, 0, fz);
           bayBoxMesh(group, w, 0.12, bh + 0.24, 0.18, fc, hw + 0.06, 0, fz);
           bayBoxMesh(group, w, bw + 0.4, 0.1, 0.34, 0x2e2118, 0, -hh - 0.14, bd + 0.02);
+          // v2.0 P5：深盒（bd>1.3）加一道中棂——视差层次，近看不穿帮
+          if (bd > 1.3) {
+            var mz = bd * 0.55, mw = bw * 0.86, mh = bh * 0.86;
+            bayBoxMesh(group, w, mw, 0.07, 0.07, fc, 0, mh / 2, mz);
+            bayBoxMesh(group, w, mw, 0.07, 0.07, fc, 0, -mh / 2, mz);
+            bayBoxMesh(group, w, 0.07, mh, 0.07, fc, -mw / 2, 0, mz);
+            bayBoxMesh(group, w, 0.07, mh, 0.07, fc, mw / 2, 0, mz);
+          }
           return back;
         }
         function setBackTex(back, tex) {
@@ -534,22 +831,28 @@
           if (st.lit == null) st.lit = true;
           var sub = w.sub;
           var litNow = st.lit && subLit(sub);
-          var m = bayPlane(group, w, 1.4, 1.9, plainTex(litNow ? sub : 'dark'), null, 0, 0, 0.06, 0, 0);
-          var fc = 0x151009;
-          bayBoxMesh(group, w, 1.64, 0.1, 0.12, fc, 0, 1.0, 0.04);
-          bayBoxMesh(group, w, 1.64, 0.1, 0.12, fc, 0, -1.0, 0.04);
-          bayBoxMesh(group, w, 0.1, 2.1, 0.12, fc, -0.77, 0, 0.04);
-          bayBoxMesh(group, w, 0.1, 2.1, 0.12, fc, 0.77, 0, 0.04);
+          // v2.0 P5：封存层（tier2/3）窗洞收小、窗框加厚——外观收分，读作阁楼层
+          var ww = w.sealed ? 1.15 : 1.4, wh = w.sealed ? 1.55 : 1.9;
+          var m = bayPlane(group, w, ww, wh, plainTex(litNow ? sub : 'dark'), null, 0, 0, 0.06, 0, 0);
+          var fc = 0x151009, ft = w.sealed ? 0.16 : 0.1;
+          bayBoxMesh(group, w, ww + 0.24, ft, 0.14, fc, 0, wh / 2 + 0.05, 0.04);
+          bayBoxMesh(group, w, ww + 0.24, ft, 0.14, fc, 0, -wh / 2 - 0.05, 0.04);
+          bayBoxMesh(group, w, ft, wh + 0.2, 0.14, fc, -ww / 2 - 0.05, 0, 0.04);
+          bayBoxMesh(group, w, ft, wh + 0.2, 0.14, fc, ww / 2 + 0.05, 0, 0.04);
           W._l188wins[w.id] = { def: w, mesh: m, sub: sub, litTex: plainTex(sub), nextFlip: 0 };
         }
 
         /* ①帘 curtain：窗帘遮挡普通窗（原著：别去拉窗帘）；magic 可触发"消失" */
         function buildCurtain(group, w, magic) {
-          var back = bayShell(group, w, 1.8, 2.3, 1.1);
+          var back = bayShell(group, w, 1.8, 2.3, 1.3);
           setBackTex(back, 'win_dark');
           var gone = magic && winSave.curtainGone[w.id];
           var cm = bayPlane(group, w, 1.7, 2.2, 'win_curtain', null, 0, 0, 0.35, 0, 0);
           if (gone) cm.visible = false; // 已"消失"：只剩黑洞
+          // v2.0 P5：窗帘盒 + 两侧系带——"帘"的辨识度
+          bayBoxMesh(group, w, 1.94, 0.26, 0.4, 0x1e1410, 0, 1.22, 0.85);
+          bayBoxMesh(group, w, 0.14, 0.9, 0.2, 0x3a1420, -0.82, -0.35, 0.5);
+          bayBoxMesh(group, w, 0.14, 0.9, 0.2, 0x3a1420, 0.82, -0.35, 0.5);
           if (magic && !gone) {
             var fp = frontPos(w, 1.8);
             W.addInteractable({
@@ -587,77 +890,180 @@
 
         /* ② room：可观察的普通房间（床 + 床头柜台灯，近物遮远物） */
         function buildRoom(group, w) {
-          var back = bayShell(group, w, 1.8, 2.3, 1.1);
+          var back = bayShell(group, w, 1.8, 2.3, 1.6);
           setBackTex(back, 'room_warm');
           bayBoxMesh(group, w, 0.95, 0.32, 0.55, 0x4a3a28, -0.3, -0.85, 0.62);
           bayBoxMesh(group, w, 0.95, 0.2, 0.5, 0x8a7a5c, -0.3, -0.6, 0.62);
           bayBoxMesh(group, w, 0.3, 0.5, 0.3, 0x2e2018, 0.55, -0.75, 0.7);
           bayPlane(group, w, 0.34, 0.26, 'win_warm', null, 0.55, -0.32, 0.72, 0, 0);
+          // v2.0 P5："有人住"的辨识度——顶灯 + 窗台小盆栽
+          bayPlane(group, w, 0.4, 0.28, 'win_warm', null, 0, 1.0, 0.9, 0, Math.PI / 2);
+          bayBoxMesh(group, w, 0.12, 0.09, 0.12, 0x5a3a28, 0.62, -1.19, 1.55);
+          bayMesh(group, w, new THREE.ConeGeometry(0.09, 0.22, 8),
+            new THREE.MeshLambertMaterial({ color: 0x1e4a24 }), 0.62, -1.03, 1.55, 0, 0, true);
         }
 
-        /* ③ pool：L37 蓝绿泳池（瓷砖柱 + 微动水面） */
+        /* ③ pool：L37 蓝绿泳池（v2.0 P5：a/b/c 三档可辨识变体，浅浮雕） */
         function buildPool(group, w) {
-          var back = bayShell(group, w, 2.0, 2.4, 1.1);
-          setBackTex(back, 'pool_tile');
-          [-0.62, 0.62].forEach(function (sx) {
-            bayMesh(group, w, new THREE.CylinderGeometry(0.11, 0.13, 2.2, 10),
-              new THREE.MeshLambertMaterial({ color: 0x9fb8a8 }), sx, -0.1, 0.7, 0, 0, true);
-          });
+          var av = w.av || 'a';
+          var back = bayShell(group, w, 2.0, 2.4, 1.6);
+          if (av === 'b') {
+            setBackTex(back, 'l188_pool_b'); // 瓷砖 + 扶梯阴影 + 水深标记
+            [-0.25, 0.25].forEach(function (rx) { // 立体扶梯
+              bayBoxMesh(group, w, 0.06, 1.8, 0.06, 0xb8c8c8, rx, -0.1, 0.5);
+            });
+            for (var ri = 0; ri < 4; ri++)
+              bayBoxMesh(group, w, 0.5, 0.05, 0.05, 0xb8c8c8, 0, -0.7 + ri * 0.4, 0.5);
+            var ring = bayMesh(group, w, new THREE.TorusGeometry(0.22, 0.06, 8, 18),
+              new THREE.MeshBasicMaterial({ color: 0xff8a5a }), 0.35, -0.55, 1.0, 0, 0, true);
+            ring.rotation.x = Math.PI / 2;
+            poolWater(group, w, 1.0);
+          } else if (av === 'c') {
+            setBackTex(back, 'pool_tile');
+            var rayM = new THREE.MeshBasicMaterial({
+              color: 0xbfe8ff, transparent: true, opacity: 0.20, side: THREE.DoubleSide });
+            [[-0.4, 0.5], [0, 0.65], [0.4, 0.5]].forEach(function (rp) { // 水下光柱
+              var ray = bayMesh(group, w, new THREE.PlaneGeometry(0.22, 1.7), rayM,
+                rp[0], 0, rp[1], 0, 0, false);
+              ray.rotation.z = 0.45;
+            });
+            var drain = bayMesh(group, w, new THREE.CircleGeometry(0.18, 14),
+              new THREE.MeshBasicMaterial({ color: 0x0a2028 }), 0.25, -0.7, 0.09, 0, 0, true);
+            drain.material.side = THREE.DoubleSide;
+            poolWater(group, w, 0.8);
+          } else { // a：瓷砖柱 + 微动水面
+            setBackTex(back, 'pool_tile');
+            [-0.62, 0.62].forEach(function (sx) {
+              bayMesh(group, w, new THREE.CylinderGeometry(0.11, 0.13, 2.2, 10),
+                new THREE.MeshLambertMaterial({ color: 0x9fb8a8 }), sx, -0.1, 0.9, 0, 0, true);
+            });
+            poolWater(group, w, 0.8);
+          }
+          regVoice(w, 'pool');
+        }
+        // 泳池水面（共用；zDepth 决定前后层次）
+        function poolWater(group, w, zDepth) {
           var wgeo = new THREE.PlaneGeometry(1.7, 0.85, 6, 3);
           var wm = bayMesh(group, w, wgeo,
             new THREE.MeshBasicMaterial({ color: 0x3fb8d8, transparent: true, opacity: 0.9 }),
-            0, -0.72, 0.6, 0, -Math.PI / 2, true);
+            0, -0.72, zDepth, 0, -Math.PI / 2, true);
           W._l188anim['pool_' + w.id] = {
             kind: 'water', m: wm, geo: wgeo,
             base: wgeo.attributes.position.array.slice(),
             ph: (w.x + w.z) % 6.28, x: w.x, z: w.z, amp: 0.03
           };
-          regVoice(w, 'pool');
         }
 
-        /* ③ party：Level Fun 派对（派对桌 + 浮动气球 + 彩带背板） */
+        /* ③ party：Level Fun 派对（v2.0 P5：a/b/c 三档可辨识变体，浅浮雕） */
         function buildParty(group, w) {
-          var back = bayShell(group, w, 2.0, 2.4, 1.1);
-          setBackTex(back, 'party_back');
-          bayBoxMesh(group, w, 1.0, 0.08, 0.6, 0x6a4a2a, 0, -0.55, 0.62);
-          bayBoxMesh(group, w, 0.08, 0.5, 0.08, 0x3a2c1c, -0.4, -0.85, 0.62);
-          bayBoxMesh(group, w, 0.08, 0.5, 0.08, 0x3a2c1c, 0.4, -0.85, 0.62);
-          var cols = [0xe84a5a, 0x4a9ae8, 0xf2c14a];
+          var av = w.av || 'a';
+          var back = bayShell(group, w, 2.0, 2.4, 1.6);
           var items = [];
-          cols.forEach(function (c, i) {
-            var b = bayMesh(group, w, new THREE.SphereGeometry(0.17, 10, 8),
-              new THREE.MeshBasicMaterial({ color: c }),
-              -0.5 + i * 0.5, 0.3 + (i % 2) * 0.18, 0.66, 0, 0, true);
-            // 气球绳
-            bayBoxMesh(group, w, 0.02, 0.75, 0.02, 0xcccccc, -0.5 + i * 0.5, -0.15 + (i % 2) * 0.18, 0.66);
-            items.push({ m: b, baseY: b.position.y, ph: i * 2.1 });
-          });
-          W._l188anim['party_' + w.id] = { kind: 'balloon', items: items, x: w.x, z: w.z };
+          if (av === 'b') { // 彩旗 + 礼物盒 + 气球簇
+            setBackTex(back, 'l188_party_b');
+            [[-0.42, 0.35], [0.35, 0.28]].forEach(function (gb, gi) {
+              var gs = gb[1];
+              bayBoxMesh(group, w, gs, gs, gs, gi ? 0x2a6ae8 : 0xe8a52a, gb[0], -0.95 + gs / 2, 0.7);
+              bayBoxMesh(group, w, gs + 0.02, 0.05, gs + 0.02, 0xf2e8d8, gb[0], -0.95 + gs / 2, 0.7);
+            });
+            var cols = [0xffd75b, 0x5bb8ff, 0xc97bff];
+            cols.forEach(function (c, i) {
+              var b = bayMesh(group, w, new THREE.SphereGeometry(0.16, 10, 8),
+                new THREE.MeshBasicMaterial({ color: c }),
+                0.15 + (i - 1) * 0.32, 0.35 + (i % 2) * 0.22, 0.62, 0, 0, true);
+              items.push({ m: b, baseY: b.position.y, ph: i * 2.4 + 1 });
+            });
+          } else if (av === 'c') { // 镜面球 + 追光锥
+            setBackTex(back, 'party_back');
+            bayBoxMesh(group, w, 0.03, 0.5, 0.03, 0x888888, 0, 0.95, 0.7);
+            bayMesh(group, w, new THREE.SphereGeometry(0.22, 12, 10),
+              new THREE.MeshBasicMaterial({ color: 0xd8e8f2 }), 0, 0.62, 0.7, 0, 0, true);
+            var cone = bayMesh(group, w, new THREE.ConeGeometry(0.55, 1.5, 12, 1, true),
+              new THREE.MeshBasicMaterial({ color: 0xffe98a, transparent: true,
+                opacity: 0.16, side: THREE.DoubleSide }), 0, -0.25, 0.78, 0, 0, true);
+          } else { // a：派对桌 + 浮动气球 + 彩带背板
+            setBackTex(back, 'party_back');
+            bayBoxMesh(group, w, 1.0, 0.08, 0.6, 0x6a4a2a, 0, -0.55, 0.62);
+            bayBoxMesh(group, w, 0.08, 0.5, 0.08, 0x3a2c1c, -0.4, -0.85, 0.62);
+            bayBoxMesh(group, w, 0.08, 0.5, 0.08, 0x3a2c1c, 0.4, -0.85, 0.62);
+            var colsA = [0xe84a5a, 0x4a9ae8, 0xf2c14a];
+            colsA.forEach(function (c, i) {
+              var b = bayMesh(group, w, new THREE.SphereGeometry(0.17, 10, 8),
+                new THREE.MeshBasicMaterial({ color: c }),
+                -0.5 + i * 0.5, 0.3 + (i % 2) * 0.18, 0.66, 0, 0, true);
+              bayBoxMesh(group, w, 0.02, 0.75, 0.02, 0xcccccc, -0.5 + i * 0.5, -0.15 + (i % 2) * 0.18, 0.66);
+              items.push({ m: b, baseY: b.position.y, ph: i * 2.1 });
+            });
+          }
+          if (items.length)
+            W._l188anim['party_' + w.id] = { kind: 'balloon', items: items, x: w.x, z: w.z };
           regVoice(w, 'party');
         }
 
-        /* ③ city：少量其他已完成层级局部（L11 无垠城市一角，本游戏改编） */
+        /* ③ city：L11 无垠城市一角（v2.0 P5：a/b/c 三档可辨识变体，浅浮雕） */
         function buildCity(group, w) {
-          var back = bayShell(group, w, 2.0, 2.4, 1.1);
-          setBackTex(back, 'city_night');
-          bayBoxMesh(group, w, 0.5, 1.5, 0.3, 0x0c0e14, -0.45, -0.3, 0.8);
-          bayBoxMesh(group, w, 0.4, 1.1, 0.3, 0x0c0e14, 0.4, -0.5, 0.85);
-          bayPlane(group, w, 0.1, 0.1, 'win_warm', null, -0.45, 0.1, 0.96, 0, 0);
-          bayPlane(group, w, 0.1, 0.1, 'win_cold', null, 0.4, -0.2, 0.96, 0, 0);
+          var av = w.av || 'a';
+          var back = bayShell(group, w, 2.0, 2.4, 1.6);
+          if (av === 'b') { // 月夜 + 瘦高塔楼 + 桥剪影
+            setBackTex(back, 'l188_city_b');
+            bayBoxMesh(group, w, 1.6, 0.09, 0.22, 0x0c0e14, 0, -0.55, 0.7);
+            [-0.55, 0.55].forEach(function (bx) {
+              bayBoxMesh(group, w, 0.12, 0.75, 0.18, 0x0c0e14, bx, -0.25, 0.7);
+            });
+            [-0.3, 0, 0.3].forEach(function (cx) { // 悬索
+              bayBoxMesh(group, w, 0.025, 0.42, 0.025, 0x2a3444, cx, -0.32, 0.7);
+            });
+            bayMesh(group, w, new THREE.SphereGeometry(0.05, 8, 6),
+              new THREE.MeshBasicMaterial({ color: 0xff3a3a }), 0.55, 0.28, 0.78, 0, 0, true);
+          } else if (av === 'c') { // 霓虹招牌 + 三窄塔
+            setBackTex(back, 'city_night');
+            [-0.62, 0.05, 0.62].forEach(function (bx, bi) {
+              bayBoxMesh(group, w, 0.3, 1.0 + bi * 0.25, 0.3, 0x0c0e14, bx, -0.45 + bi * 0.12, 0.8);
+            });
+            bayBoxMesh(group, w, 0.06, 1.3, 0.06, 0x1a2030, -0.1, -0.3, 0.55);
+            bayPlane(group, w, 1.1, 0.55, 'l188_billboard', null, -0.1, 0.42, 0.55, 0, 0);
+          } else { // a：矮胖楼剪影 + 亮窗
+            setBackTex(back, 'city_night');
+            bayBoxMesh(group, w, 0.5, 1.5, 0.3, 0x0c0e14, -0.45, -0.3, 0.8);
+            bayBoxMesh(group, w, 0.4, 1.1, 0.3, 0x0c0e14, 0.4, -0.5, 0.85);
+            bayPlane(group, w, 0.1, 0.1, 'win_warm', null, -0.45, 0.1, 0.96, 0, 0);
+            bayPlane(group, w, 0.1, 0.1, 'win_cold', null, 0.4, -0.2, 0.96, 0, 0);
+          }
           regVoice(w, 'city');
         }
 
-        /* ③ deep：L7 深海感（深蓝背板 + 浮游光点） */
+        /* ③ deep：L7 深海感（v2.0 P5：a/b/c 三档可辨识变体，浅浮雕） */
         function buildDeep(group, w) {
-          var back = bayShell(group, w, 2.0, 2.4, 1.1);
-          setBackTex(back, 'deep_blue');
+          var av = w.av || 'a';
+          var back = bayShell(group, w, 2.0, 2.4, 1.6);
           var cols = [0x7fd8ff, 0xa8fff0, 0x5aa8ff];
           var items = [];
-          for (var i = 0; i < 5; i++) {
-            var mt = bayPlane(group, w, 0.09, 0.09, null, cols[i % 3],
-              -0.7 + ((i * 37) % 140) / 100, -0.8 + ((i * 53) % 140) / 100,
-              0.55 + (i % 3) * 0.14, 0, 0);
-            items.push({ m: mt, bx: mt.position.x, by: mt.position.y, bz: mt.position.z, seed: i * 1.7 });
+          function moteAt(mx, my, mz, mi, col) {
+            var mt = bayPlane(group, w, 0.09, 0.09, null, col,
+              mx, my, mz, 0, 0);
+            items.push({ m: mt, bx: mt.position.x, by: mt.position.y, bz: mt.position.z, seed: mi * 1.7 });
+          }
+          if (av === 'b') { // 光柱 + 岩体
+            setBackTex(back, 'l188_deep_b');
+            bayMesh(group, w, new THREE.ConeGeometry(0.3, 0.9, 7),
+              new THREE.MeshLambertMaterial({ color: 0x0a141c }), -0.5, -0.75, 0.6, 0, 0, true);
+            bayBoxMesh(group, w, 0.5, 0.6, 0.4, 0x0a141c, 0.42, -0.9, 0.85);
+            for (var i = 0; i < 3; i++)
+              moteAt(-0.5 + i * 0.5, -0.3 + (i % 2) * 0.5, 0.6 + (i % 2) * 0.2, i, cols[i % 3]);
+          } else if (av === 'c') { // 远处巨影（抽象剪影）+ 光点
+            setBackTex(back, 'deep_blue');
+            var sh = bayMesh(group, w, new THREE.CircleGeometry(0.55, 20),
+              new THREE.MeshBasicMaterial({ color: 0x0a1420 }), 0, 0.15, 0.3, 0, 0, true);
+            sh.scale.set(1.7, 0.65, 1);
+            bayPlane(group, w, 0.07, 0.07, null, 0xcfe8ff, 0.45, 0.22, 0.32, 0, 0);
+            for (var j = 0; j < 3; j++)
+              moteAt(-0.7 + j * 0.55, -0.7 + (j % 2) * 0.4, 0.7, j + 5, cols[j % 3]);
+          } else { // a：浮游光点
+            setBackTex(back, 'deep_blue');
+            for (var k = 0; k < 5; k++) {
+              moteAt(-0.7 + ((k * 37) % 140) / 100, -0.8 + ((k * 53) % 140) / 100,
+                0.55 + (k % 3) * 0.14, k, cols[k % 3]);
+            }
           }
           W._l188anim['deep_' + w.id] = { kind: 'mote', items: items, x: w.x, z: w.z };
           regVoice(w, 'deep');
@@ -665,8 +1071,12 @@
 
         /* ④ event：事件窗（人影 / 灯光抽搐）——明确交互后触发 */
         function buildEvent(group, w) {
-          var back = bayShell(group, w, 1.8, 2.3, 1.1);
+          var back = bayShell(group, w, 1.8, 2.3, 1.6);
           setBackTex(back, w.variant === 'figure' ? 'win_dark' : 'room_warm');
+          // v2.0 P5：裂纹罩——"这扇窗不对劲"的辨识度（开口内侧，近看才显）
+          var crack = bayPlane(group, w, 1.7, 2.2, 'l188_crack', null, 0, 0, 1.45, 0, 0);
+          crack.material.transparent = true;
+          crack.material.opacity = 0.85;
           if (w.variant === 'figure') {
             var dark = new THREE.MeshBasicMaterial({ color: 0x2b3550 }); // 深蓝灰剪影（背板近黑，保证可见）
             var torso = bayMesh(group, w, new THREE.BoxGeometry(0.42, 1.1, 0.24), dark, 0, -0.35, 0.55, 0, 0, true);
@@ -711,11 +1121,13 @@
 
         /* travel：可穿越窗（独立触发区 + 目标层级；对应房门已锁死） */
         function buildTravel(group, w) {
-          var back = bayShell(group, w, 2.0, 2.4, 1.1);
+          var back = bayShell(group, w, 2.0, 2.4, 1.6);
           setBackTex(back, w.variant || 'corridor_l1');
-          var sh = bayPlane(group, w, 1.9, 2.3, 'shimmer', null, 0, 0, 0.5, 0, 0);
+          // v2.0 P5：shimmer 保持原版整窗微光门（1.9 宽），随窗洞加深移到 lz=0.9；
+          // 不透明度略降（原 0.5），避免把加深后的走廊景全盖住
+          var sh = bayPlane(group, w, 1.9, 2.3, 'shimmer', null, 0, 0, 0.9, 0, 0);
           sh.material.transparent = true;
-          sh.material.opacity = 0.5;
+          sh.material.opacity = 0.42;
           W._l188anim['shim_' + w.id] = { kind: 'shimmer', m: sh, ph: (w.x + w.z) % 6.28, x: w.x, z: w.z };
           var fp = frontPos(w, 1.8);
           var dname = (BR.Levels[w.dest] && BR.Levels[w.dest].name) || w.dest;
@@ -814,6 +1226,26 @@
               });
             }
           });
+          // v2.0 P5：通往三楼的门——被水泥封死（"外观多层/实际两层"的楼层封锁解释）
+          var sd = box(0.16, 2.6, 1.3, 0x3a3f44);
+          sd.position.set(39 * T - 0.08, 1.3, pz(52));
+          W.reg(group, sd);
+          [0.7, 1.9].forEach(function (py) { // 封门木条
+            var plank = box(0.1, 0.22, 1.5, 0x4a3a24);
+            plank.position.set(39 * T - 0.2, py, pz(52));
+            plank.rotation.x = 0.35;
+            W.reg(group, plank);
+          });
+          W.addInteractable({
+            id: 'sealed_3f', kind: 'sealed_door', chunkKey: W.chunkKeyOf(37, 52),
+            meshes: [sd], pos: new THREE.Vector3(39 * T - 1.4, 1.4, pz(52)), radius: 2.6,
+            prompt: function () { return '🚫 通往三楼的门（封死了）'; },
+            canUse: function () { return true; },
+            use: function () {
+              BR.Audio.doorCreak();
+              BR.UI.toast('门纹丝不动。门缝被水泥灌死了，封条上写着：三楼以上，停止服务。', 3400);
+            }
+          });
         });
       })();
 
@@ -848,13 +1280,43 @@
         });
       })();
 
-      /* ---------- 客房（三布局 std/twin/desk；衣柜交互；窗帘装扮；降吊顶） ---------- */
+      /* ---------- 客房（三布局 std/twin/desk；衣柜交互；窗帘装扮；降吊顶） ----------
+       * v2.0 P5：室内窗按 ROOM_WIN 落到朝庭院/环廊的墙上，x/z 对准庭院窗坐标
+       * （gen 侧南墙 209 窗已移到 sx=32，x=97.5 落进 209 房 93..105 范围内） */
+      var ROOM_WIN = {
+        '201': { x: 47.88, z: 73.5, ry: -Math.PI / 2 },
+        '202': { x: 47.88, z: 91.5, ry: -Math.PI / 2 },
+        '203': { x: 47.88, z: 103.5, ry: -Math.PI / 2 },
+        '205': { x: 120.12, z: 73.5, ry: Math.PI / 2 },
+        '206': { x: 120.12, z: 91.5, ry: Math.PI / 2 },
+        '207': { x: 120.12, z: 103.5, ry: Math.PI / 2 },
+        '208': { x: 67.5, z: 117.12, ry: Math.PI },
+        '209': { x: 97.5, z: 117.12, ry: Math.PI },
+        '210': { x: 67.5, z: 59.88, ry: 0 },
+        '211': { x: 103.5, z: 59.88, ry: 0 },
+        '301': { x: 49.5, z: 146.88, ry: Math.PI },
+        '302': { x: 70.5, z: 146.88, ry: Math.PI },
+        '303': { x: 91.5, z: 146.88, ry: Math.PI },
+        '304': { x: 49.5, z: 156.12, ry: 0 },
+        '305': { x: 70.5, z: 156.12, ry: 0 },
+        '306': { x: 91.5, z: 156.12, ry: 0 }
+      };
       (function buildRooms() {
+        // 客房木地板（v2.0 P5：不再沿用走廊地毯材质；纹理复用，repeat 统一）
+        var woodT = BR.Textures.get('l188_woodfloor');
+        woodT.wrapS = woodT.wrapT = THREE.RepeatWrapping;
+        woodT.repeat.set(4, 3);
         function buildOneRoom(x0, y0, w, h, num, locked, ctx, cty) {
           var cx = (x0 + w / 2) * T, cz = (y0 + h / 2) * T;
           var layout = new BR.RNG(BR.hashSeed('room:' + num)).pick(['std', 'twin', 'desk']);
           W._l188dropCeil(cx, cz, w * T - 0.3, h * T - 0.3);
           W.addChunkContent(ctx, cty, function (group) {
+            var fl = new THREE.Mesh(new THREE.PlaneGeometry(w * T - 0.4, h * T - 0.4),
+              new THREE.MeshLambertMaterial({ map: woodT }));
+            fl._ownMat = true;
+            fl.rotation.x = -Math.PI / 2;
+            fl.position.set(cx, 0.03, cz);
+            W.reg(group, fl);
             function bed(bx, bz, bw2) {
               var b = box(bw2, 0.4, 1.9, 0x4a3a28); b.position.set(bx, 0.2, bz); W.reg(group, b);
               var m2 = box(bw2 - 0.1, 0.18, 1.8, 0x8a7a5c); m2.position.set(bx, 0.48, bz); W.reg(group, m2);
@@ -894,18 +1356,36 @@
               });
             }
             // 房内窗（winKind 装扮；blinds 另加窗帘布）
+            // v2.0 P5：按 ROOM_WIN 落到朝庭院/环廊的墙上，x/z 对准庭院窗坐标
             var wk = 'warm';
             var hit = byType('hotel_room').filter(function (q) { return q.data.num === num; })[0];
             if (hit && hit.data.winKind) wk = hit.data.winKind;
             var wtx = wk === 'warm' ? 'win_warm' : wk === 'cold' ? 'win_cold' :
               wk === 'blinds' ? 'blinds' : 'win_dark';
-            var wp = basicPlane(1.3, 1.7, wtx);
-            wp.position.set(cx, 1.8, cz - h * T / 2 + 0.12);
-            W.reg(group, wp);
-            if (wk === 'blinds') {
-              var cu = basicPlane(1.2, 1.6, 'win_curtain');
-              cu.position.set(cx, 1.8, cz - h * T / 2 + 0.2);
-              W.reg(group, cu);
+            var rw = ROOM_WIN[num];
+            if (rw) {
+              var wg = new THREE.Group();
+              wg.position.set(rw.x, 1.8, rw.z);
+              wg.rotation.y = rw.ry;
+              var wp = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.7),
+                new THREE.MeshBasicMaterial({ map: BR.Textures.get(wtx) }));
+              wp._ownMat = true;
+              wg.add(wp);
+              var frM = new THREE.MeshLambertMaterial({ color: 0x241c12 });
+              [[0, 0.9, 1.5, 0.1], [0, -0.9, 1.5, 0.1],
+               [-0.7, 0, 0.1, 1.9], [0.7, 0, 0.1, 1.9]].forEach(function (f) {
+                var fm = new THREE.Mesh(new THREE.BoxGeometry(f[2], f[3], 0.08), frM);
+                fm.position.set(f[0], f[1], 0.02);
+                wg.add(fm);
+              });
+              if (wk === 'blinds') {
+                var cu = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.6),
+                  new THREE.MeshBasicMaterial({ map: BR.Textures.get('win_curtain') }));
+                cu._ownMat = true;
+                cu.position.set(0, 0, 0.09);
+                wg.add(cu);
+              }
+              W.reg(group, wg);
             }
           });
         }
@@ -1158,7 +1638,8 @@
           an.t += dt;
           an.m.visible = (Math.sin(an.t * 31) + Math.sin(an.t * 17.3)) > -0.6;
         } else if (an.kind === 'shimmer') {
-          an.m.material.opacity = 0.38 + Math.sin(t * 2.4 + an.ph) * 0.18;
+          // v2.0 P5：0.3~0.5 微光（原 0.2~0.56；配合加深窗洞略收敛）
+          an.m.material.opacity = 0.4 + Math.sin(t * 2.4 + an.ph) * 0.10;
         } else if (an.kind === 'slide') { // 魔术窗帘滑动
           an.t += dt;
           var p = Math.min(1, an.t / an.dur);
