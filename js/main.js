@@ -11,7 +11,18 @@
     renderer: null,
     fps: 0, _fpsN: 0, _fpsT: 0,
     _saveT: 0,
-    checkpoint: null
+    checkpoint: null,
+    // P0-4：异步关卡加载保护
+    _loading: false,      // loadLevel 互斥锁
+    _loadPromise: null,   // 进行中的加载 promise（去重返回）
+    _loadFailCtx: null,   // 失败重试上下文 {level, opts}
+    _prevLevel: null,     // 回滚快照 {valid, level, map, ws, px, pz, yaw}
+    _rollbackActive: false,
+    _loadError: null,
+    _gotoTimer: 0,
+    // P0-2：按关世界持久化——内存关卡缓存 {关id: {ws, deployed}}（深拷贝存入）；
+    // 与 P0-4 回滚快照 _prevLevel 无关（那是失败回滚用的上一关快照）。
+    _levelCache: {}
   };
   BR.Game = G;
 
@@ -23,6 +34,10 @@
     // 先把菜单亮出来：后面 WebGL 若在平板上失败，用户看到菜单+提示，而不是黑屏
     BR.UI.showTitle();
     BR.UI.setPrompt(null);
+    // P0-4：加载失败界面三按钮（真实可用）
+    BR.$('btn-load-retry').onclick = () => this.retryLoad();
+    BR.$('btn-load-rollback').onclick = () => this.rollbackLevel();
+    BR.$('btn-load-title').onclick = () => this.backToTitle();
     mark('camera'); BR.Player.initCamera();
     mark('quality'); this.applyQuality();
 
@@ -114,6 +129,7 @@
     this.level = 'L0';
     this.inv = {};
     this.flags = { clues: 0, gens: 0, riftCount: 0, berryCount: 0 };
+    this._levelCache = {}; // P0-2：新开局清空关卡缓存
     BR.Save.clearSave();
     if (BR.Items) BR.Items.resetState(); // W9：新开局清道具运行时态
     BR.Input.ensureImmersive(); // 触屏：尝试全屏 + 锁横屏
@@ -133,9 +149,42 @@
     this.loadLevel(d.level, { saved: d, drop: true });
   };
 
-  /* ---------- 关卡加载 ---------- */
+  /* ---------- 关卡加载（P0-4：异步加载保护） ----------
+   * 返回 Promise：成功 resolve / 失败 reject。
+   * 互斥：进行中再次调用 → BR.warn + 返回已有的 _loadPromise（去重，不许并发 build）。
+   * 调用方（newGame/continueGame/retryAfterDeath）不 await：内部挂载空 catch，
+   * 避免 unhandledrejection；gotoLevel 的 race 仍能收到 reject（分支独立）。 */
   G.loadLevel = function (level, opts) {
     opts = opts || {};
+    if (this._loading) {
+      BR.warn('loadLevel re-entered, dedup ->', level);
+      return this._loadPromise;
+    }
+    // 回滚快照：失败前保存上一关（map 引用即可；ws 深拷贝防 build 覆盖）
+    let prevWs = null;
+    try { prevWs = (BR.World && BR.World.state) ? JSON.parse(JSON.stringify(BR.World.state)) : null; }
+    catch (e) { prevWs = (BR.World && BR.World.state) || null; }
+    this._prevLevel = {
+      valid: !!(BR.World && BR.World.map), // 只有曾经成功建过世界，回滚按钮才有效
+      level: this.level,
+      map: (BR.World && BR.World.map) || null,
+      ws: prevWs,
+      px: (BR.Player && BR.Player.pos) ? BR.Player.pos.x : 0,
+      pz: (BR.Player && BR.Player.pos) ? BR.Player.pos.z : 0,
+      yaw: (BR.Player && BR.Player.yaw) || 0
+    };
+    this._loadFailCtx = { level: level, opts: opts };
+    this._loading = true;
+    this._loadError = null;
+    let resolveFn, rejectFn;
+    this._loadPromise = new Promise((res, rej) => { resolveFn = res; rejectFn = rej; });
+    this._loadPromise.catch(() => {}); // 内部自行处理：调用方不 await 也不触发 unhandledrejection
+    const done = (err) => {
+      this._loading = false;
+      if (err) { this._loadFailed(err); rejectFn(err); }
+      else { this._rollbackActive = false; resolveFn(); }
+    };
+
     this.state = 'loading';
     this.level = level;
     BR.Input.setLocked(true);
@@ -143,28 +192,62 @@
     if (BR.Input.clearAll) BR.Input.clearAll();
     if (BR.Player && BR.Player.setState) BR.Player.setState('transition');
     BR.UI.show('screen-loading');
+    this._hideLoadError(); // 清掉可能残留的失败界面，恢复 spinner
     BR.$('loading-text').textContent = '正在生成 ' + (BR.Levels[level] ? BR.Levels[level].name : level) + '……';
 
     // 下一帧再做重活，让 loading 先画出来
     setTimeout(() => {
+      let map;
       try {
-        const map = BR.Gen.generate(level, this.seed);
-        const ws = opts.saved ? opts.saved.ws : { openedDoors: [], picked: [], openedCrates: [], events: [] };
-        BR.World.build(map, ws).then(() => {
+        map = BR.Gen.generate(level, this.seed); // P0-4：同步抛错 → 失败界面
+      } catch (e) { done(e); return; }
+      const FRESH_WS = function () { return { openedDoors: [], picked: [], openedCrates: [], events: [] }; };
+      // P0-2：ws 来源优先级——
+      // ① saved 路径：opts.saved.levels[level].ws（无则回退 opts.saved.ws，
+      //    兼容 P0-4 回滚拼出的 v1 形 synthetic saved；再无则 fresh 空对象）；
+      // ② travel 路径：内存关卡缓存 _levelCache[level].ws（返回旧关不断档）；
+      // ③ 都没有 → fresh 空对象。
+      // 字段名是 world.js/save.js/levels.js 三方硬约定，不许改。
+      let ws;
+      if (opts.saved) {
+        const lvB = (opts.saved.levels && opts.saved.levels[level]) || null;
+        ws = (lvB && lvB.ws) || opts.saved.ws || FRESH_WS();
+        // saved 路径预热缓存：把存档里其它关的桶深拷贝进 _levelCache——
+        // 否则读档后第一次普通跨关（travel 路径无 saved）去"存档里有、session 里没去过"
+        // 的关会拿到 fresh 而不是旧桶。
+        if (opts.saved.levels) {
+          for (const k in opts.saved.levels) {
+            if (k === level) continue;
+            const b = opts.saved.levels[k];
+            if (!b) continue;
+            try {
+              this._levelCache[k] = {
+                ws: JSON.parse(JSON.stringify(b.ws || {})),
+                deployed: JSON.parse(JSON.stringify(b.deployed || { glows: [], chalks: [], drops: [] }))
+              };
+            } catch (e) {}
+          }
+        }
+      } else {
+        const cached = (this._levelCache && this._levelCache[level]) || null;
+        ws = (cached && cached.ws) || FRESH_WS();
+      }
+      // P0-4：.catch 全覆盖——build 拒绝 / .then 回调内抛错 → 失败界面
+      BR.World.build(map, ws).then(() => {
           // H 路：灯池刚重建，按当前画质档调灯距/粒子（applyQuality 在开局已跑过，
           // 但那时灯池还不存在；设置页切画质则走 applyQuality 里的即时重调）
           if (BR.World.applyLightTuning) BR.World.applyLightTuning();
-          // W9：恢复本关已部署道具（荧光棒/粉笔/丢弃物），读档与跨关共用
-          if (BR.Items) BR.Items.onLevelBuilt();
           // 从事件恢复计数器
           this.flags.gens = ws.events.filter(e => e.indexOf('gen_') === 0).length;
           this.flags.clues = ws.events.filter(e => e.indexOf('clue_') === 0).length;
           const sp = BR.World.spawnOf(map);
           let px = sp.x, pz = sp.z, yaw = sp.yaw;
           if (opts.saved) { px = opts.saved.px; pz = opts.saved.pz; yaw = opts.saved.yaw; }
-          // W9：跨关保留 diveLight（P.reset 会清掉；读档走 loadState 恢复）
-          const keepDive = (!opts.saved && !opts.fresh && BR.Player.diveLight) ? BR.Player.diveLight : null;
-          BR.Player.reset(px, pz, yaw);
+          // P0-1：reset 按加载路径参数化——'saved' 读档/死亡重试/回滚，
+          // 'full' 新游戏，'travel' 普通跨关（保留 hp/sanity/hunger/stamina/
+          // flashBat/手电/diveLight/氧气派生值；跨关不再免费回满）。
+          // P0-1：travel 模式的 reset 本来就不清 diveLight，keepDive hack 已删除。
+          BR.Player.reset(px, pz, yaw, opts.saved ? 'saved' : (opts.fresh ? 'full' : 'travel'));
           // v1.5 W8：读档恢复坐骑（工厂未注册/存档无坐骑时静默跳过）
           // 世界实例（W5 鸭子）：buildContent 已按存档生成同 id 实例，直接骑它，不新建
           if (opts.saved && opts.saved.mount && opts.saved.mount.kind && BR.Mounts) {
@@ -199,11 +282,36 @@
               BR.Player.hasFlashlight = true;
             }
           }
+          // P0-3 根因修复：两条路径各走各的顺序——
+          // 读档先 loadState（填 _pendingDeployed）再 onLevelBuilt（消费恢复）；
+          // 普通跨关先 onTravel（填 _pendingDeployed）再 onLevelBuilt（消费恢复）。
+          // （旧代码把 onLevelBuilt 放在最前、loadState/onTravel 放在最后，
+          //  恢复时 stash 还是空的 → 本关部署物本次不恢复。）
           // W9：道具运行时态——读档恢复电量/装备/耐力/照明灯/已部署物；
           // 跨关则保留当前运行时态（autosave 已把旧关部署物写入 _savedDeployed）
           if (BR.Items) {
-            if (opts.saved) BR.Items.loadState(opts.saved);
-            else { BR.Items.onTravel(); if (keepDive) BR.Player.diveLight = keepDive; }
+            if (opts.saved) {
+              // P0-2：loadState 只认顶层 d.deployed（按关分桶 map）；v2 下从
+              // opts.saved.levels 组装全关桶 map，用浅拷贝对象喂给 loadState——
+              // 不污染 opts.saved 本身（checkpoint/死亡重试复用同一对象）；
+              // P0-3 语义不变：仍是先 loadState（填 _pendingDeployed）再 onLevelBuilt（消费恢复）。
+              // v1 形 synthetic saved（P0-4 回滚）无 levels → 沿用其顶层 deployed
+              // （无则 null → loadState 走 keepDep，不清空内存旧桶）。
+              let depForItems = null;
+              if (opts.saved.levels) {
+                depForItems = {};
+                for (const k in opts.saved.levels) {
+                  const b = opts.saved.levels[k];
+                  if (b && b.deployed) depForItems[k] = b.deployed;
+                }
+              } else if (opts.saved.deployed) {
+                depForItems = opts.saved.deployed;
+              }
+              BR.Items.loadState(Object.assign({}, opts.saved, { deployed: depForItems }));
+            }
+            else BR.Items.onTravel();
+            // W9：恢复本关已部署道具（荧光棒/粉笔/丢弃物），读档与跨关共用
+            BR.Items.onLevelBuilt();
           }
           BR.Player.camera.aspect = innerWidth / innerHeight;
           BR.Player.camera.updateProjectionMatrix();
@@ -224,7 +332,9 @@
           this.autosave();
           BR.Input.checkOrient();
           const afterEnter = () => {
-            if (opts.intro && level === 'L0') {
+            // P0-4：只有仍在正常游玩才播开场——跨关失败（state='loadfail'）时不再劫持屏幕播 intro，
+            // 否则 intro 的 BR.UI.show(null) 会盖掉失败界面。
+            if (opts.intro && level === 'L0' && this.state === 'playing') {
               BR.Trans.play('intro');
               // v1.5 W2：开场操作提示改由首次动作触发（input.js firstHint），此处不再定时弹
             }
@@ -233,81 +343,131 @@
           if (opts.drop && !BR.Trans.active) {
             BR.Trans.play('drop', { text: opts.dropText }).then(afterEnter);
           } else afterEnter();
-        });
-      } catch (e) {
-        BR.warn('loadLevel failed', e);
-        BR.$('loading-text').textContent = '加载失败：' + e.message;
-      }
-    }, 60);
+          done(null); // P0-4：成功 resolve（gotoLevel 的 race 在此结束）
+        }).catch((e) => done(e)); // P0-4：build 拒绝 / .then 回调内抛错 → 失败界面
+      }, 60);
+    return this._loadPromise;
   };
 
-  // 转场调用的跨关（存档跟随）
-  G.gotoLevel = function (level, opts) {
-    opts = opts || {};
-    this.autosave();
-    // 跨关保留：手电、部分物资
-    return new Promise((resolve) => {
-      this.loadLevel(level, opts); // 修复吞 opts 的 bug：透传给 loadLevel（如 drop/dropText/saved）
-      const iv = setInterval(() => {
-        if (this.state === 'playing') { clearInterval(iv); resolve(); }
-      }, 200);
+  // P0-4：加载失败统一处理——解锁输入、弹失败界面（三按钮真实可用）
+  G._loadFailed = function (err) {
+    this._loading = false;
+    this._loadError = err || new Error('unknown load error');
+    const msg = (err && err.message) || String(err);
+    BR.warn('loadLevel failed:', msg);
+    // 回滚本身失败 → 直接回到标题，不再弹失败界面
+    if (this._rollbackActive) {
+      this._rollbackActive = false;
+      this.backToTitle();
+      return;
+    }
+    BR.Input.setLocked(false); // 任何失败路径都必须执行
+    this.state = 'loadfail';
+    BR.UI.show('screen-loading');
+    BR.$('loading-text').textContent = '加载失败';
+    const sp = BR.$('loading-spinner');
+    if (sp) sp.style.display = 'none';
+    const box = BR.$('loadfail-box');
+    if (box) {
+      box.style.display = 'block';
+      const m = BR.$('loadfail-msg');
+      if (m) m.textContent = '原因：' + msg;
+      // 没有有效上一关（首次加载即失败）时隐藏"返回上一关"
+      const rb = BR.$('btn-load-rollback');
+      if (rb) rb.style.display = (this._prevLevel && this._prevLevel.valid) ? '' : 'none';
+    }
+  };
+
+  G._hideLoadError = function () {
+    const box = BR.$('loadfail-box');
+    if (box) box.style.display = 'none';
+    const sp = BR.$('loading-spinner');
+    if (sp) sp.style.display = '';
+  };
+
+  // P0-4：[重试本关]——用失败时的上下文重跑
+  G.retryLoad = function () {
+    const ctx = this._loadFailCtx;
+    if (!ctx || this._loading) return;
+    BR.log('retryLoad', ctx.level);
+    this.loadLevel(ctx.level, ctx.opts);
+  };
+
+  // P0-4：[返回上一关]——用快照重建旧世界；回滚本身失败 → 回到标题
+  G.rollbackLevel = function () {
+    const prev = this._prevLevel;
+    if (this._loading) return;
+    if (!prev || !prev.valid || !BR.Levels[prev.level]) { this.backToTitle(); return; }
+    let map = prev.map;
+    if (!map) {
+      try { map = BR.Gen.generate(prev.level, this.seed); } // 确定性重建
+      catch (e) { BR.warn('rollback regen failed', e); this.backToTitle(); return; }
+    }
+    const ws = prev.ws || { openedDoors: [], picked: [], openedCrates: [], events: [] };
+    BR.log('rollbackLevel ->', prev.level);
+    this._rollbackActive = true; // 回滚失败 → _loadFailed 直接回标题
+    // 走标准 loadLevel（带完整失败保护）；用快照恢复玩家位置与基础状态
+    this.loadLevel(prev.level, {
+      saved: {
+        ws: ws, px: prev.px, pz: prev.pz, yaw: prev.yaw,
+        hp: 100, sanity: 100, hunger: 100, flashBat: 100,
+        hasFlashlight: !!(BR.Player && BR.Player.hasFlashlight)
+      },
+      drop: true
     });
   };
 
-  G.snapshot = function () {
-    const ws = BR.World.state || { openedDoors: [], picked: [], openedCrates: [], events: [] };
-    const wsCopy = JSON.parse(JSON.stringify(ws));
-    // v1.5 W8：坐骑实例位置（W5 鸭子：buildDucks 经 BR.Mounts.savedFor 恢复）
-    try { wsCopy.mounts = (BR.Mounts && BR.Mounts.getLevelSave) ? BR.Mounts.getLevelSave() : {}; }
-    catch (e) { wsCopy.mounts = {}; }
-    return {
-      v: 1, t: Date.now(),
-      seed: this.seed, level: this.level,
-      px: BR.Player.pos.x, pz: BR.Player.pos.z, yaw: BR.Player.yaw,
-      hp: Math.round(BR.Player.hp),
-      sanity: Math.round(BR.Player.sanity), // 修复已知坑：读档不再回满
-      hunger: Math.round(BR.Player.hunger != null ? BR.Player.hunger : 100),
-      flashBat: Math.round(BR.Player.flashBat != null ? BR.Player.flashBat : 100), // 手电电池
-      hasFlashlight: BR.Player.hasFlashlight,
-      inv: Object.assign({}, this.inv),
-      flags: Object.assign({}, this.flags),
-      ws: wsCopy,
-      riftCount: this.flags.riftCount != null ? this.flags.riftCount : BR.Save.countEvents(ws.events, 'rift_'),
-      berryCount: this.flags.berryCount != null ? this.flags.berryCount : BR.Save.countEvents(ws.events, 'berry_'),
-      // v1.5 W8：坐骑运行时态（无坐骑时 null；handle.getSave 可选）
-      mount: (function () {
-        const h = BR.Player && BR.Player.mountHandle;
-        if (!h) return null;
-        let data = null;
-        try { data = (typeof h.getSave === 'function') ? h.getSave() : null; } catch (e) {}
-        return { kind: h.kind, data: data };
-      })(),
-      // W9：新道具运行时态（独立电量/装备/耐力/照明灯/已部署物；与 save.js 顶层字段对齐）
-      itemCharges: null, equipped: null, stamina: null, diveLight: null, deployed: null
-    };
+  // P0-4：[回到标题]
+  G.backToTitle = function () {
+    this._loading = false;
+    this._rollbackActive = false;
+    this._loadFailCtx = null;
+    BR.Input.setLocked(false);
+    this.state = 'title';
+    this._hideLoadError();
+    BR.$('loading-text').textContent = '正在生成……';
+    BR.UI.showTitle();
   };
-  // W9：snapshot 返回后补道具字段（保持上面字面量可读；autosave/checkpoint 共用）
-  (function () {
-    const _snap = G.snapshot;
-    G.snapshot = function () {
-      const out = _snap.call(this);
-      if (BR.Items && BR.Items.saveState) {
-        const ist = BR.Items.saveState();
-        out.itemCharges = ist.itemCharges;
-        out.equipped = ist.equipped;
-        out.stamina = ist.stamina;
-        out.diveLight = ist.diveLight;
-        out.deployed = ist.deployed;
-      }
-      return out;
-    };
-  })();
+
+  // 转场调用的跨关（存档跟随）
+  // P0-4：loadLevel 返回 Promise（成功 resolve / 失败 reject）；60s 超时则 reject。
+  // 旧的无超时 setInterval 轮询已删除（永不 resolve/reject 是根因之一）。
+  G.gotoLevel = function (level, opts) {
+    opts = opts || {};
+    this.autosave();
+    // P0-2：跨关前把当前关世界存入内存缓存（深拷贝；与 P0-4 回滚快照 _prevLevel 无关）。
+    // 只在非加载中缓存：重入时 loadLevel 会去重，World.state 已不是旧关。
+    if (!this._loading && BR.World && BR.World.state && this.level) {
+      try {
+        const ist = (BR.Items && BR.Items.saveState) ? BR.Items.saveState() : null;
+        const depMap = (ist && ist.deployed) || {};
+        const wsCopy = JSON.parse(JSON.stringify(BR.World.state));
+        // 坐骑实例位置与 snapshot 对齐（getLevelSave 收集实时位置）
+        try { wsCopy.mounts = (BR.Mounts && BR.Mounts.getLevelSave) ? BR.Mounts.getLevelSave() : {}; }
+        catch (e) { wsCopy.mounts = {}; }
+        this._levelCache[this.level] = {
+          ws: wsCopy,
+          deployed: JSON.parse(JSON.stringify(depMap[this.level] || { glows: [], chalks: [], drops: [] }))
+        };
+      } catch (e) { BR.warn('levelCache write failed', e); }
+    }
+    const loadP = this.loadLevel(level, opts); // 修复吞 opts 的 bug：透传给 loadLevel（如 drop/dropText/saved）
+    const timeoutP = new Promise((_, reject) => {
+      this._gotoTimer = setTimeout(() => reject(new Error('跨关超时（60s）: ' + level)), 60000);
+    });
+    return Promise.race([loadP, timeoutP]).then(
+      (v) => { clearTimeout(this._gotoTimer); return v; },
+      (e) => { clearTimeout(this._gotoTimer); throw e; }
+    );
+  };
+
+  // P0-2：存档 v2 序列化实现在 save.js（S.serializeV2），此处薄封装；
+  // 顶层不再有 ws/deployed（见 tools/SAVE_V2.md）；checkpoint 即 v2 snapshot。
+  G.snapshot = function () { return BR.Save.serializeV2(); };
 
   G.autosave = function () {
     if (this.state !== 'playing' && this.state !== 'paused') return;
-    try {
-      localStorage.setItem('backrooms_save_v1', JSON.stringify(this.snapshot()));
-    } catch (e) {}
+    BR.Save.writeV2(this.snapshot()); // P0-2：落盘 v2 key（writeV2 自带 try/catch）
   };
 
   /* ---------- 死亡 / 重试 / 结局 ---------- */
@@ -336,7 +496,7 @@
     return new Promise((res) => setTimeout(() => {
       BR.UI.showEnding(
         '你切出来了',
-        '电梯门开了。\n\n外面不是 Level 4，也不是任何已知的楼层——是白光，和久违的新鲜空气的味道。\n\n你回头看了一眼，身后的门缓缓关上，荧光灯的嗡鸣声越来越远。\n\n你切出来了。这一次，是切回了现实。\n\n—— 通关 ——\n\n（电梯的下行按钮还亮着……也许有一天，你会想知道 Level 4 是什么样子。）'
+        '电梯门开了。\n\n外面是白光，和久违的新鲜空气的味道。\n\n你回头看了一眼，身后的门缓缓关上，荧光灯的嗡鸣声越来越远。\n\n你切出来了。这一次，是切回了现实。\n\n—— 通关 ——\n\n（电梯的下行按钮还亮着……但这一次，你选择不回头。）'
       );
       res();
     }, 800));

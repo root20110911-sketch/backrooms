@@ -1,8 +1,9 @@
-/* gen_l7.js —— Level 7「深海恐惧症」地图生成（v1.5 重构）
+/* gen_l7.js —— Level 7「深海恐惧症」地图生成（v2.0 P2 四深度带重构）
  * 结构：金属舱室（entry_room：出生点/字条/补给/舱盖门/楼梯/平台）
- *       → 舱盖门外是露天阴天海洋（开放水域 + 深水区 + 深海实体锚点 + L37 门）
+ *       → 舱盖门外是露天阴天海洋（开放水域 + 四深度带 + 七层之物巢穴 + L37 门）
  * 版本依据：Fandom 版 Level 7（金属舱室入口 + 露天阴天海洋 + 深海）。
- *   距离/深度均为游戏尺度改编（见 LORE.md），非原著数值。
+ *   四水层划分源自 Wikidot（页面挂 outdated 标记），本游戏按游戏尺度改编为
+ *   以入口舱室为圆心的同心深度带；距离/深度均为游戏尺度改编（见 LORE.md），非原著数值。
  * 铁律：placer 只用传入的 rng；禁用 Math.random / Date / DOM / THREE。
  */
 (function () {
@@ -294,6 +295,24 @@
     return [tx, ty];
   }
 
+  /* ---- 四深度带（v2.0 P2）：以入口舱室为圆心按半径划分 ----
+   * 日光带 / 暮光带 / 午夜带 / 深渊带；带宽按海洋实际半径 dmax 等比，
+   * 保证各种子下四带都存在且有游戏尺度带宽（约 10~16 tile）。
+   * 每带真实环境差异由 lv_l7.js 按 bands 元数据建造（水色/能见度/地貌/生物/光源）。 */
+  var BAND_EDGES = [0, 0.27, 0.52, 0.78, 1.0]; // 半径分数
+  var BAND_DEFS = [
+    { name: 'sunlight', cn: '日光带', kind: 'ocean', depth: 1.2, floor: -6 },
+    { name: 'twilight', cn: '暮光带', kind: 'ocean', depth: 1.6, floor: -14 },
+    { name: 'midnight', cn: '午夜带', kind: 'deep',  depth: 2.5, floor: -26 },
+    { name: 'abyssal',  cn: '深渊带', kind: 'deep',  depth: 3.5, floor: -44 }
+  ];
+  // (edges, ccx, ccy, tx, ty) → 带索引 0..3
+  function bandOf(edges, ccx, ccy, tx, ty) {
+    var d = Math.hypot(tx - ccx, ty - ccy);
+    for (var i = 0; i < 4; i++) if (d <= edges[i + 1]) return i;
+    return 3;
+  }
+
   function placeL7(map, rng) {
     var entry = map.rooms[0];
     entry.tag = 'entry_room';
@@ -306,6 +325,66 @@
         if (x >= entry.x - 1 && x <= entry.x + entry.w && y >= entry.y - 1 && y <= entry.y + entry.h) continue;
         setTile(map, x, y, 1);
       }
+
+    /* ---- 四深度带半径：海洋 tile 到舱室中心的最大距离 ---- */
+    var ccx = entry.x + entry.w / 2, ccy = entry.y + entry.h / 2; // 舱室中心（tile 浮点）
+    var dmax = 1;
+    for (y = OY0; y <= OY1; y++)
+      for (x = OX0; x <= OX1; x++) {
+        if (x >= entry.x - 1 && x <= entry.x + entry.w && y >= entry.y - 1 && y <= entry.y + entry.h) continue;
+        if (tileAt(map, x, y) !== 1) continue;
+        var ddx = Math.hypot(x - ccx, y - ccy);
+        if (ddx > dmax) dmax = ddx;
+      }
+    var edges = BAND_EDGES.map(function (f) { return f * dmax; });
+    var bands = BAND_DEFS.map(function (b, i) {
+      return {
+        name: b.name, cn: b.cn, kind: b.kind, depth: b.depth, floor: b.floor,
+        r0: edges[i], r1: edges[i + 1], ccx: ccx, ccy: ccy
+      };
+    });
+    function bandAt(tx, ty) { return bandOf(edges, ccx, ccy, tx, ty); }
+    var ocean = collectOcean(map, entry);
+
+    /* ---- 海洋障碍物：按带布设（tile 级真实碰撞；视觉由 lv_l7 按 POI 建造） ----
+     * 日光带：无（开阔明亮）；暮光带：礁石 + 沉船残骸；
+     * 午夜带：岩柱 + 遗迹断墙；深渊带：结构残片（稀疏，不封死 deep_exit）。 */
+    var placedOb = [];
+    function obClear(tx, ty, gap) {
+      for (var i = 0; i < placedOb.length; i++)
+        if (Math.hypot(tx - placedOb[i][0], ty - placedOb[i][1]) < gap) return false;
+      return true;
+    }
+    function tryPlaceOb(kind, band, count, gap, cluster, avoidPts, avoidGap) {
+      var cands = ocean.filter(function (c) { return bandAt(c[0], c[1]) === band; });
+      if (!cands.length) return;
+      var pts = spreadPick(rng, cands, count, gap, ccx, ccy, 6, avoidPts || null, avoidGap || 0);
+      for (var i = 0; i < pts.length; i++) {
+        var t = pts[i], cells = [[t[0], t[1]]];
+        if (cluster > 1) { // 簇形：相邻 tile 扩展（沉船/遗迹/残片）
+          var dirs = rng.shuffle([[1, 0], [-1, 0], [0, 1], [0, -1]]);
+          for (var k = 0; k < dirs.length && cells.length < cluster; k++) {
+            var nx = t[0] + dirs[k][0], ny = t[1] + dirs[k][1];
+            if (nx < OX0 || nx > OX1 || ny < OY0 || ny > OY1) continue;
+            if (tileAt(map, nx, ny) !== 1) continue;
+            cells.push([nx, ny]);
+          }
+        }
+        var okAll = true, c;
+        for (c = 0; c < cells.length; c++)
+          if (!obClear(cells[c][0], cells[c][1], gap)) { okAll = false; break; }
+        if (!okAll) continue;
+        for (c = 0; c < cells.length; c++) {
+          setTile(map, cells[c][0], cells[c][1], 0);
+          placedOb.push(cells[c]);
+        }
+        addPOI(map, 'l7_obstacle', t[0], t[1], {
+          kind: kind, band: band, rot: rng.next() * 6.2832,
+          cells: cells.map(function (cc) { return [cc[0] - t[0], cc[1] - t[1]]; })
+        });
+      }
+    }
+    // 注：tryPlaceOb 的调用在 boat_mooring 确定之后（避开停靠 tile）；调用后刷新 ocean 候选。
 
     /* ---- 舱盖门：舱室墙上，通向甲板/海洋 ---- */
     var door = pickEntryDoor(map, rng, entry);
@@ -346,10 +425,11 @@
     };
 
     /* ---- 小船停靠点：甲板侧方（世界坐标；船头朝外） ---- */
-    // 甲板中心 + 侧向偏移 2 tile（避开甲板，浮在水面）
+    // 甲板中心 + 侧向偏移（甲板半宽+2 tile，从甲板边缘起算，保证避开甲板浮在水面）
     var dcx = (deckRect.x0 + deckRect.x1 + 1) / 2, dcy = (deckRect.y0 + deckRect.y1 + 1) / 2;
     var side = (BR.hashSeed(map.seed + ':l7boatside') % 2 === 0) ? 1 : -1;
-    var bx = (dcx - dny * side * 2), bz = (dcy + dnx * side * 2); // tile 中心坐标（浮点）
+    var sideOff = DECK_HALF + 2;
+    var bx = (dcx - dny * side * sideOff), bz = (dcy + dnx * side * sideOff); // tile 中心坐标（浮点）
     // 钳制进海洋矩形（1 格边距），保证船始终在可玩水域
     bx = Math.max(OX0 + 1, Math.min(OX1 - 1, bx));
     bz = Math.max(OY0 + 1, Math.min(OY1 - 1, bz));
@@ -393,36 +473,56 @@
       Math.max(OY0, Math.min(OY1, Math.round(bz))),
       { x: (bx + 0.5) * 3, z: (bz + 0.5) * 3, yaw: boatYaw, side: side });
 
-    /* ---- 海洋 POI ---- */
-    var ocean = collectOcean(map, entry);
+    /* ---- 海洋障碍物（v2.0 P2）：停靠点已定，避开它 3 格 ----
+     * 日光带无（开阔明亮）；暮光带礁石+沉船残骸；午夜带岩柱+遗迹断墙；
+     * 深渊带结构残片（稀疏，不封死 deep_exit）。 */
+    var moorT = [Math.max(OX0, Math.min(OX1, Math.round(bx))),
+                 Math.max(OY0, Math.min(OY1, Math.round(bz)))];
+    tryPlaceOb('rock', 1, 8, 5, 1, [moorT], 3);    // 暮光带礁石 ×8
+    tryPlaceOb('wreck', 1, 2, 9, 3, [moorT], 3);   // 暮光带沉船残骸 ×2（3 格簇）
+    tryPlaceOb('column', 2, 6, 6, 1, [moorT], 3);  // 午夜带岩柱 ×6
+    tryPlaceOb('ruin', 2, 2, 10, 4, [moorT], 3);   // 午夜带遗迹断墙 ×2（4 格簇）
+    tryPlaceOb('frag', 3, 3, 8, 2, [moorT], 3);    // 深渊带结构残片 ×3（2 格簇，稀疏）
+    // 障碍物挖除后刷新海洋候选（POI 不许落在障碍物上）
+    ocean = ocean.filter(function (c) { return tileAt(map, c[0], c[1]) === 1; });
 
-    // 深水区 ×3：depth 1..3（游戏尺度：海床 -10/-16/-24m），彼此远离、远离出生点
-    var zoneTiles = spreadPick(rng, ocean, 3, 12, ecx, ecy, 14, null, 0);
-    var zonePts = [];
-    for (var i = 0; i < zoneTiles.length; i++) {
-      var zp = addPOI(map, 'deep_zone', zoneTiles[i][0], zoneTiles[i][1], { depth: i + 1, r: 7 });
-      zonePts.push([zp.tx, zp.ty]);
+    /* ---- 海洋 POI（v2.0 P2：按深度带重布） ---- */
+    function bandCands(wanted) {
+      return ocean.filter(function (c) { return wanted.indexOf(bandAt(c[0], c[1])) >= 0; });
     }
-    var deepest = map.pois[map.pois.length - 1]; // depth=3 的深水区
 
-    // 动静点 ×3：深海实体的远影偏好锚点；远离深水区与出生点
-    var distTiles = spreadPick(rng, ocean, 3, 10, ecx, ecy, 16, zonePts, 8);
+    // 动静点 ×3：暮光/午夜/深渊带各一（七层之物活动锚点）
     var distPts = [];
-    for (var di = 0; di < distTiles.length; di++) {
-      addPOI(map, 'disturbance', distTiles[di][0], distTiles[di][1], {});
-      distPts.push([distTiles[di][0], distTiles[di][1]]);
-    }
+    [1, 2, 3].forEach(function (b) {
+      var pt = spreadPick(rng, bandCands([b]), 1, 0, ccx, ccy, 12, distPts, 8)[0];
+      addPOI(map, 'disturbance', pt[0], pt[1], { band: b });
+      distPts.push(pt);
+    });
 
-    // 深海实体锚点：在最深水区（实体由本关 tick 驱动的环境演出，非追逐怪）
-    addPOI(map, 'leviathan', deepest.tx, deepest.ty, { depth: deepest.data.depth });
+    // 七层之物巢穴：午夜带 / 深渊带上部（原著栖息带；真 AI 的 lurk 起点）
+    var homeCands = bandCands([2, 3]).filter(function (c) {
+      var hd = Math.hypot(c[0] - ccx, c[1] - ccy);
+      return hd >= edges[2] && hd <= edges[3] + (edges[4] - edges[3]) * 0.5;
+    });
+    if (!homeCands.length) homeCands = bandCands([2, 3]);
+    var home = spreadPick(rng, homeCands, 1, 0, ccx, ccy, 14, distPts, 6)[0];
+    addPOI(map, 'leviathan', home[0], home[1], { band: bandAt(home[0], home[1]) });
 
-    // 深处出口：最深水区内偏移 2~3 格（瓷砖结构残片 + 光柱 →L37，需潜入内部触发）
-    var de = nudgeInOcean(map, entry, deepest.tx, deepest.ty, rng, 2, 3);
-    addPOI(map, 'deep_exit', de[0], de[1], { depth: deepest.data.depth });
+    // 深处出口：午夜带 / 深渊带交界（半径≈e3；瓷砖结构残片 + 光柱 →L37，需潜入内部触发）
+    // 开阔海域（障碍物已避开）+ ensureConnected 兜底，保证可达
+    var exitCands = ocean.filter(function (c) {
+      return Math.abs(Math.hypot(c[0] - ccx, c[1] - ccy) - edges[3]) <= 2.5;
+    });
+    if (!exitCands.length) exitCands = ocean.filter(function (c) {
+      return Math.abs(Math.hypot(c[0] - ccx, c[1] - ccy) - edges[3]) <= 6;
+    });
+    if (!exitCands.length) exitCands = bandCands([2, 3]); // 终极兜底（理论上走不到）
+    var de = spreadPick(rng, exitCands, 1, 0, ccx, ccy, 10, [home].concat(distPts), 6)[0];
+    addPOI(map, 'deep_exit', de[0], de[1], { band: bandAt(de[0], de[1]), depth: 3 });
 
-    // 异常切出点：海洋中隐蔽一处（水面不反光 →L0，需观察发现）
-    var an = spreadPick(rng, ocean, 1, 0, ecx, ecy, 12, zonePts.concat(distPts), 8)[0];
-    addPOI(map, 'anomaly_exit', an[0], an[1], {});
+    // 异常切出点：暮光 / 午夜带隐蔽处（水面不反光 →L0，需观察发现）
+    var an = spreadPick(rng, bandCands([1, 2]), 1, 0, ccx, ccy, 12, [home, de].concat(distPts), 6)[0];
+    addPOI(map, 'anomaly_exit', an[0], an[1], { band: bandAt(an[0], an[1]) });
 
     // buildContent 用的元数据（不参与 hashMap）
     map.meta.l7 = {
@@ -433,7 +533,9 @@
       stair: { tx: stair.tx, ty: stair.ty, flat: !!stair.flat },
       deck: deckRect,
       deckH: DECK_H,
-      boat: { x: (bx + 0.5) * 3, z: (bz + 0.5) * 3, yaw: boatYaw }
+      boat: { x: (bx + 0.5) * 3, z: (bz + 0.5) * 3, yaw: boatYaw },
+      bands: bands, // v2.0 P2 四深度带：{name,cn,kind,depth,floor,r0,r1,ccx,ccy}
+      dmax: dmax
     };
   }
 
