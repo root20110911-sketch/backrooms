@@ -173,7 +173,9 @@
           new THREE.MeshBasicMaterial({ map: BR.Textures.get('exitSign') }));
         const dx = p.data.dirx != null ? p.data.dirx : 0, dz = p.data.dirz != null ? p.data.dirz : 1;
         s.position.set(BR.tileCX(p.tx) + dx * 2, 2.3, BR.tileCZ(p.ty) + dz * 2);
-        s.rotation.y = Math.atan2(dx, dz);
+        // P5 修：牌面必须朝向走廊入口（来路方向），旧 atan2(dx, dz) 让法线指向走廊深处，
+        // 从入口看是背面 → 背面剔除导致牌子"隐形"
+        s.rotation.y = Math.atan2(-dx, -dz);
         W.reg(group, s);
       });
       W._exitCorr = { x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty) };
@@ -718,7 +720,161 @@
     const BR = window.BR, T = BR.TILE;
     function poiList(map, type) { return (map.pois || []).filter(p => p.type === type); }
 
+    // P5：滑梯表面贴图缓存 —— FUN IIFE 级别（页面生命周期内 7 色各一张，
+    // 重建世界复用；canvas 本地生成，不碰 textures.js）
+    const _slideTexCache = {};
+    function slideSurfaceTex(hex) {
+      if (_slideTexCache[hex]) return _slideTexCache[hex];
+      const cv = document.createElement('canvas');
+      cv.width = 128; cv.height = 128;
+      const c2 = cv.getContext('2d');
+      c2.fillStyle = '#' + hex.toString(16).padStart(6, '0');
+      c2.fillRect(0, 0, 128, 128);
+      // 斜向高光条纹（玻璃钢质感）
+      c2.strokeStyle = 'rgba(255,255,255,0.16)'; c2.lineWidth = 7;
+      for (let i = -128; i < 256; i += 26) {
+        c2.beginPath(); c2.moveTo(i, 0); c2.lineTo(i + 64, 128); c2.stroke();
+      }
+      c2.strokeStyle = 'rgba(0,0,0,0.14)'; c2.lineWidth = 3;
+      for (let i = -128; i < 256; i += 26) {
+        c2.beginPath(); c2.moveTo(i + 13, 0); c2.lineTo(i + 77, 128); c2.stroke();
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      _slideTexCache[hex] = tex;
+      return tex;
+    }
+
+    /* ---------- v2.0 P5：七色滑梯第一人称滑行 ---------- */
+    // 沿滑道中心线脚本化推进：加速下滑 + 弯道压弯（extRoll）+ 离心外偏。
+    // 由 FUN.tick 驱动（主循环里 player.update 之后、渲染之前）：每 tick 直接写
+    // P.pos / yaw / pitch / ext*，玩家物理因输入锁定 + 速度清零而不打架。
+    // 滑行结束 → onDone（走 BR.Cutout.travel 统一切出）；6s 看门狗兜底防卡死。
+    function shortAngle(a, b) {
+      let d = (b - a) % (Math.PI * 2);
+      if (d > Math.PI) d -= Math.PI * 2;
+      else if (d < -Math.PI) d += Math.PI * 2;
+      return d;
+    }
+    function samplePath(path, cum, s) {
+      let lo = 0, hi = cum.length - 1;
+      while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; }
+      const a = path[lo], b = path[Math.min(lo + 1, path.length - 1)];
+      const segLen = Math.max(1e-6, cum[lo + 1] - cum[lo]);
+      const k = BR.clamp((s - cum[lo]) / segLen, 0, 1);
+      return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k };
+    }
+    function startSlideRide(W, path, onDone) {
+      const P = BR.Player;
+      if (!P || !path || path.length < 2) return false;
+      if (W._slideRide || !BR.Cutout || BR.Cutout.busy) return false;
+      const cum = [0];
+      for (let i = 1; i < path.length; i++) {
+        const a = path[i - 1], b = path[i];
+        cum.push(cum[i - 1] + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+      }
+      const total = cum[cum.length - 1];
+      if (total < 0.5) return false;
+      const yaw0 = Math.atan2(-(path[1].x - path[0].x), -(path[1].z - path[0].z));
+      W._slideRide = {
+        path, cum, total, s: 0, v: 1.4, t: 0, seg: 0,
+        phase: 'mount', // mount：0.3s 吸附到平台起点；ride：滑行
+        from: { x: P.pos.x, y: P.pos.y, z: P.pos.z },
+        yaw0, lastYaw: yaw0, yawRate: 0, bank: 0,
+        onDone: onDone
+      };
+      BR.Input.setLocked(true);
+      P.vel.set(0, 0, 0);
+      P._grounded = false;
+      P.hurtCd = Math.max(P.hurtCd || 0, 2.5); // 滑行中免伤（派对客不干扰）
+      if (P.crouching) { P.crouching = false; if (BR.bus) BR.bus.emit('crouch', { on: false }); }
+      return true;
+    }
+    function endSlideRide(W, aborted) {
+      const ride = W._slideRide;
+      W._slideRide = null;
+      const P = BR.Player;
+      if (P) {
+        P.extPitch = 0; P.extRoll = 0; P.extDipY = 0; P.extFov = 0;
+        P.vel.set(0, 0, 0);
+        P._grounded = false;
+      }
+      if (!aborted && ride && typeof ride.onDone === 'function') {
+        const cb = ride.onDone;
+        ride.onDone = null;
+        cb(); // → BR.Cutout.travel（内部重新锁定输入、走统一抵达演出）
+      } else if (BR.Input) {
+        BR.Input.setLocked(false);
+      }
+    }
+    function slideRideTick(W, dt) {
+      const ride = W._slideRide;
+      if (!ride) return;
+      const P = BR.Player;
+      if (!P || BR.Game.state !== 'playing') return;
+      dt = Math.min(dt, 0.05);
+      ride.t += dt;
+      if (ride.t > 6) { endSlideRide(W, true); return; } // 看门狗：绝不卡死
+      if (ride.phase === 'mount') {
+        // 上滑梯：0.3s 吸附到平台起点并转身面向滑道
+        const k = Math.min(1, ride.t / 0.3);
+        const e = k * k * (3 - 2 * k);
+        const p0 = ride.path[0];
+        P.pos.set(
+          ride.from.x + (p0.x - ride.from.x) * e,
+          ride.from.y + (p0.y - ride.from.y) * e,
+          ride.from.z + (p0.z - ride.from.z) * e);
+        P.vel.set(0, 0, 0);
+        P.yaw += shortAngle(P.yaw, ride.yaw0) * Math.min(1, dt * 10);
+        P.pitch += (0 - P.pitch) * Math.min(1, dt * 10);
+        if (k >= 1) { ride.phase = 'ride'; ride.s = 0; ride.v = 1.4; }
+        return;
+      }
+      // —— 滑行：坡度加速 ——
+      const path = ride.path, cum = ride.cum;
+      while (ride.seg < cum.length - 2 && ride.s >= cum[ride.seg + 1]) ride.seg++;
+      const i = ride.seg;
+      const a = path[i], b = path[i + 1];
+      const segLen = Math.max(1e-4, cum[i + 1] - cum[i]);
+      const slope = (a.y - b.y) / segLen; // 下坡为正
+      ride.v = Math.min(8.5, ride.v + (2.0 + 9.8 * Math.max(0, slope) * 0.55) * dt);
+      ride.s += ride.v * dt;
+      if (ride.s >= ride.total) { endSlideRide(W, false); return; }
+      const pos = samplePath(path, cum, ride.s);
+      // 切向（前后差分，降噪）
+      const pA = samplePath(path, cum, Math.max(0, ride.s - 0.4));
+      const pB = samplePath(path, cum, Math.min(ride.total, ride.s + 0.4));
+      const dx = pB.x - pA.x, dy = pB.y - pA.y, dz = pB.z - pA.z;
+      const hl = Math.hypot(dx, dz) || 1;
+      const targetYaw = Math.atan2(-dx / hl, -dz / hl);
+      const dYaw = shortAngle(ride.lastYaw, targetYaw);
+      ride.lastYaw = targetYaw;
+      const yawRate = dYaw / Math.max(dt, 1e-3); // >0 = 左转
+      ride.yawRate += (yawRate - ride.yawRate) * Math.min(1, dt * 6);
+      P.yaw += shortAngle(P.yaw, targetYaw) * Math.min(1, dt * 7);
+      const pitchT = BR.clamp(Math.asin(BR.clamp(dy / Math.max(0.001, Math.hypot(dx, dy, dz)), -1, 1)) * 0.6, -0.55, 0.3);
+      P.pitch += (pitchT - P.pitch) * Math.min(1, dt * 6);
+      // 弯道压弯 + 离心外偏（速度越快越明显）
+      const bankT = BR.clamp(0.055 * ride.yawRate * ride.v, -0.38, 0.38);
+      ride.bank += (bankT - ride.bank) * Math.min(1, dt * 5);
+      P.extRoll = ride.bank;
+      const off = BR.clamp(0.045 * ride.yawRate * ride.v, -0.28, 0.28);
+      const rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw); // 右向量
+      P.pos.set(pos.x + rx * off, pos.y, pos.z + rz * off);
+      P.vel.set(0, 0, 0);
+      P._grounded = false;
+      // P5：滑行眼高 —— 躺姿视角（眼高从 1.62 降到 ~0.95），有"躺在滑梯上"的感觉；
+      // 经 extDipY 实现（第一人称相机公式直接叠加，不与 update 的 eyeCur 阻尼打架）
+      ride.dipK = Math.min(1, (ride.dipK || 0) + dt * 2.5);
+      P.extDipY = -0.62 * ride.dipK - 0.12 * (ride.v / 8.5);
+      P.extFov = 6 * (ride.v / 8.5);
+    }
+
     BR.Levels.FUN.buildContent = function (map, W) {
+      // P5：世界（重）建时清理滑梯运行时态 —— 光带列表重置（防跨次访问堆积）；
+      // 滑行残留理论上不会出现（endSlideRide 必清），此处兜底解锁输入
+      if (W._slideRide) { W._slideRide = null; if (BR.Input) BR.Input.setLocked(false); }
+      W._slideStrips = [];
       // 员工通道门
       for (const d of map.doors) {
         const def = { id: d.id, tx: d.tx, ty: d.ty, axis: d.axis, locked: false, label: d.label };
@@ -886,10 +1042,14 @@
           blue: () => BR.Audio.flickerBuzz(),
           purple: () => BR.Audio.glitch()
         };
-        const perRow = (wM >= 19) ? 7 : 4;
+        // P5：自适应列数 —— 房间窄时降列，保证滑梯间距 ≥2.4m，
+        // 防滑梯重叠穿模、相邻入口误触（颜色切换判定）
+        let perRow = (wM >= 19) ? 7 : 4;
+        perRow = Math.max(2, Math.min(7, Math.floor((wM - 2.5) / 2.4)));
+        perRow = Math.min(perRow, defs.length);
         const rows = Math.ceil(defs.length / perRow);
-        const spacing = Math.min(2.6, (wM - 3) / perRow);
-        const rowDepth = (hM - 4.5) / rows;
+        const spacing = Math.min(2.6, (wM - 2.5) / perRow);
+        const rowDepth = (hM - 4.0) / rows;
 
         function textTex(lines, fg, bg) {
           const cv = document.createElement('canvas');
@@ -933,59 +1093,109 @@
             const row = Math.floor(idx / perRow), col = idx % perRow;
             const n = Math.min(perRow, defs.length - row * perRow);
             const sx = rx0 + (wM - (n - 1) * spacing) / 2 + col * spacing;
-            const zTop = rz0 + 2.2 + row * rowDepth;
-            const len = Math.min(def.len, rowDepth - 2.2);
+            // P5：入口高度钳制 —— 平台底沿 ≥1.65，高于眼高 1.58，路过平台下方不穿模
+            const hTop = Math.max(def.hTop, 1.9);
+            // P5：滑道长度保底 —— 房间再矮也保证 ≥1.2m 可用滑道，且不出房间
+            let zTop = rz0 + 2.2 + row * rowDepth;
+            const zBotMax = rz0 + hM - 1.2;
+            let len = Math.min(def.len, zBotMax - zTop);
+            if (len < 2.0) { zTop = Math.max(rz0 + 1.0, zBotMax - 2.0); len = Math.max(1.2, zBotMax - zTop); }
             const zBot = zTop + len;
-            const mat = new THREE.MeshLambertMaterial({ color: def.c });
+            const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, map: slideSurfaceTex(def.c) });
             const dark = new THREE.MeshLambertMaterial({ color: 0x2a2d33 });
+            // P5：滑行路径（脚底）：平台 → 滑道顶 → 各段中心线 → 落点（与几何同源）
+            const FY = 0.12; // 脚底高于滑道表面
+            const pts = [{ x: sx, y: hTop, z: zTop - 0.9 }, { x: sx, y: hTop + FY, z: zTop }];
             // 入口平台
             const plat = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.25, 1.5), dark);
-            plat.position.set(sx, def.hTop - 0.12, zTop - 0.9);
+            plat.position.set(sx, hTop - 0.12, zTop - 0.9);
             g.add(plat); built.push(plat);
+            // P5：平台支撑腿（防"悬浮"观感）
+            [[-0.6, -0.6], [0.6, -0.6], [-0.6, 0.6], [0.6, 0.6]].forEach(([ox, oz]) => {
+              const legH = hTop - 0.25;
+              if (legH <= 0.3) return;
+              const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, legH, 0.12), dark);
+              leg.position.set(sx + ox, legH / 2, zTop - 0.9 + oz);
+              g.add(leg);
+            });
             // 滑道（按形状）
             const yB = 0.35;
             if (def.shape === 'straight' || def.shape === 'wide' || def.shape === 'tall') {
-              chuteSeg(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
-              rails(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
+              chuteSeg(g, sx, zTop, hTop, zBot, yB, def.w, mat);
+              rails(g, sx, zTop, hTop, zBot, yB, def.w, mat);
+              pts.push({ x: sx, y: yB + FY, z: zBot });
             } else if (def.shape === 'wavy') {
               const segs = 3;
               for (let i = 0; i < segs; i++) {
                 const zz0 = zTop + len * i / segs, zz1 = zTop + len * (i + 1) / segs;
-                const yy0 = def.hTop + (yB - def.hTop) * i / segs, yy1 = def.hTop + (yB - def.hTop) * (i + 1) / segs;
+                const yy0 = hTop + (yB - hTop) * i / segs, yy1 = hTop + (yB - hTop) * (i + 1) / segs;
                 const xo = Math.sin(i * 1.2) * 0.35;
                 chuteSeg(g, sx + xo, zz0, yy0, zz1, yy1, def.w, mat, (i % 2 ? -1 : 1) * 0.22);
+                pts.push({ x: sx + xo, y: yy1 + FY, z: zz1 });
               }
             } else if (def.shape === 'curved') {
               const segs = 4;
-              let px = sx, pz = zTop, py = def.hTop, yaw = 0;
+              let px = sx, pz = zTop, py = hTop, yaw = 0;
               for (let i = 0; i < segs; i++) {
                 yaw += 0.24;
                 const sl = len / segs;
                 const nx = px + Math.sin(yaw) * sl, nz = pz + Math.cos(yaw) * sl;
-                const ny = def.hTop + (yB - def.hTop) * (i + 1) / segs;
+                const ny = hTop + (yB - hTop) * (i + 1) / segs;
                 const m = chuteSeg(g, (px + nx) / 2, pz, py, nz, ny, def.w, mat);
                 m.rotation.y = yaw * 0.5;
+                pts.push({ x: (px + nx) / 2, y: (py + ny) / 2 + FY, z: (pz + nz) / 2 });
                 px = nx; pz = nz; py = ny;
               }
+              pts.push({ x: px, y: py + FY, z: pz });
             } else if (def.shape === 'tube') {
               // U 形槽：底板 + 外张侧壁，近似管道滑梯
-              chuteSeg(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
-              rails(g, sx, zTop, def.hTop, zBot, yB, def.w, mat, 0.55, 0.35);
+              chuteSeg(g, sx, zTop, hTop, zBot, yB, def.w, mat);
+              rails(g, sx, zTop, hTop, zBot, yB, def.w, mat, 0.55, 0.35);
+              pts.push({ x: sx, y: yB + FY, z: zBot });
             } else { // bumpy
               const segs = 4;
               for (let i = 0; i < segs; i++) {
                 const zz0 = zTop + len * i / segs, zz1 = zTop + len * (i + 1) / segs;
-                let yy0 = def.hTop + (yB - def.hTop) * i / segs, yy1 = def.hTop + (yB - def.hTop) * (i + 1) / segs;
+                let yy0 = hTop + (yB - hTop) * i / segs, yy1 = hTop + (yB - hTop) * (i + 1) / segs;
                 if (i % 2 === 1) { yy0 += 0.1; yy1 += 0.1; }
                 chuteSeg(g, sx, zz0, yy0, zz1, yy1, def.w, mat);
+                pts.push({ x: sx, y: yy1 + FY, z: zz1 });
               }
-              rails(g, sx, zTop, def.hTop, zBot, yB, def.w, mat);
+              rails(g, sx, zTop, hTop, zBot, yB, def.w, mat);
             }
+            const endX = pts[pts.length - 1].x;
+            pts.push({ x: endX, y: 0.12, z: zBot + 0.8 }); // 落点：站到软垫上
+            // P5：滑行路径登记（供 e2e/调试验证；只读）
+            (W._slidePaths = W._slidePaths || {})[def.color] = pts;
+            // P5：滑道支撑腿（按路径点位，防滑道"悬浮"观感）
+            [0.35, 0.7].forEach(f => {
+              const pi = pts[1 + Math.round(f * (pts.length - 3))];
+              const legH = pi.y - 0.2;
+              if (legH <= 0.4) return;
+              [-1, 1].forEach(s => {
+                const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, legH, 0.1), dark);
+                leg.position.set(pi.x + s * def.w * 0.35, legH / 2, pi.z);
+                g.add(leg);
+              });
+            });
+            // P5：落点区 —— 软垫 + 光环（视觉落点，滑行终点）
+            const padMat = new THREE.MeshLambertMaterial({ color: def.c });
+            padMat.color.multiplyScalar(0.45);
+            const pad = new THREE.Mesh(new THREE.BoxGeometry(def.w + 0.7, 0.12, 1.5), padMat);
+            pad.position.set(endX, 0.06, zBot + 0.75);
+            g.add(pad);
+            const ring = new THREE.Mesh(new THREE.RingGeometry(0.45, 0.9, 24),
+              new THREE.MeshBasicMaterial({ color: def.c, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }));
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.set(endX, 0.135, zBot + 0.75);
+            g.add(ring);
             // 入口彩色光带（黑暗中辨认颜色）
             const strip = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.1),
-              new THREE.MeshBasicMaterial({ color: def.c }));
-            strip.position.set(sx, def.hTop + 0.9, zTop - 0.9);
+              new THREE.MeshBasicMaterial({ color: def.c, transparent: true, opacity: 0.85 }));
+            strip.position.set(sx, hTop + 0.9, zTop - 0.9);
             g.add(strip);
+            // P5：光带呼吸脉冲（tick 里调制 opacity）
+            (W._slideStrips = W._slideStrips || []).push({ m: strip, ph: idx * 0.9 });
             // —— 线索（按 §2 映射表）——
             const cxHint = sx + 1.15;
             const hintY = 1.4;
@@ -1056,20 +1266,22 @@
               });
             }
             // —— 滑梯入口交互 ——
+            // P5：入口判定盒移到平台正上方（瞄准平台即选中本滑梯，减少相邻滑梯误触；
+            // 颜色切换判定：use 里仍走本 def 闭包的颜色，不会串色）
             const dest = BR.Cutout.SLIDE_MAP[def.color].to;
             const cname = BR.Cutout.SLIDE_MAP[def.color].name;
-            const entry = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5),
+            const entry = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9),
               new THREE.MeshBasicMaterial({ color: def.c, transparent: true, opacity: 0.0, depthWrite: false }));
-            entry.position.set(sx + 1.2, 1.4, zTop - 0.9);
+            entry.position.set(sx, hTop + 0.45, zTop - 0.9);
             g.add(entry);
             W.addInteractable({
               id: 'slide_' + def.color, kind: 'slide',
               chunkKey: W.chunkKeyOf(ctx, cty),
               meshes: [entry, plat], pos: entry.position.clone(), radius: 3.2,
               prompt: () => '爬上' + cname + '色滑梯',
-              canUse: () => !BR.Cutout.busy,
+              canUse: () => !BR.Cutout.busy && !W._slideRide,
               use: () => {
-                if (BR.Cutout.busy) return;
+                if (BR.Cutout.busy || W._slideRide) return;
                 SLIDE_SND[def.color]();
                 BR.UI.toast('你滑进了' + cname + '色滑梯……', 1500);
                 // v1.5 W6：蓝滑梯→Level !；若已逃脱过（flags.bangEscaped），
@@ -1080,7 +1292,11 @@
                   slideDest = BR.Bang.pickCompletedDest();
                   BR.UI.toast('滑梯转了个弯——它记得你已经逃出去过。', 2200);
                 }
-                BR.Cutout.travel(slideDest, { kind: 'slide' });
+                // P5：先第一人称滑行（加速/压弯/离心），到落点再走统一切出；
+                // 滑行启动失败时兜底直接切出（行为与旧版一致）
+                if (!startSlideRide(W, pts, () => BR.Cutout.travel(slideDest, { kind: 'slide' }))) {
+                  BR.Cutout.travel(slideDest, { kind: 'slide' });
+                }
               }
             });
           });
@@ -1126,6 +1342,15 @@
     BR.Levels.FUN.tick = function (dt) {
       const W = BR.World;
       BR.thinWallTick(dt);
+      slideRideTick(W, dt); // P5：七色滑梯第一人称滑行
+      // P5：入口光带呼吸脉冲
+      if (W._slideStrips && W._slideStrips.length) {
+        const tt = performance.now() * 0.0032;
+        for (const s of W._slideStrips) {
+          if (!s.m || !s.m.parent) continue;
+          s.m.material.opacity = 0.62 + 0.33 * Math.sin(tt + s.ph);
+        }
+      }
       W._partyT = (W._partyT || 0) - dt;
       if (W._partyT <= 0 && BR.Game.state === 'playing') {
         W._partyT = 26;
