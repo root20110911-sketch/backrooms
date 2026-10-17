@@ -691,7 +691,9 @@
     const def = d.def, th = this.theme, wallH = th.wallH || 3;
     const wx = BR.tileCX(def.tx), wz = BR.tileCZ(def.ty);
     const g = new THREE.Group();
-    g.position.set(wx, 0, wz);
+    // v2.0 P5（L188 真垂直二层）：门定义可选 yBase（门组整体抬升，用于二层门）；
+    // 缺省 0，旧关行为不变。
+    g.position.set(wx, def.yBase || 0, wz);
     const metal = this.mat('doorMetal');
     const G = sharedGeo();
     const dh = Math.min(2.6, wallH - 0.4), dw = T * 0.92;
@@ -720,7 +722,7 @@
     const self = this;
     this.addInteractable({
       id: 'door_' + id, kind: 'door', chunkKey: d.chunkKey,
-      meshes: [panel], pos: new THREE.Vector3(wx, 1.4, wz), radius: 2.2,
+      meshes: [panel], pos: new THREE.Vector3(wx, (def.yBase || 0) + 1.4, wz), radius: 2.2,
       // W9：统一加按键标签（读 BR.Input 当前绑定，不硬编码；levels.js 在运行时已定义）
       prompt: def.prompt || (() => (BR.interactKeyLabel ? BR.interactKeyLabel() : '') +
         (d.locked ? '🔒 ' + (def.label || '门') + '（锁住了）' : (d.open ? '关上' : '打开') + (def.label || '门'))),
