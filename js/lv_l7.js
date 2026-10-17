@@ -1,6 +1,13 @@
-/* lv_l7.js —— Level 7「深海恐惧症」关卡内容（v1.5 彻底重构）
- * Fandom 版：金属舱室入口 → 舱盖/甲板 → 露天阴天海洋（小船）→ 深海（实体/深水区/L37 门）
+/* lv_l7.js —— Level 7「深海恐惧症」关卡内容（v2.0 P2 四深度带 + 七层之物真 AI）
+ * Fandom 版：金属舱室入口 → 舱盖/甲板 → 露天阴天海洋（小船）→ 四深度带（七层之物/深水区/L37 门）
  * 距离/深度均为游戏尺度改编（见 LORE.md），非原著数值。
+ *
+ * 七层之物 AI 的原著依据（A 路研究）：
+ *  - 畏光 [Wikidot]：永居黑暗的眼睛对光极敏感，可用强光压制 → 手电直射驱散
+ *  - 噪音招引 [Fandom]：无意的声响都可能引起它注意 → 保持安静/静止是反制
+ *  - 巨浪而非主动捕食 [Fandom]：致命遭遇是它受惊逃窜掀起的巨浪 → strike=环境杀（巨浪+击退+伤害）
+ *  - 栖息带 [Wikidot]：午夜带与深渊带上部 → 日光带/暮光带安全
+ *  - L7↔L37 出入口两社区均无记载 → 深处门→L37 保持[本游戏改编]标注（LORE.md）
  *
  * 复用：BR.Swim（lv_l37.js 的完整实现；本文件不再自带降级 shim）。
  * 小船：经 BR.Mounts.register('boat', factory) 注册（W8 提供完整版 BR.Mounts；
@@ -11,6 +18,19 @@
 (function () {
   var BR = window.BR;
   var T = BR.TILE;
+
+  /* ---- 四深度带：水面逐顶点颜色（v2.0 P2；与贴图相乘） ----
+   * 日光带较亮青 → 暮光带转冷 → 午夜带深暗 → 深渊带近黑 */
+  var SEA_COLS = [
+    [0.60, 0.83, 0.84],
+    [0.42, 0.59, 0.65],
+    [0.22, 0.32, 0.38],
+    [0.10, 0.15, 0.19]
+  ];
+  /* ---- 四深度带：水下雾（颜色/距离；Swim.tick 存雾之后再覆盖） ---- */
+  var UW_FOG_COL = [0x1a4a56, 0x102e38, 0x060d12, 0x020507];
+  var UW_FOG_FAR = [26, 18, 10, 7];
+  var _uwTmpColor = null; // 懒初始化（Node 测试加载本文件时不碰 THREE）
 
   /* ================= BR.Mounts 最小实现（W8 完整版未加载时兜底） ================= */
   if (!BR.Mounts) {
@@ -336,7 +356,30 @@
     '2. 水里按住 C 下潜、空格上浮。只有头部没入水下才会消耗氧气，脚沾水没关系；出水后氧气会恢复。\n' +
     '3. 别在深水区停留太久——注意你的呼吸。\n' +
     '4. 深处有一截发光的瓷砖结构，潜进去看看。\n' +
-    '5. 如果看到水面上有不反光的地方……那可能是条路。\n\n——M.'
+    '5. 如果看到水面上有不反光的地方……那可能是条路。\n' +
+    '6. 墙角那台破储物柜里有潜水服——下深水之前先穿上它。柜门掉了一半，但里面的东西还能用。\n\n——M.'
+  ];
+
+  // 值班表（贴在舱壁上）+ 航海日志残页（抽屉里）：纯叙事字条，不给机制
+  var L7_DUTY_NOTE = [
+    '发黄的值班表',
+    '值班表（残页）\n\n' +
+    '03:00 – 09:00　陈\n' +
+    '09:00 – 15:00　M.\n' +
+    '15:00 – 21:00　陈\n' +
+    '21:00 – 03:00　（空）\n\n' +
+    '下面有一行潦草的字：\n' +
+    '“水位又涨了。上面说这周就撤，能带走的都带走，带不走的锁进柜子。\n' +
+    '潜水服留给后来的人——如果还有后来的人。”'
+  ];
+  var L7_LOG_NOTE = [
+    '发黄的航海日志残页',
+    '……（前页缺失）\n\n' +
+    '“第七天。水下那个发光的东西还在，它不像是灯，更像是瓷砖自己在发光。\n' +
+    '老陈说别靠近，我同意。这地方不对劲，海也不对劲。\n\n' +
+    '氧气只剩两瓶，舢板还能用。涨水之前我们必须走。\n' +
+    '柜子上了锁，钥匙在老地方——开玩笑的，钥匙我弄丢了。”\n\n' +
+    '……（后页缺失）'
   ];
 
   /* ================= Level 定义 ================= */
@@ -365,7 +408,7 @@
         var k = (along + 1.5) / 3;
         return gm.deckH * Math.max(0, Math.min(1, k));
       }
-      // 开放水域：物理海床（深水 -10/-16/-24，浅滩 -26；游戏尺度）。
+      // 开放水域：物理海床按深度带 -6/-14/-26/-44（游戏尺度）。
       // 纯物理下限、无视觉地板（正常海域不许铺贴脚平坦地板）；潜水 _swimVertical
       // 用 max(groundY, w.floor)，这里返回海床才能潜到底。
       try {
@@ -383,7 +426,7 @@
         t: 0, chop: 1, chopTarget: 1, geom: null, boat: null,
         seaMesh: null, seaGeo: null, cloudTexs: [],
         gate: null, entity: null, rumble: null, rumbleTarget: 0,
-        deepZones: [], pulses: []
+        bands: null, debris: null, plankton: null, abyssLights: null
       });
       var meta = map.meta.l7;
       var oc = meta.ocean, entry = meta.entryRoom;
@@ -409,24 +452,32 @@
       }
       L.seaY = seaY;
 
-      /* ---- 0. 海洋 tile：去天花板（露天）；去室内迷宫墙体（只留舱室外墙） ---- */
+      /* ---- 0. 海洋 tile：去天花板（露天）；去室内迷宫墙体（只留舱室外墙） ----
+       * v2.0 P2：全图处理——海洋矩形边界及以外的一切墙体都不再渲染
+       * （视觉无边界：玩家到边缘看到的是雾+海平线+远景裙边），
+       * 碰撞仍读 map.tiles（tile 0 挡住，边界无形但拦得住）。
+       * 例外：入口舱室外扩一圈（inRing）的墙体保留。 */
       (function openOcean() {
         var ringX0 = entry.x - 1, ringY0 = entry.y - 1;
         var ringX1 = entry.x + entry.w, ringY1 = entry.y + entry.h;
-        for (var ty = oc.y0; ty <= oc.y1; ty++) {
-          for (var tx = oc.x0; tx <= oc.x1; tx++) {
+        var mw = W.map.w, mh = W.map.h;
+        function oceanFloor(tx, ty) {
+          if (tx < oc.x0 || tx > oc.x1 || ty < oc.y0 || ty > oc.y1) return false;
+          return W.map.tiles[ty * mw + tx] === 1;
+        }
+        for (var ty = 0; ty < mh; ty++) {
+          for (var tx = 0; tx < mw; tx++) {
             var inRing = tx >= ringX0 && tx <= ringX1 && ty >= ringY0 && ty <= ringY1;
-            var isFloor = (W.map.tiles[ty * W.map.w + tx] === 1);
-            if (isFloor && !inRing) W.setOpenCeil(tx, ty); // 海洋无天花板
-            // 墙体：海洋边界的室内墙全部跳过（舱室外墙保留）
-            if (!isFloor && !inRing) {
-              if (W.map.tiles[ty * W.map.w + tx] === 0) {
-                var nb = (tx + 1 <= oc.x1 && W.map.tiles[ty * W.map.w + tx + 1] === 1) ||
-                         (tx - 1 >= oc.x0 && W.map.tiles[ty * W.map.w + tx - 1] === 1) ||
-                         (ty + 1 <= oc.y1 && W.map.tiles[(ty + 1) * W.map.w + tx] === 1) ||
-                         (ty - 1 >= oc.y0 && W.map.tiles[(ty - 1) * W.map.w + tx] === 1);
-                if (nb) W.skipWall(tx, ty);
-              }
+            if (inRing) continue; // 舱室外墙保留
+            var tv = W.map.tiles[ty * mw + tx];
+            if (tv === 1) { W.setOpenCeil(tx, ty); continue; } // 海洋/残留房间地板：露天
+            if (tv === 0) {
+              // 与海洋地板相邻 → 跳过（边界一圈 + 障碍物 tile 的默认墙体）；
+              // 在海洋矩形之外 → 一律跳过（残留房间/地图边缘，不许出现墙/虚空穿帮）
+              var outside = tx < oc.x0 || tx > oc.x1 || ty < oc.y0 || ty > oc.y1;
+              var nb = oceanFloor(tx + 1, ty) || oceanFloor(tx - 1, ty) ||
+                       oceanFloor(tx, ty + 1) || oceanFloor(tx, ty - 1);
+              if (nb || outside) W.skipWall(tx, ty);
             }
           }
         }
@@ -436,15 +487,43 @@
           for (var dtx = dr.x0; dtx <= dr.x1; dtx++) W.setOpenCeil(dtx, dty);
       })();
 
+      /* ---- 海面按深度带逐顶点着色（v2.0 P2；与 sea_detail 贴图相乘） ---- */
+      function bandColorAt(x, z, out) {
+        var bands = meta.bands, b0 = bands[0];
+        var dt0 = Math.hypot(x / T - b0.ccx, z / T - b0.ccy);
+        var bi = 3;
+        for (var i = 0; i < 4; i++) { if (dt0 <= bands[i].r1) { bi = i; break; } }
+        var FE = 2.5, cA = SEA_COLS[bi], cB = cA, k = 0; // 边界羽化
+        if (bi < 3 && bands[bi].r1 - dt0 < FE) { cB = SEA_COLS[bi + 1]; k = 1 - (bands[bi].r1 - dt0) / FE; }
+        if (bi > 0 && dt0 - bands[bi].r0 < FE) {
+          var k2 = 1 - (dt0 - bands[bi].r0) / FE;
+          if (k2 > k) { cB = SEA_COLS[bi - 1]; k = k2; }
+        }
+        out[0] = cA[0] + (cB[0] - cA[0]) * k;
+        out[1] = cA[1] + (cB[1] - cA[1]) * k;
+        out[2] = cA[2] + (cB[2] - cA[2]) * k;
+      }
+      function paintSeaColors(geo) {
+        var pos = geo.attributes.position, n = pos.count;
+        var cols = new Float32Array(n * 3), tmp = [0, 0, 0];
+        for (var i = 0; i < n; i++) {
+          bandColorAt(pos.array[i * 3], pos.array[i * 3 + 2], tmp);
+          cols[i * 3] = tmp[0]; cols[i * 3 + 1] = tmp[1]; cols[i * 3 + 2] = tmp[2];
+        }
+        geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+      }
+
       /* ---- 1. 海面：整片海洋单张连续网格（无接缝） + 天空反射 ---- */
       (function buildSea() {
         var geo = new THREE.PlaneGeometry(ox1w - ox0w, oz1w - oz0w, 72, 72);
         geo.rotateX(-Math.PI / 2);
         geo.translate(ocx, 0, ocz);
+        paintSeaColors(geo); // v2.0 P2：日光带亮青 → 深渊带近黑
         var mat = new THREE.MeshPhongMaterial({
-          color: 0x2b3d44, specular: 0x8fa3ad, shininess: 90,
+          color: 0xffffff, specular: 0x8fa3ad, shininess: 90,
           map: BR.Textures.get('sea_detail'),
-          transparent: true, opacity: 0.93, side: THREE.DoubleSide
+          transparent: true, opacity: 0.93, side: THREE.DoubleSide,
+          vertexColors: true
         });
         trackMat(W, mat);
         var mesh = new THREE.Mesh(geo, mat);
@@ -457,6 +536,26 @@
         // 海面细节贴图缓慢漂移（纹理级波动，与顶点波叠加）
         var dt2 = BR.Textures.get('sea_detail');
         if (dt2) { dt2.wrapS = dt2.wrapT = THREE.RepeatWrapping; }
+      })();
+
+      /* ---- 1b. 远景水面裙边（v2.0 P2）：大平面延伸到雾外，海洋无可见边界 ----
+       * 与内层海面用同一套带着色函数，矩形边缘处颜色连续；
+       * 雾（fogFar 130）之外全雾色，玩家到地图边缘看到的是雾+海平线。 */
+      (function buildSeaSkirt() {
+        var sg = new THREE.PlaneGeometry(760, 760, 40, 40);
+        sg.rotateX(-Math.PI / 2);
+        sg.translate(ocx, 0, ocz);
+        paintSeaColors(sg);
+        var sm = new THREE.MeshPhongMaterial({
+          color: 0xffffff, specular: 0x5a6d76, shininess: 40,
+          vertexColors: true
+        });
+        trackMat(W, sm);
+        var sk = new THREE.Mesh(sg, sm);
+        sk.position.y = SURF - 0.03; // 紧贴内层海面之下（2cm，无可见断层）
+        sk.frustumCulled = false;
+        W.scene.add(sk);
+        trackScene(sk);
       })();
 
       /* ---- 2. 阴天云层：两层灰云平面（fog:false，保证阴天穹顶可见） ---- */
@@ -621,6 +720,374 @@
             W.reg(group, pm);
             L.puddleRect = { x0: pdx - 1.3, z0: pdz - 1.3, x1: pdx + 1.3, z1: pdz + 1.3 };
           }
+          /* ---- P2：初始舱室升级 ----
+           * 破损储物柜（潜水服必出）/ 抽屉桌（日志残页+电池+能量棒）/
+           * 板条箱 ×2（叙事杂物+少量补给）/ 环境痕迹（水渍线/拖拽痕/翻倒椅/值班表）。
+           * 容器全部走 BR.Container（对准开门→看内部真实物品→准星逐件拾取→存档），
+           * 位置复用上面的 reserved()/takeFar() 空位逻辑，不挡楼梯/平台/门/出生点。
+           */
+          // —— 1. 破损储物柜：锈蚀双开门，右扇门掉了一半（视觉破损），左扇可开关 ——
+          var lockerT = takeFar();
+          if (lockerT) {
+            var ltx = lockerT[0], lty = lockerT[1];
+            var lfx = BR.tileCX(ltx), lfz = BR.tileCZ(lty);
+            var rust = new THREE.MeshLambertMaterial({ color: 0x6e4526 });
+            var rustD = new THREE.MeshLambertMaterial({ color: 0x402a16 });
+            var rustP = new THREE.MeshLambertMaterial({ color: 0x8a5a30 });
+            [rust, rustD, rustP].forEach(function (m) { trackMat(W, m); });
+            var locker = new THREE.Group();
+            locker.position.set(lfx, 0, lfz);
+            locker.rotation.y = Math.round(Math.atan2(cx - lfx, cz - lfz) / (Math.PI / 2)) * Math.PI / 2; // 门朝舱室中心
+            var LW = 1.2, LH = 1.9, LD = 0.6, lt2 = 0.04;
+            function lp(w, h, d, m, x, y, z, parent) {
+              var ms = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+              ms.position.set(x, y, z); (parent || locker).add(ms); return ms;
+            }
+            lp(LW, LH, lt2, rustD, 0, LH / 2, -LD / 2 + lt2 / 2);    // 背板
+            lp(lt2, LH, LD, rust, -LW / 2 + lt2 / 2, LH / 2, 0);     // 左侧板
+            lp(lt2, LH, LD, rust, LW / 2 - lt2 / 2, LH / 2, 0);      // 右侧板
+            lp(LW, lt2, LD, rust, 0, LH - lt2 / 2, 0);              // 顶板
+            lp(LW, lt2, LD, rustD, 0, lt2 / 2, 0);                   // 底板
+            lp(LW - 2 * lt2, lt2, LD - lt2, rustP, 0, LH * 0.55, 0); // 中层隔板
+            for (var ri = 0; ri < 6; ri++) { // 锈斑补丁（侧板）
+              var rpm = new THREE.Mesh(new THREE.PlaneGeometry(0.12 + rng.next() * 0.16, 0.1 + rng.next() * 0.2), rustD);
+              var rside = ri % 2 ? 1 : -1;
+              rpm.position.set(rside * (LW / 2 + 0.006), 0.3 + rng.next() * 1.3, (rng.next() - 0.5) * 0.4);
+              rpm.rotation.y = rside * Math.PI / 2;
+              locker.add(rpm);
+            }
+            // 左扇门（完好）：铰链在左，开启动画目标
+            var doorPivot = new THREE.Group();
+            doorPivot.position.set(-LW / 2 + 0.02, LH / 2, LD / 2 + 0.01);
+            var ldw = LW / 2 - 0.05, ldh = LH - 0.2;
+            lp(ldw, ldh, 0.04, rust, ldw / 2, 0, 0, doorPivot);
+            for (var vi = 0; vi < 3; vi++) // 通风孔
+              lp(ldw * 0.6, 0.03, 0.05, rustD, ldw / 2, 0.35 - vi * 0.12, 0, doorPivot);
+            lp(0.05, 0.18, 0.06, rustD, ldw - 0.1, 0, 0.05, doorPivot); // 把手
+            locker.add(doorPivot);
+            locker.userData.doorPivot = doorPivot;
+            // 右扇门（掉了一半）：只剩顶部铰链连着，向外下垂
+            var brokenPivot = new THREE.Group();
+            brokenPivot.position.set(LW / 4, LH - 0.12, LD / 2 + 0.02);
+            lp(ldw, ldh, 0.04, rustP, 0, -ldh / 2, 0, brokenPivot);
+            lp(0.05, 0.18, 0.06, rustD, ldw / 2 - 0.1, -ldh / 2 + 0.2, 0.05, brokenPivot);
+            brokenPivot.rotation.x = 0.8;
+            brokenPivot.rotation.z = -0.12;
+            locker.add(brokenPivot);
+            W.reg(group, locker);
+            locker.updateMatrixWorld(true);
+            var lockerMeshes = [];
+            locker.children.forEach(function (c) {
+              lockerMeshes.push(c);
+              if (c.children) c.children.forEach(function (cc) { lockerMeshes.push(cc); });
+            });
+            // 柜内落点：局部坐标 → 世界（随柜体朝向旋转）
+            function lockerInner(idx, entry) {
+              return locker.localToWorld(new THREE.Vector3(
+                entry.dx || 0, entry.y != null ? entry.y : 0.55, entry.dz || 0));
+            }
+            BR.Container.create(W, {
+              id: 'locker_l7_' + ltx + '_' + lty, kind: 'cabinet', closable: true,
+              tx: ltx, ty: lty, group: group, visual: { pivot: doorPivot },
+              meshes: lockerMeshes, pos: new THREE.Vector3(lfx, 1.0, lfz),
+              innerPosOf: lockerInner,
+              contents: [ // 写死，不走随机：潜水服必出
+                { item: 'diving_suit', dx: -0.32, dz: 0.02, y: 0.06 },
+                { item: 'oxygen_tank', dx: 0.32, dz: -0.05, y: 0.06 },
+                { item: 'bandage', dx: 0.2, dz: 0.08, y: 1.12 },
+                { item: 'bandage', dx: -0.1, dz: -0.1, y: 1.12 }
+              ],
+              text: { open: '打开储物柜', openedToast: '储物柜打开了——潜水服还在，谢天谢地' },
+              autosave: true,
+              onPickup: function (pickId, entry, item) {
+                if (item === 'diving_suit')
+                  BR.UI.toast('拿到了深海潜水服！在背包里穿上它，再下深水');
+              }
+            });
+          }
+          // —— 2. 抽屉桌：金属桌 + 2 个抽屉（kind 'drawer'，P1 预留） ——
+          var deskT = takeFar();
+          var deskFx = 0, deskFz = 0, deskGroup = null;
+          if (deskT) {
+            deskFx = BR.tileCX(deskT[0]); deskFz = BR.tileCZ(deskT[1]);
+            var dsteel = new THREE.MeshLambertMaterial({ color: 0x4e5458 });
+            trackMat(W, dsteel);
+            deskGroup = new THREE.Group();
+            deskGroup.position.set(deskFx, 0, deskFz);
+            function dp(w, h, d, m, x, y, z, parent) {
+              var ms = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+              ms.position.set(x, y, z); (parent || deskGroup).add(ms); return ms;
+            }
+            dp(1.5, 0.07, 0.85, steel, 0, 0.8, 0);                    // 桌面
+            [[-0.69, -0.36], [0.69, -0.36], [-0.69, 0.36], [0.69, 0.36]].forEach(function (p2) {
+              dp(0.06, 0.8, 0.06, steelD, p2[0], 0.4, p2[1]);         // 桌腿
+            });
+            dp(1.34, 0.42, 0.03, steelD, 0, 0.56, -0.36);             // 屉柜背板
+            dp(0.03, 0.42, 0.75, steelD, -0.655, 0.56, 0);            // 屉柜左侧板
+            dp(0.03, 0.42, 0.75, steelD, 0.655, 0.56, 0);             // 屉柜右侧板
+            dp(1.34, 0.03, 0.75, steelD, 0, 0.365, 0);                // 屉柜底板
+            dp(1.34, 0.03, 0.75, steelD, 0, 0.755, 0);                // 屉柜顶板
+            dp(0.03, 0.42, 0.72, steelD, 0, 0.56, 0);                 // 中隔板
+            W.reg(group, deskGroup);
+          }
+          // 抽屉滑动动画（drawer kind 默认无动画，这里覆盖）
+          function slideDrawerTo(bin, z) {
+            var from = bin.position.z, t0 = performance.now(), dur = 320;
+            var iv = setInterval(function () {
+              var k = Math.min(1, (performance.now() - t0) / dur);
+              bin.position.z = from + (z - from) * (1 - Math.pow(1 - k, 2));
+              if (k >= 1) { bin.position.z = z; clearInterval(iv); }
+            }, 16);
+          }
+          function drawerAnim() {
+            return {
+              setOpen: function (v) { if (v && v.bin) v.bin.position.z = 0.45; },
+              setClosed: function (v) { if (v && v.bin) v.bin.position.z = 0; },
+              animOpen: function (v) { if (v && v.bin) slideDrawerTo(v.bin, 0.45); },
+              animClose: function (v) { if (v && v.bin) slideDrawerTo(v.bin, 0); }
+            };
+          }
+          function buildDrawerBin(lx) { // lx: 抽屉在桌下的 x 偏移
+            var bin = new THREE.Group();
+            bin.position.set(lx, 0, 0);
+            function bp(w, h, d, m, x, y, z) {
+              var ms = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+              ms.position.set(x, y, z); bin.add(ms); return ms;
+            }
+            bp(0.62, 0.36, 0.04, steel, 0, 0.56, 0.36);      // 前面板
+            bp(0.2, 0.05, 0.05, steelD, 0, 0.56, 0.41);       // 拉手
+            bp(0.58, 0.03, 0.62, steelD, 0, 0.4, 0.02);       // 底板
+            bp(0.03, 0.3, 0.62, steelD, -0.29, 0.55, 0.02);   // 左壁
+            bp(0.03, 0.3, 0.62, steelD, 0.29, 0.55, 0.02);    // 右壁
+            bp(0.58, 0.3, 0.03, steelD, 0, 0.55, -0.29);      // 后壁
+            deskGroup.add(bin);
+            return bin;
+          }
+          var logPaper = null, logNoteId = null;
+          if (deskT) {
+            var dtx = deskT[0], dty = deskT[1];
+            // 左抽屉：发黄的航海日志残页（字条类线索）+ 备用电池
+            var bin1 = buildDrawerBin(-0.335);
+            logPaper = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.4, 0.55),
+              new THREE.MeshBasicMaterial({ map: BR.Textures.get('note'), color: 0xcbb87a })
+            );
+            trackMat(W, logPaper.material);
+            logPaper.rotation.x = -Math.PI / 2;
+            logPaper.rotation.z = 0.18;
+            logPaper.position.set(0.1, 0.425, 0.02); // bin 局部坐标
+            logPaper.visible = false; // 关着时藏在屉里
+            bin1.add(logPaper);
+            var bin1Meshes = [];
+            bin1.children.forEach(function (c) { bin1Meshes.push(c); });
+            logNoteId = 'note7_logpage_' + dtx + '_' + dty;
+            var logWorld = new THREE.Vector3(deskFx - 0.335 + 0.1, 0.5, deskFz + 0.45 + 0.02);
+            function setLogNote(on) { // 日志残页只在抽屉打开时可读
+              if (on) {
+                logPaper.visible = true;
+                W.addInteractable({
+                  id: logNoteId, kind: 'note', chunkKey: W.chunkKeyOf(dtx, dty),
+                  meshes: [logPaper], pos: logWorld.clone(), radius: 2.4,
+                  prompt: function () { return BR.interactKeyLabel() + '阅读航海日志残页'; },
+                  canUse: function () { return true; },
+                  use: function () {
+                    BR.Audio.paper();
+                    BR.UI.showNote(L7_LOG_NOTE[0], L7_LOG_NOTE[1]);
+                    if (W.state.picked.indexOf(logNoteId) < 0) {
+                      W.state.picked.push(logNoteId);
+                      BR.bus.emit('picked', { id: logNoteId });
+                    }
+                  }
+                });
+              } else {
+                logPaper.visible = false;
+                W.removeInteractable(logNoteId);
+              }
+            }
+            var drawer1Id = BR.Container.create(W, {
+              id: 'drawer_l7_1_' + dtx + '_' + dty, kind: 'drawer', closable: true,
+              tx: dtx, ty: dty, group: group, visual: { bin: bin1 }, anim: drawerAnim(),
+              meshes: bin1Meshes, pos: new THREE.Vector3(deskFx - 0.335, 0.6, deskFz + 0.45),
+              innerBase: new THREE.Vector3(deskFx - 0.335, 0.42, deskFz + 0.45 + 0.02),
+              contents: [{ item: 'battery', dx: -0.15, dz: 0.08 }],
+              text: { open: '拉开抽屉', openedToast: '抽屉拉开了——有张发黄的纸，还有节电池' },
+              autosave: true,
+              onOpen: function () { setLogNote(true); },
+              onClose: function () { setLogNote(false); }
+            });
+            // 区块重建/读档：抽屉本来就开着 → 补上日志纸条交互
+            if (W.state.cabinetOpen[drawer1Id] === true) setLogNote(true);
+            // 右抽屉：半块能量棒
+            var bin2 = buildDrawerBin(0.335);
+            var bin2Meshes = [];
+            bin2.children.forEach(function (c) { bin2Meshes.push(c); });
+            BR.Container.create(W, {
+              id: 'drawer_l7_2_' + dtx + '_' + dty, kind: 'drawer', closable: true,
+              tx: dtx, ty: dty, group: group, visual: { bin: bin2 }, anim: drawerAnim(),
+              meshes: bin2Meshes, pos: new THREE.Vector3(deskFx + 0.335, 0.6, deskFz + 0.45),
+              innerBase: new THREE.Vector3(deskFx + 0.335, 0.42, deskFz + 0.45 + 0.02),
+              contents: [{ item: 'energy_bar', dx: 0.05, dz: -0.05 }],
+              text: { open: '拉开抽屉', openedToast: '抽屉里有半块能量棒——包装都没拆' },
+              autosave: true
+            });
+          }
+          // —— 3. 板条箱 ×2：纯叙事杂物（静态）+ 少量实质补给 ——
+          function buildJunkCrate(kind2) {
+            var cT = takeFar(); if (!cT) return;
+            var cfx = BR.tileCX(cT[0]), cfz = BR.tileCZ(cT[1]);
+            var cm = BR.buildCrateMesh(W);
+            cm.group.position.set(cfx, 0, cfz);
+            cm.group.rotation.y = (rng.next() * 4 | 0) * Math.PI / 2;
+            if (kind2 === 'rope') { // 绳索 + 破布
+              var coil = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.07, 8, 18),
+                new THREE.MeshLambertMaterial({ color: 0x8a734f }));
+              trackMat(W, coil.material);
+              coil.rotation.x = -Math.PI / 2; coil.position.y = 0.12; cm.group.add(coil);
+              var rag = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.12, 0.3),
+                new THREE.MeshLambertMaterial({ color: 0x5a6a72 }));
+              trackMat(W, rag.material);
+              rag.position.set(0.15, 0.1, -0.15); rag.rotation.y = 0.5; cm.group.add(rag);
+            } else { // 空罐头 + 破布
+              for (var ci2 = 0; ci2 < 3; ci2++) {
+                var can = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.14, 10),
+                  new THREE.MeshLambertMaterial({ color: 0x9a9a98 }));
+                trackMat(W, can.material);
+                can.position.set(-0.2 + ci2 * 0.2, 0.13, (rng.next() - 0.5) * 0.3);
+                if (ci2 === 2) { can.rotation.z = Math.PI / 2; can.position.y = 0.09; } // 一只倒下的空罐头
+                cm.group.add(can);
+              }
+              var rag2 = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.1, 0.25),
+                new THREE.MeshLambertMaterial({ color: 0x6a5a48 }));
+              trackMat(W, rag2.material);
+              rag2.position.set(0.1, 0.08, 0.2); rag2.rotation.y = -0.4; cm.group.add(rag2);
+            }
+            W.reg(group, cm.group);
+            BR.Container.create(W, {
+              id: 'crate_l7_' + kind2 + '_' + cT[0] + '_' + cT[1], kind: 'crate',
+              tx: cT[0], ty: cT[1], group: group, visual: { lid: cm.lid },
+              meshes: cm.parts, pos: new THREE.Vector3(cfx, 0.9, cfz),
+              innerBase: new THREE.Vector3(cfx, 0.14, cfz),
+              contents: kind2 === 'rope'
+                ? [{ item: 'glowstick', dx: -0.12, dz: 0.1 }, { item: 'empty' }, { item: 'empty' }]
+                : [{ item: 'bandage', dx: 0.1, dz: -0.08 }, { item: 'empty' }],
+              text: kind2 === 'rope'
+                ? { openedToast: '箱子里是盘绳索和破布——还有根荧光棒' }
+                : { openedToast: '箱子里是几个空罐头——还有卷绷带' },
+              autosave: true
+            });
+          }
+          buildJunkCrate('rope');
+          buildJunkCrate('cans');
+          // —— 4. 环境痕迹（纯视觉，但有空间逻辑） ——
+          // 4a. 墙上水渍线：膝盖高度（0.45m）——这里曾经进过水
+          (function waterline() {
+            var stain = new THREE.MeshBasicMaterial({ color: 0x24352c, transparent: true, opacity: 0.6 });
+            var stainF = new THREE.MeshBasicMaterial({ color: 0x24352c, transparent: true, opacity: 0.25 });
+            trackMat(W, stain); trackMat(W, stainF);
+            var segs = [];
+            function seg(x, z, rotY) {
+              var s1 = new THREE.Mesh(new THREE.PlaneGeometry(T, 0.1), stain);
+              s1.position.set(x, 0.47, z); s1.rotation.y = rotY; W.reg(group, s1);
+              var s2 = new THREE.Mesh(new THREE.PlaneGeometry(T, 0.22), stainF);
+              s2.position.set(x, 0.32, z); s2.rotation.y = rotY; W.reg(group, s2);
+              segs.push([x, z, rotY]);
+            }
+            var ex = entry.x, ey = entry.y, ex1 = entry.x + entry.w - 1, ey1 = entry.y + entry.h - 1;
+            for (var tx2 = ex; tx2 <= ex1; tx2++) {
+              if (W.isWall(tx2, ey - 1)) seg(BR.tileCX(tx2), ey * T + 0.04, 0);
+              if (W.isWall(tx2, ey1 + 1)) seg(BR.tileCX(tx2), (ey1 + 1) * T - 0.04, Math.PI);
+            }
+            for (var ty2 = ey; ty2 <= ey1; ty2++) {
+              if (W.isWall(ex - 1, ty2)) seg(ex * T + 0.04, BR.tileCZ(ty2), Math.PI / 2);
+              if (W.isWall(ex1 + 1, ty2)) seg((ex1 + 1) * T - 0.04, BR.tileCZ(ty2), -Math.PI / 2);
+            }
+            for (var di = 0; di < Math.min(6, segs.length); di++) { // 水渍下淌的 drip
+              var sg = segs[(rng.next() * segs.length) | 0];
+              var along2 = (rng.next() - 0.5) * (T - 0.4);
+              var horiz = (sg[2] === 0 || sg[2] === Math.PI);
+              var drip = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 0.28), stainF);
+              drip.position.set(sg[0] + (horiz ? along2 : 0), 0.3, sg[1] + (horiz ? 0 : along2));
+              drip.rotation.y = sg[2];
+              W.reg(group, drip);
+            }
+          })();
+          // 4b. 地上拖拽痕：从储物柜拖向舱门——撤离时有人拖走了重物
+          if (lockerT) {
+            var dragM = new THREE.MeshBasicMaterial({ color: 0x14161a, transparent: true, opacity: 0.35 });
+            trackMat(W, dragM);
+            var dx0 = lfx, dz0 = lfz;
+            var dx1 = meta.door.fx * T + T / 2, dz1 = meta.door.fy * T + T / 2;
+            for (var gi = 0; gi < 3; gi++) {
+              var gt = 0.35 + gi * 0.2;
+              var dm = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 1.7), dragM);
+              dm.rotation.x = -Math.PI / 2;
+              dm.rotation.z = Math.atan2(dx1 - dx0, dz1 - dz0) + (rng.next() - 0.5) * 0.3;
+              dm.position.set(dx0 + (dx1 - dx0) * gt, 0.035, dz0 + (dz1 - dz0) * gt);
+              W.reg(group, dm);
+            }
+          }
+          // 4c. 翻倒的椅子：撤离时的慌乱
+          var tcT = takeFar();
+          if (tcT) {
+            var tcx = BR.tileCX(tcT[0]) + (rng.next() - 0.5) * 0.6;
+            var tcz = BR.tileCZ(tcT[1]) + (rng.next() - 0.5) * 0.6;
+            var tch = new THREE.Group();
+            tch.position.set(tcx, 0.25, tcz);
+            tch.rotation.set(0, rng.next() * 6.28, Math.PI / 2); // 侧翻
+            function tb(w, h, d, m, x, y, z) {
+              var ms = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+              ms.position.set(x, y, z); tch.add(ms); return ms;
+            }
+            tb(0.45, 0.05, 0.45, steelD, 0, 0.46, 0);
+            tb(0.45, 0.5, 0.05, steelD, 0, 0.75, 0.21);
+            for (var tlg = 0; tlg < 4; tlg++)
+              tb(0.05, 0.46, 0.05, steel, tlg < 2 ? -0.18 : 0.18, 0.23, tlg % 2 ? -0.18 : 0.18);
+            W.reg(group, tch);
+          }
+          // 4d. 发黄的值班表：贴在墙上（叙事字条）
+          (function dutyNote() {
+            var cands = [];
+            for (var ty3 = entry.y; ty3 < entry.y + entry.h; ty3++)
+              for (var tx3 = entry.x; tx3 < entry.x + entry.w; tx3++) {
+                if (W.map.tiles[ty3 * W.map.w + tx3] !== 1) continue;
+                if (reserved(tx3, ty3)) continue;
+                var onTaken = taken.some(function (p) { return p[0] === tx3 && p[1] === ty3; });
+                if (onTaken) continue;
+                var wallDir = null;
+                var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                for (var d3 = 0; d3 < 4; d3++) {
+                  if (W.isWall(tx3 + dirs[d3][0], ty3 + dirs[d3][1])) { wallDir = dirs[d3]; break; }
+                }
+                if (wallDir) cands.push([tx3, ty3, wallDir]);
+              }
+            if (!cands.length) return;
+            var pick = cands[(rng.next() * cands.length) | 0];
+            var nx = -pick[2][0], nz = -pick[2][1]; // 指向舱内
+            var paperM = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.62, 0.85),
+              new THREE.MeshBasicMaterial({ map: BR.Textures.get('note'), color: 0xd6c491 })
+            );
+            trackMat(W, paperM.material);
+            paperM.position.set(BR.tileCX(pick[0]) + nx * 1.32, 1.6, BR.tileCZ(pick[1]) + nz * 1.32);
+            paperM.rotation.y = Math.atan2(nx, nz);
+            paperM.rotation.z = 0.04; // 微微歪斜，像很久没人管
+            W.reg(group, paperM);
+            var dnId = 'note7_duty_' + pick[0] + '_' + pick[1];
+            W.addInteractable({
+              id: dnId, kind: 'note', chunkKey: W.chunkKeyOf(pick[0], pick[1]),
+              meshes: [paperM], pos: paperM.position.clone(), radius: 2.4,
+              prompt: function () { return BR.interactKeyLabel() + '阅读值班表'; },
+              canUse: function () { return true; },
+              use: function () {
+                BR.Audio.paper();
+                BR.UI.showNote(L7_DUTY_NOTE[0], L7_DUTY_NOTE[1]);
+                if (W.state.picked.indexOf(dnId) < 0) {
+                  W.state.picked.push(dnId);
+                  BR.bus.emit('picked', { id: dnId });
+                }
+              }
+            });
+          })();
         });
       })();
 
@@ -798,26 +1265,154 @@
           W.INTERACT_KINDS.push('boat');
       })();
 
-      /* ---- 9. 深水区：低能见度覆层（视觉） + Swim zone 注册 ---- */
-      poiList(map, 'deep_zone').forEach(function (p) {
-        var zx = BR.tileCX(p.tx), zz = BR.tileCZ(p.ty);
-        var zr = (p.data.r || 7) * T;
-        L.deepZones.push({ x: zx, z: zz, r: zr, depth: p.data.depth || 1 });
-        W.addChunkContent(p.tx, p.ty, function (group) {
-          var dm = new THREE.Mesh(
-            new THREE.CircleGeometry(zr, 24),
-            new THREE.MeshBasicMaterial({ color: 0x050a0e, transparent: true, opacity: 0.30 + 0.10 * (p.data.depth || 1), depthWrite: false })
-          );
-          trackMat(W, dm.material);
-          dm.rotation.x = -Math.PI / 2;
-          dm.position.set(zx, SURF + 0.02, zz);
-          W.reg(group, dm);
+      /* ---- 9. 四深度带环境（v2.0 P2）：真实环境差异 ----
+       * 日光带：较亮水色 + 漂浮物；暮光带：冷色水 + 礁石/沉船残骸；
+       * 午夜带：近黑水 + 岩柱/遗迹 + 发光浮游生物 + 水下浓雾（方向感干扰）；
+       * 深渊带：极黑水 + 结构残片 + 未知光源；海床 -6/-14/-26/-44m。 */
+      (function buildBands() {
+        var bands = meta.bands;
+        L.bands = bands;
+        var bRng = new BR.RNG(BR.hashSeed(map.seed + ':l7bands'));
+        var ccx = bands[0].ccx * T, ccz = bands[0].ccy * T;
+
+        // 9a. 障碍物建模（tile 级碰撞已在 gen 布好；这里按 l7_obstacle POI 建视觉）
+        poiList(map, 'l7_obstacle').forEach(function (p) {
+          W.addChunkContent(p.tx, p.ty, function (group) {
+            var kind = p.data.kind, rot = p.data.rot || 0;
+            var g = new THREE.Group();
+            g.position.set(BR.tileCX(p.tx), 0, BR.tileCZ(p.ty));
+            g.rotation.y = rot;
+            var cells = p.data.cells || [[0, 0]];
+            if (kind === 'rock' || kind === 'column') {
+              var rockM = new THREE.MeshLambertMaterial({ color: kind === 'rock' ? 0x3a4148 : 0x2c343c });
+              trackMat(W, rockM);
+              cells.forEach(function (cc) {
+                var h = kind === 'rock' ? 1.5 + bRng.next() * 2.5 : 6 + bRng.next() * 9;
+                var rr = kind === 'rock' ? 1.1 + bRng.next() * 0.7 : 0.9 + bRng.next() * 0.5;
+                var rk = new THREE.Mesh(new THREE.IcosahedronGeometry(rr, 0), rockM);
+                rk.scale.y = h / (rr * 2) * 1.4;
+                rk.position.set(cc[0] * T, h / 2 - 1.5, cc[1] * T);
+                rk.rotation.y = bRng.next() * 6.28;
+                g.add(rk);
+              });
+            } else if (kind === 'wreck') {
+              var wood = new THREE.MeshLambertMaterial({ color: 0x4a3b2c });
+              var woodD = new THREE.MeshLambertMaterial({ color: 0x33291e });
+              trackMat(W, wood); trackMat(W, woodD);
+              cells.forEach(function (cc) {
+                var hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.1, 1.4), woodD);
+                hull.position.set(cc[0] * T, 0.1, cc[1] * T);
+                hull.rotation.z = 0.28; hull.rotation.y = bRng.next() * 0.6 - 0.3;
+                g.add(hull);
+              });
+              var mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 7, 7), wood);
+              mast.position.set(0.4, 2.6, 0.2); mast.rotation.z = 0.5;
+              g.add(mast);
+            } else { // ruin / frag：遗迹断墙与深渊结构残片
+              var conc = new THREE.MeshLambertMaterial({ color: kind === 'ruin' ? 0x5a5e60 : 0x39424a });
+              trackMat(W, conc);
+              cells.forEach(function (cc) {
+                var h2 = 1.2 + bRng.next() * (kind === 'ruin' ? 2.2 : 3.2);
+                var seg = new THREE.Mesh(new THREE.BoxGeometry(2.7, h2, 0.5), conc);
+                seg.position.set(cc[0] * T, h2 / 2 - 0.8, cc[1] * T);
+                seg.rotation.y = (bRng.next() - 0.5) * 0.5;
+                seg.rotation.z = (bRng.next() - 0.5) * 0.22;
+                g.add(seg);
+              });
+            }
+            W.reg(group, g);
+          });
         });
-      });
+
+        // 9b. 日光带漂浮物（场景级，随波漂移；少量）
+        var woodM = new THREE.MeshLambertMaterial({ color: 0x5a4a36 }); trackMat(W, woodM);
+        var barM = new THREE.MeshLambertMaterial({ color: 0x6a5a48 }); trackMat(W, barM);
+        L.debris = [];
+        for (var di = 0; di < 9; di++) {
+          var ang = bRng.next() * 6.2832;
+          var drad = bands[0].r0 + bRng.next() * Math.max(1, (bands[0].r1 - bands[0].r0) * 0.92);
+          var dx0 = ccx + Math.cos(ang) * drad * T, dz0 = ccz + Math.sin(ang) * drad * T;
+          var dm;
+          if (di % 3 === 0) dm = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.9, 9), barM);
+          else if (di % 3 === 1) dm = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 0.35), woodM);
+          else dm = new THREE.Mesh(new THREE.SphereGeometry(0.32, 9, 7), barM);
+          dm.position.set(dx0, SURF + 0.06, dz0);
+          dm.rotation.y = bRng.next() * 6.28;
+          W.scene.add(dm); trackScene(dm);
+          L.debris.push({ m: dm, x: dx0, z: dz0, ph: bRng.next() * 6.28, dr: 0.25 + bRng.next() * 0.4 });
+        }
+
+        // 9c. 午夜带发光浮游生物（水下光点群，缓慢漂移）
+        // 分布：午夜带稀疏背景 + 围绕动静点/深处出口聚类（玩家实际到访处看得见）
+        (function plankton() {
+          var n = 260, pp = new Float32Array(n * 3), base = [];
+          var r0 = bands[2].r0 * T, r1 = bands[2].r1 * T;
+          var clusters = [];
+          poiList(map, 'disturbance').forEach(function (p) {
+            if ((p.data.band || 0) >= 2) clusters.push([BR.tileCX(p.tx), BR.tileCZ(p.ty)]);
+          });
+          var de0 = poiList(map, 'deep_exit')[0];
+          if (de0) clusters.push([BR.tileCX(de0.tx), BR.tileCZ(de0.ty)]);
+          function pushPt(px, py, pz) {
+            var i = base.length;
+            if (i >= n) return;
+            pp[i * 3] = px; pp[i * 3 + 1] = py; pp[i * 3 + 2] = pz;
+            base.push([px, py, pz, bRng.next() * 6.28]);
+          }
+          var i, a, rad, px, pz, py;
+          for (i = 0; i < 100; i++) { // 背景：午夜带环域
+            a = bRng.next() * 6.2832; rad = Math.sqrt(bRng.next()) * Math.max(1, r1 - r0) + r0;
+            px = ccx + Math.cos(a) * rad; pz = ccz + Math.sin(a) * rad;
+            pushPt(px, -1 - bRng.next() * 9, pz);
+          }
+          var per = Math.floor((n - 100) / Math.max(1, clusters.length));
+          for (var ci = 0; ci < clusters.length; ci++) { // 聚类：锚点周围 25m
+            for (i = 0; i < per; i++) {
+              a = bRng.next() * 6.2832; rad = Math.sqrt(bRng.next()) * 25;
+              px = clusters[ci][0] + Math.cos(a) * rad; pz = clusters[ci][1] + Math.sin(a) * rad;
+              py = -1 - bRng.next() * 9;
+              pushPt(px, py, pz);
+            }
+          }
+          while (base.length < n) { // 补齐
+            a = bRng.next() * 6.2832; rad = Math.sqrt(bRng.next()) * Math.max(1, r1 - r0) + r0;
+            pushPt(ccx + Math.cos(a) * rad, -1 - bRng.next() * 9, ccz + Math.sin(a) * rad);
+          }
+          var pg = new THREE.BufferGeometry();
+          pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
+          var pm = new THREE.PointsMaterial({
+            color: 0x86e8d4, size: 0.14, transparent: true, opacity: 0.65,
+            depthWrite: false, blending: THREE.AdditiveBlending
+          });
+          trackMat(W, pm);
+          var pts = new THREE.Points(pg, pm);
+          pts.frustumCulled = false;
+          W.scene.add(pts); trackScene(pts);
+          L.plankton = { pts: pts, base: base, n: n };
+        })();
+
+        // 9d. 深渊带未知光源（远处冷光，呼吸式闪烁；精灵公告牌）
+        L.abyssLights = [];
+        for (var ai = 0; ai < 3; ai++) {
+          var aa = bRng.next() * 6.2832;
+          var arad = (bands[3].r0 + bRng.next() * Math.max(1, (bands[3].r1 - bands[3].r0) * 0.8)) * T;
+          var lsm = new THREE.SpriteMaterial({
+            color: 0x9fe0ff, transparent: true, opacity: 0,
+            blending: THREE.AdditiveBlending, depthWrite: false
+          });
+          trackMat(W, lsm);
+          var sp = new THREE.Sprite(lsm);
+          sp.scale.set(3.2, 3.2, 1);
+          sp.position.set(ccx + Math.cos(aa) * arad, -6 - bRng.next() * 8, ccz + Math.sin(aa) * arad);
+          W.scene.add(sp); trackScene(sp);
+          L.abyssLights.push({ m: sp, ph: bRng.next() * 6.28, per: 5 + bRng.next() * 7 });
+        }
+      })();
 
       /* ---- 10. 深处出口（→L37）：瓷砖结构残片 + 光柱 + 气泡 ----
        * 触发：潜入结构内部（水平 <2.4m 且深度接近）才切换；不按高度全图传送。
-       * 位置：最深水区，深度约 -9m（游戏尺度），氧气/补给可达。 */
+       * 位置：午夜带/深渊带交界（v2.0 P2 从最深水区搬来），深度约 -9m（游戏尺度），氧气可达。
+       * L7→L37 在两社区均无原著记载，本游戏改编（LORE.md 标注）。 */
       poiList(map, 'deep_exit').forEach(function (p) {
         var ex = BR.tileCX(p.tx), ez = BR.tileCZ(p.ty);
         var gy = -9; // 结构中心深度（游戏尺度改编）
@@ -908,7 +1503,10 @@
         });
       });
 
-      /* ---- 12. Swim 水 zone 注册（深水优先；舱室/甲板抠干洞） ---- */
+      /* ---- 12. Swim 水 zone 注册（v2.0 P2：四深度带同心圆，由内向外注册） ----
+       * zoneAt 按注册顺序返回首个命中：同心圆内层优先即得"所在带"。
+       * 每带 holes 抠掉舱室与甲板（干区）；registerZone API 不动（kind/depth/waterY/holes/形状），
+       * 物理海床 floor 按既有做法补在返回引用上（L37 未用该字段）。 */
       if (BR.Swim) {
         if (typeof BR.Swim.clearZones === 'function') BR.Swim.clearZones();
         if (typeof BR.Swim.registerZone === 'function') {
@@ -920,53 +1518,60 @@
               x1: L.puddleRect.x1, z1: L.puddleRect.z1
             });
           }
-          // 深水区（游戏尺度：海床 -10/-16/-24m）
-          var floors = [-10, -16, -24];
-          L.deepZones.forEach(function (z) {
-            var zo = BR.Swim.registerZone({
-              kind: 'deep', depth: z.depth, cx: z.x, cz: z.z, r: z.r,
-              waterY: SURF
-            });
-            // 注：BR.Swim.registerZone 只透传 kind/depth/waterY/holes/形状，
-            // 不复制 floor 字段（L37 未用该字段）。深海需要真实可下潜深度，
-            // 这里在返回的 zone 对象（即 zones 数组内同一引用）上直接补物理海床。
-            if (zo) zo.floor = floors[(z.depth - 1)] || -16;
-          });
-          // 海面大 zone（游戏尺度：海床 -26m；holes 抠掉舱室与甲板）
           var dr2 = meta.deck;
-          var oz = BR.Swim.registerZone({
-            kind: 'ocean', depth: 1.6, waterY: SURF, floor: -26,
-            x0: ox0w, z0: oz0w, x1: ox1w, z1: oz1w,
-            holes: [
-              { x0: (entry.x - 1) * T, z0: (entry.y - 1) * T, x1: (entry.x + entry.w + 1) * T, z1: (entry.y + entry.h + 1) * T },
-              { x0: dr2.x0 * T - 0.4, z0: dr2.y0 * T - 0.4, x1: (dr2.x1 + 1) * T + 0.4, z1: (dr2.y1 + 1) * T + 0.4 }
-            ]
+          var holes = [
+            { x0: (entry.x - 1) * T, z0: (entry.y - 1) * T, x1: (entry.x + entry.w + 1) * T, z1: (entry.y + entry.h + 1) * T },
+            // 甲板：只抠甲板矩形本身（+0.4m 边），不向外扩一格——停靠点在甲板外 2 格，必须是水
+            { x0: dr2.x0 * T - 0.4, z0: dr2.y0 * T - 0.4, x1: (dr2.x1 + 1) * T + 0.4, z1: (dr2.y1 + 1) * T + 0.4 }
+          ];
+          meta.bands.forEach(function (b) {
+            var zo = BR.Swim.registerZone({
+              kind: b.kind, depth: b.depth, waterY: SURF,
+              cx: b.ccx * T, cz: b.ccy * T, r: b.r1 * T,
+              holes: holes
+            });
+            if (zo) zo.floor = b.floor; // 物理海床：-6/-14/-26/-44（游戏尺度）
           });
-          if (oz) oz.floor = -26;
         }
         BR.Swim.speedMul = 1; // 出生点干燥：复位
       }
 
-      /* ---- 13. 深海实体：环境演出系统（非追逐怪） ----
-       * 远处巨大不完整轮廓 + 极低频声 + 局部水面变化 + 超尺度身体局部；
-       * 从不靠近玩家（<40m 则消退重排），从不完整出镜。 */
-      (function initEntity() {
-        var anchors = poiList(map, 'disturbance').map(function (p) {
-          return { x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty) };
-        });
+      /* ---- 13. 七层之物：真实体 AI（v2.0 P2） ----
+       * 巨大、永不完整出镜（远影/水下轮廓/出水一段躯体）。
+       * 状态机：dormant（休眠，偶发低频声）→ lurk（午夜/深渊带游弋，水面扰动环）
+       *        → stalk（被噪音/久留深水吸引；预警：水流声大+浪涌+远影）
+       *        → strike（受惊掀巨浪：-30hp+击退+强制上浮；不秒杀）→ retreat。
+       * 反制（原著依据）：保持安静静止[噪音招引] / 手电直射驱散[畏光] /
+       *                  上浮到日光带[栖息带] / 躲进残骸阴影。
+       * 公平性：不进日光带；stalk 最长 38s；strike 每轮一次；无血条 Boss。 */
+      (function initCreature() {
         var home = poiList(map, 'leviathan')[0];
-        var erng = new BR.RNG(BR.hashSeed(map.seed + ':l7entity'));
+        var crng = new BR.RNG(BR.hashSeed(map.seed + ':l7creature'));
         L.entity = {
-          anchors: anchors,
-          homeX: home ? BR.tileCX(home.tx) : ocx,
-          homeZ: home ? BR.tileCZ(home.ty) : ocz,
-          rng: erng,
-          nextSil: 55 + erng.next() * 70,   // 远影：55~125s 后首次
-          sil: null, silT: 0,
-          nextSurf: 170 + erng.next() * 130, // 身体局部出水：170~300s 后首次
-          surf: null, surfT: 0,
-          nextBoom: 30 + erng.next() * 40,   // 纯声音动静
-          rings: [] // 水面扰动环
+          rings: [], // 水面扰动环（与船涟漪共用数组，_updateRings 统一驱动）
+          crng: crng,
+          state: 'dormant',
+          tState: 0,
+          nextLurk: 150 + crng.next() * 150,  // 首次潜出：150~300s（低频出现）
+          nextRumble: 25 + crng.next() * 30,  // 休眠期偶发低频声
+          x: home ? BR.tileCX(home.tx) : ocx,
+          z: home ? BR.tileCZ(home.ty) : ocz,
+          y: -8,
+          wx: 0, wz: 0,   // 游弋目标点
+          lurkT: 0,
+          stalkT: 0,
+          warnStage: 0,
+          noise: 0,       // 玩家噪音 0..1（疾游/快船/水花累积，安静衰减）
+          deepTime: 0,    // 在午夜/深渊带的连续秒数
+          stillTime: 0,   // 安静静止的连续秒数
+          splashT: 99,
+          wasHead: false,
+          px: 0, pz: 0, pInit: false,
+          sil: null,      // 远影 mesh
+          breach: null, breachT: 0,
+          strikeLift: 0,
+          struck: false,
+          _ringT: 0, _breachT: 20
         };
       })();
 
@@ -979,22 +1584,65 @@
       BR.Audio.setAmbient('L7');
       if (BR.World._l7) BR.World._l7.t = 0;
       BR.UI.toast('舱室里很安静。舱盖在楼梯上面。', 3600);
+      // v2.0 P3：从 L37 水下通道（deep_channel）游过来 → 落在深处出口结构旁
+      // 水下（与去程对应），而非干燥舱室。只在"刚被放到出生点"时搬运，
+      // 读档/死亡重试（存档坐标）不动。
+      try {
+        var cf7 = BR.Game && BR.Game._cameFrom;
+        var from7 = (typeof cf7 === 'string') ? cf7 : (cf7 && cf7.from);
+        if (from7 === 'L37' && BR.World && BR.World.map && BR.Player) {
+          var sp7 = BR.World.spawnOf(BR.World.map);
+          var P7 = BR.Player;
+          if (Math.hypot(P7.pos.x - sp7.x, P7.pos.z - sp7.z) < 0.6) {
+            var pois7 = BR.World.map.pois || [], dp7 = null, qj;
+            for (qj = 0; qj < pois7.length; qj++) {
+              if (pois7[qj].type === 'deep_exit') { dp7 = pois7[qj]; break; }
+            }
+            if (dp7) {
+              var ex7 = BR.tileCX(dp7.tx), ez7 = BR.tileCZ(dp7.ty);
+              P7.pos.set(ex7 + 3.5, -8, ez7); // 结构旁 3.5m，水下（结构中心 y=-9）
+              P7.vel.set(0, 0, 0);
+              P7.yaw = Math.atan2(3.5, 0); // 面向结构
+              setTimeout(function () {
+                if (BR.Game.state === 'playing')
+                  BR.UI.toast('冰冷的水流把你推了出来。这里……是深海。', 3200);
+              }, 1500);
+            }
+          }
+        }
+      } catch (e) { if (BR.warn) BR.warn('[L7] deep arrival failed', e); }
     },
 
-    /* ---------- 深海实体：远影 ---------- */
+    /* ---------- 七层之物：带判定 ---------- */
+    _bandAt: function (L, x, z) {
+      var bands = (L && L.bands) || [];
+      if (!bands.length) return 0;
+      var b0 = bands[0];
+      var d = Math.hypot(x / T - b0.ccx, z / T - b0.ccy);
+      for (var i = 0; i < bands.length; i++) if (d <= bands[i].r1) return i;
+      return bands.length - 1;
+    },
+    _pickLurkPoint: function (L) {
+      var E = L.entity, bands = L.bands, r = E.crng;
+      var b = r.next() < 0.45 ? bands[3] : bands[2]; // 午夜带为主，深渊带上部为辅
+      var rr = b.r0 + 1 + r.next() * Math.max(1, b.r1 - b.r0 - 2);
+      var a = r.next() * 6.2832;
+      return { x: b.ccx * T + Math.cos(a) * rr * T, z: b.ccy * T + Math.sin(a) * rr * T };
+    },
+    _moveCreature: function (E, dt, spd) {
+      var dx = E.wx - E.x, dz = E.wz - E.z;
+      var d = Math.hypot(dx, dz);
+      if (d < 3) return true;
+      E.x += dx / d * spd * dt;
+      E.z += dz / d * spd * dt;
+      E.y = -7 + Math.sin(E.tState * 0.5) * 1.5;
+      return false;
+    },
+
+    /* ---------- 七层之物：远影（永不完整出镜） ---------- */
     _spawnSilhouette: function (W, L) {
-      var P = BR.Player, E = L.entity, rng = E.rng;
-      // 选锚点：距玩家 60~110m 优先，否则随机远点
-      var cands = E.anchors.filter(function (a) {
-        var d = Math.hypot(a.x - P.pos.x, a.z - P.pos.z);
-        return d >= 55 && d <= 115;
-      });
-      var ax, az;
-      if (cands.length) { var c = cands[(rng.next() * cands.length) | 0]; ax = c.x; az = c.z; }
-      else {
-        var ang = rng.next() * 6.2832, r = 70 + rng.next() * 30;
-        ax = P.pos.x + Math.cos(ang) * r; az = P.pos.z + Math.sin(ang) * r;
-      }
+      var E = L.entity;
+      this._despawnSilhouette(W, L);
       var g = new THREE.Group();
       var mat = new THREE.MeshBasicMaterial({ color: 0x0a1116, transparent: true, opacity: 0 });
       trackMat(W, mat);
@@ -1005,128 +1653,315 @@
       s2.scale.set(13, 3.4, 4.5); s2.position.set(20, 1.5, 6); s2.rotation.y = 0.5; g.add(s2);
       var s3 = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
       s3.scale.set(9, 2.6, 3.6); s3.position.set(-19, -1, -5); s3.rotation.y = -0.4; g.add(s3);
-      g.position.set(ax, -4.5, az);
-      g.rotation.y = rng.next() * 6.28;
+      g.position.set(E.x, -4.5, E.z);
+      g.rotation.y = E.crng.next() * 6.28;
       W.scene.add(g);
       trackScene(g);
-      E.sil = { g: g, mat: mat, x: ax, z: az };
-      E.silT = 0;
-      this._rumbleSwell(L, 0.5, 14);
-      L.chopTarget = 1.8; // 局部水面变化：浪涌增强
+      E.sil = { g: g, mat: mat };
     },
-    _updateSilhouette: function (W, L, dt) {
+    _updateSilhouette: function (W, L, dt, targetOp) {
       var E = L.entity, P = BR.Player;
       if (!E.sil) return;
-      E.silT += dt;
-      var d = Math.hypot(E.sil.x - P.pos.x, E.sil.z - P.pos.z);
-      var m = E.sil.mat, done = false;
-      if (d < 42) { // 靠太近：消退，绝不近距离出镜
-        m.opacity = Math.max(0, m.opacity - dt * 0.25);
-        if (m.opacity <= 0) done = true;
-      } else if (E.silT < 8) m.opacity = Math.min(0.34, m.opacity + dt * 0.05);      // 显现
-      else if (E.silT < 20) m.opacity = 0.30 + Math.sin(E.silT * 0.8) * 0.05;        // 悬留
-      else { m.opacity = Math.max(0, m.opacity - dt * 0.04); if (m.opacity <= 0) done = true; } // 消退
-      E.sil.g.position.y = -4.5 + Math.sin(E.silT * 0.5) * 1.2; // 缓慢沉浮
-      if (done) {
-        var idx = sceneObjs.indexOf(E.sil.g);
-        if (idx >= 0) sceneObjs.splice(idx, 1);
-        W.scene.remove(E.sil.g);
-        E.sil.g.traverse(function (o) { if (o.geometry) o.geometry.dispose(); });
-        try { m.dispose(); } catch (e) {}
-        E.sil = null;
-        E.nextSil = 100 + E.rng.next() * 90; // 下一次：100~190s 后（不许频繁出镜）
-        L.chopTarget = 1;
-      }
+      var s = E.sil;
+      // 跟随实体（滞后半拍）
+      s.g.position.x += (E.x - s.g.position.x) * Math.min(1, dt * 1.2);
+      s.g.position.z += (E.z - s.g.position.z) * Math.min(1, dt * 1.2);
+      s.g.position.y = -4.5 + Math.sin(L.t * 0.5) * 1.2; // 缓慢沉浮
+      var d = Math.hypot(s.g.position.x - P.pos.x, s.g.position.z - P.pos.z);
+      var want = (d < 30) ? 0 : targetOp; // 靠太近不给出镜
+      var m = s.mat;
+      if (m.opacity < want) m.opacity = Math.min(want, m.opacity + dt * 0.08);
+      else m.opacity = Math.max(want, m.opacity - dt * 0.12);
+    },
+    _despawnSilhouette: function (W, L) {
+      var E = L.entity;
+      if (!E || !E.sil) return;
+      var s = E.sil;
+      var idx = sceneObjs.indexOf(s.g);
+      if (idx >= 0) sceneObjs.splice(idx, 1);
+      W.scene.remove(s.g);
+      s.g.traverse(function (o) { if (o.geometry) o.geometry.dispose(); });
+      try { s.mat.dispose(); } catch (e) {}
+      E.sil = null;
     },
 
-    /* ---------- 深海实体：超尺度身体局部出水 ---------- */
-    _spawnSurfacing: function (W, L) {
-      var P = BR.Player, E = L.entity, rng = E.rng;
-      var ang = rng.next() * 6.2832, r = 42 + rng.next() * 18; // 42~60m：只许远观
-      var ax = P.pos.x + Math.cos(ang) * r, az = P.pos.z + Math.sin(ang) * r;
-      var g = new THREE.Group();
-      var mat = new THREE.MeshLambertMaterial({ color: 0x0b1013 });
-      trackMat(W, mat);
-      // 巨大弧形躯体局部（只是一段，永不完整）
-      var arc = new THREE.Mesh(new THREE.TorusGeometry(15, 2.8, 8, 20, 1.15), mat);
-      arc.rotation.z = Math.PI / 2 - 0.55;
-      arc.rotation.y = rng.next() * 6.28;
-      g.add(arc);
-      g.position.set(ax, -9, az);
-      W.scene.add(g);
-      trackScene(g);
-      E.surf = { g: g, x: ax, z: az, witnessed: false };
-      E.surfT = 0;
-      this._rumbleSwell(L, 0.85, 10);
-      L.chopTarget = 2.2;
-      // 水花扰动环
-      for (var i = 0; i < 3; i++) {
-        var ring = new THREE.Mesh(
-          new THREE.RingGeometry(1, 1.5, 28),
-          new THREE.MeshBasicMaterial({ color: 0x9fb8c2, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide })
-        );
-        trackMat(W, ring.material);
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.set(ax, 0.2, az);
-        W.scene.add(ring);
-        trackScene(ring);
-        E.rings.push({ m: ring, t: -i * 0.8 });
-      }
-      BR.UI.toast('远处的海面……有什么东西翻了一下。', 3000);
+    /* ---------- 七层之物：水面扰动环（统一驱动；船涟漪 small 共用） ---------- */
+    _spawnRing: function (W, L, x, z, big) {
+      var E = L.entity;
+      var ring = new THREE.Mesh(
+        new THREE.RingGeometry(1, 1.5, 28),
+        new THREE.MeshBasicMaterial({ color: 0x9fb8c2, transparent: true, opacity: big ? 0.55 : 0.4, depthWrite: false, side: THREE.DoubleSide })
+      );
+      trackMat(W, ring.material);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(x, 0.2, z);
+      W.scene.add(ring);
+      trackScene(ring);
+      E.rings.push({ m: ring, t: 0, small: !big });
     },
-    _updateSurfacing: function (W, L, dt) {
-      var E = L.entity, P = BR.Player;
-      if (!E.surf) return;
-      E.surfT += dt;
-      var t = E.surfT, g = E.surf.g;
-      // 9 秒：上浮 → 悬留 → 下潜
-      var y;
-      if (t < 3) y = -9 + (t / 3) * 12.5;
-      else if (t < 5.5) y = 3.5 + Math.sin((t - 3) * 2.2) * 0.5;
-      else y = 3.5 - ((t - 5.5) / 3.5) * 12.5;
-      g.position.y = y;
-      // 目击判定：注视 + 70m 内 → 轻微理智冲击（一次）
-      if (!E.surf.witnessed && t > 1 && t < 8) {
-        var dx = E.surf.x - P.pos.x, dz = E.surf.z - P.pos.z;
-        var d = Math.hypot(dx, dz);
-        if (d < 70) {
-          var fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw);
-          if ((dx * fx + dz * fz) / Math.max(0.001, d) > 0.45) {
-            E.surf.witnessed = true;
-            P.drainSanity(4);
-            BR.UI.toast('你看到的……只是它身体的一小部分。', 3200);
-          }
-        }
-      }
-      // 扰动环扩散（实体出水的大环；船涟漪 small 由 _updateBoatRipples 专管，这里跳过防双重驱动）
-      for (var i = E.rings.length - 1; i >= 0; i--) {
-        var rg = E.rings[i];
-        if (rg.small) continue;
+    _updateRings: function (W, L, dt) {
+      var R = L.entity.rings;
+      for (var i = R.length - 1; i >= 0; i--) {
+        var rg = R[i];
         rg.t += dt;
-        if (rg.t < 0) continue;
-        var s = 2 + rg.t * 7;
+        var grow = rg.small ? 2.4 : 7, fade = rg.small ? 0.5 : 0.16, op0 = rg.small ? 0.4 : 0.55;
+        var s = 1 + rg.t * grow;
         rg.m.scale.set(s, s, 1);
-        rg.m.material.opacity = Math.max(0, 0.5 - rg.t * 0.16);
+        rg.m.position.y = L.seaY(rg.m.position.x, rg.m.position.z, L.t) + 0.06;
+        rg.m.material.opacity = Math.max(0, op0 - rg.t * fade);
         if (rg.m.material.opacity <= 0) {
           var ix = sceneObjs.indexOf(rg.m);
           if (ix >= 0) sceneObjs.splice(ix, 1);
           W.scene.remove(rg.m);
           rg.m.geometry.dispose();
           try { rg.m.material.dispose(); } catch (e) {}
-          E.rings.splice(i, 1);
+          R.splice(i, 1);
         }
       }
-      if (t >= 9) {
+    },
+
+    /* ---------- 七层之物：躯体局部出水（只是一段，永不完整） ---------- */
+    _spawnBreach: function (W, L, x, z) {
+      var E = L.entity;
+      var g = new THREE.Group();
+      var mat = new THREE.MeshLambertMaterial({ color: 0x0b1013 });
+      trackMat(W, mat);
+      var arc = new THREE.Mesh(new THREE.TorusGeometry(15, 2.8, 8, 20, 1.15), mat);
+      arc.rotation.z = Math.PI / 2 - 0.55;
+      arc.rotation.y = E.crng.next() * 6.28;
+      g.add(arc);
+      g.position.set(x, -9, z);
+      W.scene.add(g);
+      trackScene(g);
+      E.breach = { g: g, x: x, z: z, wit: false };
+      E.breachT = 0;
+      this._rumbleSwell(L, 0.7, 8);
+    },
+    _updateBreach: function (W, L, dt) {
+      var E = L.entity;
+      if (!E.breach) return;
+      E.breachT += dt;
+      var t = E.breachT, g = E.breach.g;
+      var y;
+      if (t < 2.5) y = -9 + (t / 2.5) * 12.5;
+      else if (t < 4.5) y = 3.5 + Math.sin((t - 2.5) * 2.2) * 0.5;
+      else y = 3.5 - ((t - 4.5) / 3) * 12.5;
+      g.position.y = y;
+      // 目击判定：注视 + 70m 内 → 轻微理智冲击（一次）
+      if (!E.breach.wit && t > 1 && t < 7) {
+        var P = BR.Player;
+        var dx = E.breach.x - P.pos.x, dz = E.breach.z - P.pos.z;
+        var d = Math.hypot(dx, dz);
+        if (d < 70) {
+          var fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw);
+          if ((dx * fx + dz * fz) / Math.max(0.001, d) > 0.45) {
+            E.breach.wit = true;
+            P.drainSanity(4);
+            BR.UI.toast('你看到的……只是它身体的一小部分。', 3200);
+          }
+        }
+      }
+      if (t >= 7.5) {
         var idx = sceneObjs.indexOf(g);
         if (idx >= 0) sceneObjs.splice(idx, 1);
         W.scene.remove(g);
         g.traverse(function (o) { if (o.geometry) o.geometry.dispose(); });
-        E.surf = null;
-        E.nextSurf = 200 + E.rng.next() * 120; // 下一次：200~320s 后
-        L.chopTarget = 1;
+        E.breach = null;
       }
     },
 
+    /* ---------- 七层之物：反制判定 ---------- */
+    // 畏光 [Wikidot]：手电直射（45m 内、视线夹角）→ 驱散
+    _flashlightRepel: function (P, E) {
+      if (!P.flashlightOn || !P.hasFlashlight) return false;
+      var dx = E.x - P.pos.x, dz = E.z - P.pos.z;
+      var d = Math.hypot(dx, dz);
+      if (d > 45 || d < 1) return false;
+      var cp = Math.cos(P.pitch || 0);
+      var fx = -Math.sin(P.yaw) * cp, fy = Math.sin(P.pitch || 0), fz = -Math.cos(P.yaw) * cp;
+      var ey = (P.pos.y || 0) + 1.5;
+      var dot = (fx * dx + fy * (E.y - ey) + fz * dz) / d;
+      return dot > 0.72;
+    },
+    // 残骸阴影：障碍物（礁石/沉船/岩柱/遗迹/残片）7m 内可藏身
+    _nearStructure: function (L, x, z) {
+      var W = BR.World;
+      if (!W || !W.map) return false;
+      var pois = W.map.pois || [];
+      for (var i = 0; i < pois.length; i++) {
+        var p = pois[i];
+        if (p.type !== 'l7_obstacle') continue;
+        if (Math.hypot(BR.tileCX(p.tx) - x, BR.tileCZ(p.ty) - z) < 7) return true;
+      }
+      return false;
+    },
+    _startRetreat: function (W, L, msg) {
+      var E = L.entity;
+      E.state = 'retreat'; E.tState = 0;
+      L.chopTarget = 1;
+      if (msg) BR.UI.toast(msg, 3000);
+    },
+
+    /* ---------- 七层之物：strike（巨浪环境杀 [Fandom]） ----
+     * 不是追咬：它受惊逃窜掀起巨浪。-30hp + 击退 + 强制上浮；
+     * 不秒杀（hurt 0.6s 冷却），无血条，不追击。 */
+    _doStrike: function (W, L) {
+      var E = L.entity, P = BR.Player;
+      E.struck = true;
+      E.state = 'strike'; E.tState = 0;
+      E.strikeLift = 1.4;
+      var dx = P.pos.x - E.x, dz = P.pos.z - E.z;
+      var d = Math.max(0.001, Math.hypot(dx, dz));
+      if (L.boat && L.boat.isRiding()) { // 巨浪把人掀下船
+        try { L.boat.dismount(P); } catch (e) {}
+        try { BR.Audio.splash(); } catch (e2) {}
+      }
+      if (P.vel) P.vel.set(dx / d * 9, 7.5, dz / d * 9);
+      P.hurt(30, 'leviathan');
+      P.drainSanity(8);
+      this._spawnBreach(W, L, E.x, E.z); // 近处只给一段躯体
+      for (var i = 0; i < 4; i++)
+        this._spawnRing(W, L, E.x + (i - 1.5) * 3, E.z + (i - 1.5) * 2, true);
+      L.chopTarget = 4; // 浪涌拉满
+      this._rumbleSwell(L, 0.9, 8);
+      try { BR.Audio.stinger(); } catch (e3) {}
+      try { BR.Audio.splash(); } catch (e4) {}
+      BR.UI.toast('巨浪！它受惊翻身掀起的浪墙把你狠狠抛向水面！', 3400);
+    },
+
+    /* ---------- 七层之物：状态机 ----------
+     * dormant → lurk → stalk → strike → retreat；
+     * 低频出现，每次行为随机（crng）；预警清晰（声音+视觉+toast）。 */
+    _updateCreature: function (W, L, dt) {
+      var E = L.entity, P = BR.Player;
+      if (!E || !P || !P.pos) return;
+      var r = E.crng;
+      E.tState += dt;
+
+      // ---- 感知：玩家速度 / 船速 / 水花 → 噪音 ----
+      var px = P.pos.x, pz = P.pos.z, spd = 0;
+      if (E.pInit) spd = Math.hypot(px - E.px, pz - E.pz) / Math.max(dt, 1e-4);
+      E.px = px; E.pz = pz; E.pInit = true;
+      var boatSpd = (L.boat && L.boat.state) ? Math.hypot(L.boat.state.vx, L.boat.state.vz) : 0;
+      var headUnder = !!(BR.Swim && BR.Swim.headUnder);
+      if (headUnder !== E.wasHead) { // 入/出水水花 = 噪音
+        E.noise = Math.min(1, E.noise + 0.45);
+        E.splashT = 0;
+        E.wasHead = headUnder;
+      }
+      E.splashT += dt;
+      if (spd > 3.2 || boatSpd > 3.0) E.noise = Math.min(1, E.noise + 0.55 * dt);
+      else E.noise = Math.max(0, E.noise - 0.30 * dt);
+      var band = this._bandAt(L, px, pz);
+      if (band >= 2) E.deepTime += dt; else E.deepTime = 0;
+      if (spd < 0.4 && boatSpd < 0.6 && E.splashT > 2) E.stillTime += dt; else E.stillTime = 0;
+      var cdist = Math.hypot(E.x - px, E.z - pz);
+
+      if (E.state === 'dormant') {
+        E.nextRumble -= dt;
+        if (E.nextRumble <= 0) {
+          E.nextRumble = 45 + r.next() * 40;
+          this._rumbleSwell(L, 0.28, 7); // 远处闷响：它在深处翻身
+        }
+        E.nextLurk -= dt;
+        if (E.nextLurk <= 0) {
+          var lp = this._pickLurkPoint(L);
+          E.wx = lp.x; E.wz = lp.z;
+          E.x = lp.x; E.z = lp.z; E.y = -8; // 从深处潜出
+          E.lurkT = 60 + r.next() * 60;
+          E.state = 'lurk'; E.tState = 0;
+          this._spawnSilhouette(W, L);
+        }
+      } else if (E.state === 'lurk') {
+        if (this._moveCreature(E, dt, 2.2)) { // 到达换目标点
+          var lp2 = this._pickLurkPoint(L);
+          E.wx = lp2.x; E.wz = lp2.z;
+        }
+        this._updateSilhouette(W, L, dt, 0.30);
+        E._ringT -= dt;
+        if (E._ringT <= 0) { // 水面扰动环：它在下面
+          E._ringT = 6 + r.next() * 5;
+          this._spawnRing(W, L, E.x, E.z, false);
+        }
+        E._breachT -= dt;
+        if (E._breachT <= 0) { // 偶发远处出水一现（纯演出）
+          E._breachT = 40 + r.next() * 40;
+          var ba = r.next() * 6.2832;
+          this._spawnBreach(W, L, E.x + Math.cos(ba) * 45, E.z + Math.sin(ba) * 45);
+        }
+        E.lurkT -= dt;
+        if (band >= 2 && (E.noise > 0.7 || E.deepTime > 28)) {
+          E.state = 'stalk'; E.tState = 0; E.stalkT = 0; E.warnStage = 0; E.struck = false;
+          this._rumbleSwell(L, 0.55, 12);
+          L.chopTarget = 1.8;
+          BR.UI.toast('水下的声音变大了……水流在把你往某个方向推。', 3200);
+        } else if (E.lurkT <= 0) {
+          this._despawnSilhouette(W, L);
+          E.state = 'dormant'; E.tState = 0;
+          E.nextLurk = 150 + r.next() * 140;
+          L.chopTarget = 1;
+        }
+      } else if (E.state === 'stalk') {
+        E.stalkT += dt;
+        var dx = px - E.x, dz = pz - E.z;
+        var dd = Math.max(0.001, Math.hypot(dx, dz));
+        var step = Math.min(3.0 * dt, dd); // 3.0m/s：比潜泳快、比快船慢，可甩掉
+        E.x += dx / dd * step;
+        E.z += dz / dd * step;
+        E.y = -5 + Math.sin(E.tState * 0.6) * 1.5;
+        this._updateSilhouette(W, L, dt, 0.42);
+        L.chopTarget = 1.8 + Math.max(0, (40 - cdist) / 40) * 1.2; // 浪涌随接近增强
+        this._rumbleSwell(L, 0.35 + Math.max(0, (40 - cdist) / 40) * 0.4, 4); // 水流声变大
+        E._ringT -= dt;
+        if (E._ringT <= 0) {
+          E._ringT = Math.max(1.6, 4.5 - E.stalkT * 0.08);
+          this._spawnRing(W, L, E.x, E.z, true);
+        }
+        // 预警分级（声音+视觉+toast，必须清晰）
+        if (E.warnStage === 0 && (E.stalkT > 6 || cdist < 38)) {
+          E.warnStage = 1;
+          BR.UI.toast('有什么巨大的东西正在水下靠近——保持安静别动，或用手电照它！', 3600);
+          try { BR.Audio.heartbeat(); } catch (e) {}
+        } else if (E.warnStage === 1 && (E.stalkT > 14 || cdist < 24)) {
+          E.warnStage = 2;
+          BR.UI.toast('它就在你附近！上浮到浅水区，或者躲进残骸阴影里！', 3200);
+          try { BR.Audio.stinger(); } catch (e2) {}
+        }
+        // 反制（公平躲避；任一成立即 retreat）
+        // 栖息带 [Wikidot]：午夜带与深渊带上部 → 日光带/暮光带是安全区，它不追进
+        if (band <= 1) this._startRetreat(W, L, '它没有追进浅水区。');
+        else if (this._flashlightRepel(P, E)) this._startRetreat(W, L, '强光刺得它退缩了——它潜回了深渊。');
+        else if (E.stillTime > 8) this._startRetreat(W, L, '你屏住呼吸一动不动，它失去了你的踪迹。');
+        else if (E.stalkT > 10 && this._nearStructure(L, px, pz)) this._startRetreat(W, L, '残骸的阴影遮住了你，它游开了。');
+        else if (E.stalkT > 38) this._startRetreat(W, L, '它在远处翻了个身，消失了。');
+        else if (!E.struck && (cdist < 15 || (E.stalkT > 20 && E.noise > 0.55) || E.deepTime > 50)) {
+          this._doStrike(W, L); // 惊醒→巨浪
+        }
+      } else if (E.state === 'strike') {
+        if (E.strikeLift > 0) { // 强制上浮
+          E.strikeLift -= dt;
+          if (P.vel) P.vel.y = Math.max(P.vel.y, 6.5);
+        }
+        if (E.tState > 1.4) this._startRetreat(W, L, null);
+      } else if (E.state === 'retreat') {
+        var rdx = E.x - px, rdz = E.z - pz;
+        var rdd = Math.max(0.001, Math.hypot(rdx, rdz));
+        E.x += rdx / rdd * 4.5 * dt;
+        E.z += rdz / rdd * 4.5 * dt;
+        E.y = Math.max(-22, E.y - 6 * dt);
+        this._updateSilhouette(W, L, dt, 0); // 淡出
+        L.chopTarget += (1 - L.chopTarget) * Math.min(1, dt * 0.8);
+        if (E.tState > 7) {
+          this._despawnSilhouette(W, L);
+          E.state = 'dormant'; E.tState = 0;
+          E.nextLurk = 150 + r.next() * 140;
+          E.noise = 0; E.deepTime = 0; E.stillTime = 0;
+        }
+      }
+
+      this._updateRings(W, L, dt);
+      this._updateBreach(W, L, dt);
+    },
     /* ---------- 极低频声（infrasound）：事件 swell ---------- */
     _ensureRumble: function (L) {
       if (L.rumble || !BR.Audio._ok || !BR.Audio._ctx) return;
@@ -1147,44 +1982,16 @@
       L._rumbleHold = Math.max(L._rumbleHold || 0, dur);
     },
 
-    /* ---------- 船边扰动：船周小涟漪 ---------- */
+    /* ---------- 船边扰动：船周小涟漪（只生成；扩散由 _updateRings 统一驱动） ---------- */
     _boatRipples: { n: 0 },
     _updateBoatRipples: function (W, L, dt) {
       var B = L.boat;
-      if (!B) return;
+      if (!B || !L.entity) return;
       var moving = Math.hypot(B.state.vx, B.state.vz) > 0.6;
       this._boatRipples.n += dt;
       if (moving && this._boatRipples.n > 0.55) {
         this._boatRipples.n = 0;
-        var ring = new THREE.Mesh(
-          new THREE.RingGeometry(0.9, 1.15, 24),
-          new THREE.MeshBasicMaterial({ color: 0xaac2cc, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide })
-        );
-        trackMat(W, ring.material);
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.set(B.state.x, L.seaY(B.state.x, B.state.z, L.t) + 0.06, B.state.z);
-        W.scene.add(ring);
-        trackScene(ring);
-        L.entity.rings.push({ m: ring, t: 0, small: true });
-      }
-      // 复用 entity.rings 做涟漪扩散（small 标记：更快消失）
-      var R = L.entity.rings;
-      for (var i = R.length - 1; i >= 0; i--) {
-        var rg = R[i];
-        if (!rg.small) continue;
-        rg.t += dt;
-        var s = 1 + rg.t * 2.4;
-        rg.m.scale.set(s, s, 1);
-        rg.m.position.y = L.seaY(rg.m.position.x, rg.m.position.z, L.t) + 0.06;
-        rg.m.material.opacity = Math.max(0, 0.4 - rg.t * 0.5);
-        if (rg.m.material.opacity <= 0) {
-          var ix = sceneObjs.indexOf(rg.m);
-          if (ix >= 0) sceneObjs.splice(ix, 1);
-          W.scene.remove(rg.m);
-          rg.m.geometry.dispose();
-          try { rg.m.material.dispose(); } catch (e) {}
-          R.splice(i, 1);
-        }
+        this._spawnRing(W, L, B.state.x, B.state.z, false);
       }
     },
 
@@ -1249,19 +2056,8 @@
         if (G.shaftMat) G.shaftMat.opacity = 0.13 + 0.05 * Math.sin(t * 1.3);
       }
 
-      // 深海实体调度（长周期；不许频繁出镜）
-      var E = L.entity;
-      if (E) {
-        E.nextSil -= dt; E.nextSurf -= dt; E.nextBoom -= dt;
-        if (E.nextSil <= 0 && !E.sil) this._spawnSilhouette(W, L);
-        if (E.nextSurf <= 0 && !E.surf) this._spawnSurfacing(W, L);
-        if (E.nextBoom <= 0) {
-          E.nextBoom = 50 + E.rng.next() * 45;
-          this._rumbleSwell(L, 0.3, 7); // 纯声音：远处闷响
-        }
-        this._updateSilhouette(W, L, dt);
-        this._updateSurfacing(W, L, dt);
-      }
+      // 七层之物 AI（状态机；演出全部走 trackScene/clearSceneObjs 管线）
+      this._updateCreature(W, L, dt);
       // 极低频包络
       if (L._rumbleHold > 0) L._rumbleHold -= dt;
       else L.rumbleTarget = Math.max(0, L.rumbleTarget - dt * 0.12);
@@ -1272,24 +2068,48 @@
         } catch (e) {}
       }
 
-      // 水下视觉：有限透光（非蓝色滤镜）—— Swim.tick 之后覆盖雾色
+      // 水下视觉：按深度带调整透光（Swim.tick 存雾之后覆盖；出水由 Swim 恢复）
       var hu = !!(BR.Swim && BR.Swim.headUnder);
-      if (W.scene && W.scene.fog) {
-        if (hu) {
-          // 深水附加：越深越暗（gate 深度约 -9m；按玩家深度微调 fog）
-          var depthK = Math.max(0, Math.min(1, (0.15 - P.pos.y) / 12));
-          W.scene.fog.color.setHex(0x0a1216);
-          var wantFar = 13 - depthK * 5;
-          W.scene.fog.far += (wantFar - W.scene.fog.far) * Math.min(1, dt * 2);
-        }
+      if (W.scene && W.scene.fog && hu && BR.Swim._fogSaved) {
+        var ub = this._bandAt(L, P.pos.x, P.pos.z); // 0 日光 … 3 深渊
+        if (!_uwTmpColor) _uwTmpColor = new THREE.Color();
+        W.scene.fog.color.lerp(_uwTmpColor.setHex(UW_FOG_COL[ub]), Math.min(1, dt * 2));
+        W.scene.fog.far += (UW_FOG_FAR[ub] - W.scene.fog.far) * Math.min(1, dt * 2);
       }
       if (typeof document !== 'undefined')
         document.body.classList.toggle('l7deep', hu);
 
-      // 深水区理智侵蚀（叠加在黑暗侵蚀之上；系数随 depth 1..3）
+      // 深水理智侵蚀（叠加在黑暗侵蚀之上；午夜带约 2.35/s，深渊带约 3.05/s）
       if (BR.Swim && typeof BR.Swim.zoneAt === 'function') {
         var szn = BR.Swim.zoneAt(P.pos.x, P.pos.z);
-        if (szn && szn.kind === 'deep') P.drainSanity(dt * (1.0 + 0.8 * (szn.depth || 1)));
+        if (szn && szn.kind === 'deep') P.drainSanity(dt * (0.6 + 0.7 * (szn.depth || 1)));
+      }
+
+      // 四带环境演出更新：漂浮物随波 / 浮游生物漂移 / 未知光源呼吸闪烁
+      if (L.debris) {
+        for (var dbi = 0; dbi < L.debris.length; dbi++) {
+          var db = L.debris[dbi];
+          db.m.position.x = db.x + Math.sin(t * 0.05 + db.ph) * db.dr * 6;
+          db.m.position.z = db.z + Math.cos(t * 0.04 + db.ph) * db.dr * 6;
+          db.m.position.y = this._seaYAt(L, db.m.position.x, db.m.position.z, t) + 0.06;
+          db.m.rotation.y += dt * 0.05;
+        }
+      }
+      if (L.plankton) {
+        var ppa = L.plankton.pts.geometry.attributes.position;
+        for (var pli = 0; pli < L.plankton.n; pli++) {
+          var bs = L.plankton.base[pli];
+          ppa.array[pli * 3] = bs[0] + Math.sin(t * 0.25 + bs[3]) * 0.9;
+          ppa.array[pli * 3 + 1] = bs[1] + Math.sin(t * 0.35 + bs[3] * 1.7) * 0.6;
+        }
+        ppa.needsUpdate = true;
+      }
+      if (L.abyssLights) {
+        for (var ali = 0; ali < L.abyssLights.length; ali++) {
+          var al = L.abyssLights[ali];
+          var ak = Math.sin(t * 6.2832 / al.per + al.ph);
+          al.m.material.opacity = Math.pow(Math.max(0, ak), 3) * 0.85;
+        }
       }
     },
 
