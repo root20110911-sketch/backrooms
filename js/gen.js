@@ -361,6 +361,10 @@
     return rng.pick(cands.length ? cands : map.rooms);
   }
   // 在房间某面墙上找门位：返回 {tx,ty(墙tile),fx,fy(内侧地板),axis}
+  // axis 约定（与 world.js buildDoorMesh 的渲染语义一致）：
+  //   门扇与所在墙共面 —— 南北墙（墙沿 X 走向）用 'x'（不旋转），
+  //   东西墙（墙沿 Z 走向）用 'z'（绕 Y 旋转 90°）。
+  //   2026-10-17 修正：此前四面全写反，导致 L2/L1/FUN 的门渲染时侧着嵌在墙里。
   function findDoorSpot(rng, map, room) {
     var sides = rng.shuffle([0, 1, 2, 3]); // 0北 1南 2西 3东
     for (var s = 0; s < 4; s++) {
@@ -370,10 +374,10 @@
       rng.shuffle(offs);
       for (var k = 0; k < offs.length; k++) {
         var o = offs[k], tx, ty, fx, fy, axis;
-        if (side === 0) { tx = room.x + o; ty = room.y - 1; fx = tx; fy = room.y; axis = 'z'; }
-        else if (side === 1) { tx = room.x + o; ty = room.y + room.h; fx = tx; fy = room.y + room.h - 1; axis = 'z'; }
-        else if (side === 2) { tx = room.x - 1; ty = room.y + o; fx = room.x; fy = ty; axis = 'x'; }
-        else { tx = room.x + room.w; ty = room.y + o; fx = room.x + room.w - 1; fy = ty; axis = 'x'; }
+        if (side === 0) { tx = room.x + o; ty = room.y - 1; fx = tx; fy = room.y; axis = 'x'; }
+        else if (side === 1) { tx = room.x + o; ty = room.y + room.h; fx = tx; fy = room.y + room.h - 1; axis = 'x'; }
+        else if (side === 2) { tx = room.x - 1; ty = room.y + o; fx = room.x; fy = ty; axis = 'z'; }
+        else { tx = room.x + room.w; ty = room.y + o; fx = room.x + room.w - 1; fy = ty; axis = 'z'; }
         if (tx < 1 || ty < 1 || tx > W - 2 || ty > H - 2) continue;
         if (map.tiles[T(tx, ty)] !== 0) continue;  // 外侧必须是墙
         if (doorAt(map, tx, ty)) continue;
@@ -402,7 +406,7 @@
   }
   // 终极兜底：直接取房间北墙第一格（理论上不会走到，保证不崩）
   function manualWallSpot(room) {
-    return { tx: room.x, ty: room.y - 1, fx: room.x, fy: room.y, axis: 'z' };
+    return { tx: room.x, ty: room.y - 1, fx: room.x, fy: room.y, axis: 'x' }; // 北墙（沿 X）→ 'x'
   }
   function borderDist(room) {
     var d = [
@@ -1072,7 +1076,8 @@
     var ec = makeExitCorridor(map, rng);
     addPOI(map, 'exit_corridor', ec.sx, ec.sy, { dirx: ec.dirx, dirz: ec.dirz, len: ec.len });
     addDoor(map, ec.sx + ec.dirx * (ec.len - 1), ec.sy + ec.dirz * (ec.len - 1),
-      ec.dirx !== 0 ? 'x' : 'z', false, '出口门', 'L2');
+      // 门横在走廊尽头：走廊沿 X → 门跨 Z（'z'）；走廊沿 Z → 门跨 X（'x'）
+      ec.dirx !== 0 ? 'z' : 'x', false, '出口门', 'L2');
     // 按离出生点距离把房间排序，取中段做安全屋 / 闪烁区
     var byDist = map.rooms.slice(1).sort(function (a, b) { return a._d - b._d; });
     var safeR = byDist[Math.floor(byDist.length / 2)] || byDist[0];
