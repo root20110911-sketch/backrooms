@@ -59,6 +59,9 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
   - L3: `spawn`, `patrol`（一组waypoint pois，data:{route:0}), `elevator{tx,ty,dirx,dirz}`, `power_room`, `crate`, `note`, `fence_zone`
   - FUN: `spawn`, `partygoer`（多个出生点）, `clue`, `fun_exit`, `cake_table`
 - `BR.Gen.reachable(map, sx, sy, tx, ty)→bool` BFS（门视为可通过）。
+- 门位 axis 语义（v2.2 W-doors 修正；与 world.js `buildDoorMesh` 渲染语义一致，`gen.js:findDoorSpot` 注释即契约）：
+  - 门扇与所在墙**共面**：南北墙（墙沿 X 走向）用 `'x'`（门扇不旋转），东西墙（墙沿 Z 走向）用 `'z'`（绕 Y 旋转 90°）。
+  - 历史 bug：四面全写反（南北墙给'z'、东西墙给'x'），门侧着嵌进墙里。2026-10-17 玩家反馈「门全斜」即此因。
 - `BR.Gen.assertConnected(map)→{ok, missing:[...]}` 检查 spawn 到所有关键 POI 可达。
 - 生成器必须保证：同一种子同关卡结果完全一致；关键 POI 全部可达（否则打通走廊重连）。
 - `BR.Gen.hashMap(map)→string` 用于测试比较（房间图+POI 的哈希）。
@@ -80,6 +83,7 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
   kind 含：`door/crate/pickup/note/valve/elevator_door/elevator_btn/anomaly_wall/fun_hole/fun_exit/cake` + 各关扩展（`l6_switch`、`cabinet`、`manila_cab`、`exit_door` 等，由 lv_*.js 注册；统一经 INTERACT_KINDS 分发）。
 - L0 无限延伸（v1.5.1）：`W.tile` 越界 L0 走 `BR.Gen.l0InfiniteTile(seed,tx,ty)` 程序化生成；区块构建去掉 L0 的边界上限。
 - 门：`BR.World.setDoor(id, open, instant)` 播动画；`BR.World.doorState(id)`。
+- 门系统（v2.2 W-doors 重写，`world.js:doorStyleFor`/`buildDoorMesh`）：门框四边与墙共面、铰链轴取自 `door.axis`；9 种按关卡风格：L0 黄木门（`door_wood_yellow`）/ L1 混凝土（`door_concrete`）/ L2 管道金属（`door_metal_pipe`+铆钉）/ L188 深色雕花（`door_wood_dark`+carve）/ L4 玻璃（透明度 0.38+中轨）/ L37 白瓷推拉（`door_tile_white`，推拉动画）/ L6 钢（`l6_door_steel`）/ FUN 派对红（`door_party_red`）/ L3 锈蚀金属；未知层级回退灰色金属。纯视觉改编，无 lore 依据。
 - `BR.World.getStats()→{fps,chunks,roomsVisible,entities,seed,drawCalls,tris}`。
 - `BR.World.onChunk(fn)` 注册区块加载回调（levels 用来放事件触发器）。
 - 状态恢复：`savedState={openedDoors:[ids],picked:[ids],openedCrates:[ids],events:[ids]}`；build 时跳过已拾取/已开。
@@ -128,6 +132,16 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
   - 注：旧文档中的 `blackout`（L1 闪烁事件）已并入关卡内事件系统，不再是独立转场名。
 - 每个演出：`BR.Input.setLocked(true)` 开始，结束恢复；`BR.Game` 负责关卡切换的实际 world 重建（transitions 发起 `bus.emit('level:switch',{to, spawnPOI})`）。
 - 看门狗：演出超过 30s 未结束 → 强制淡入恢复控制并 log。
+
+## 通风管 —— 固定映射切出点（v2.2 W-exits）
+- 映射（`js/levels.js` `BR.VENT_ROUTES`，文档即契约）：L0→L1（绿）/ L1→L2（琥珀）/ L2→L3（蓝）；边框色即目标层，玩家可学。
+- 实现：`buildVents(map, W, level)`（levels.js 共享，经 `BR._lvShare` 给 levels2.js 用）；种子确定性放置（`seed+':vent:'+level`）；
+  格栅贴墙、不压 POI/门、离出生点 ≥5 格、从出生点可达；交互 `kind:'vent'` → `BR.Cutout.travelTo(dest, {mode:'door'})`。
+- 每层第一根管子旁有 "M.E.G. 通风管路图" 字条（三色→三层对照表）。
+- v2.2 修复：`buildVentGrate` 把 interactable 的 `meshes:[Group]` 注册改成 `traverse` 展平成 mesh 数组——three r128 `Object3D.raycast` 为空且游戏 raycast 非递归，之前玩家实机永远瞄不中通风管（只能 `it.use()` 直调）。该 bug 在 W-play 真实瞄准+E 走线中暴露。
+- 出口可发现性（同版本）：L1 长走廊——灯牌加大双面、走廊口绿光、尽头冷光+门缝光带、管线渐密（LORE 依据）、
+  常驻双电流声引导（`buzz` 走廊口 + `machine` 尽头，60m 衰减）；L0 主出口——灯牌加大双面、绿色光柱、点光增强、常驻电流声。
+  常驻循环声经 `ensureLoopCleanup(W, ids)` 包 `W.dispose` 做跨关清理（world.js 非本 worker 领地，不改其源码）。
 
 ## levels.js / levels2.js —— 各关内容装配
 - `BR.Levels = { L0, L1, L2, L3, FUN, ... }`（lv_*.js 追加 L4/L6/L25/L7/L37/L11/L188/bang；L94 已摘除），每关：
@@ -190,10 +204,15 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 - `BR.Save.respawn()` → 回到检查点（重建关卡+恢复状态）。
 - `BR.Save.validate`：缺失字段缺省回填（如 `l25:{coins:0,mach:{}}`）。
 
-## dev.js —— 开发者模式（v1.5.1）
+## dev.js —— 开发者模式（v1.5.1；v2.2 W-dev 重写冻结语义）
 - 暂停菜单底部「开发者选项」→ 密码框（密码 `muse`）→ 开发者面板。
-- 面板：无限体力 / 无限理智开关、14 关传送（`BR.Cutout.travelTo(level,{mode:'none'})`，v2.1 加入 L372）、回满状态。
-- 会话级，不落盘；`player.js` 在 `drainSanity` 开头与体力扣除处检查 `BR.Dev`。
+- 面板三独立作弊开关：**无限体力** / **无限理智** / **无限生命**（v2.2 新增第三项）。冻结语义（用户原话「直接锁住，直接冻结 999 个」）：
+  - 开启瞬间把对应数值设为 `999`（`Dev.FREEZE=999`）；`player.js` **每帧末尾** pin 住 999（`infStamina→stamina=999 & _staminaOut=false`、`infSanity→sanity=999`、`infHp→hp=999`），任何绕开钩子的直接扣减（腰果水、L4 未封窗、饥饿等）都在帧末被纠正；
+  - 对应钩子同时短路：体力不扣不回、理智 drain/restore 跳过、伤害 `hurt()` 提前返回（**锁血，不是无敌穿墙/免死**）；
+  - sanity=999 时低理智特效（耳语/暗角/视线游移）不触发。
+- 14 关传送表（L0/L1/L2/L3/L4/L6/L7/L11/L25/L37/L37.2/L188/Level!/FUN，v2.1 加入 L372）：落点经 W-dev 逐一验证安全；走 `BR.Cutout.travelTo(level,{mode:'none'})`（面板内从暂停菜单直传时先 `togglePause(false)` 恢复 playing）。
+- 作弊开关状态走 `localStorage`（key `br_dev_*`）持久化，刷新后仍保持；隐私模式等 localStorage 异常时静默降级为会话级。刷新后需重新输密码进入面板（密码本身会话级，不污染存档）。
+- 回满状态按钮：体力/理智/生命/饥饿回 100（不是 999，区分冻结与回满）。
 
 ## main.js
 - `BR.Game.init()`；`newGame(seed?)`；`continueGame()`；`switchLevel(to, opts)`；`gotoLevel(to, opts)` / `loadLevel`（P0：加载保护——失败/超时/重复切关有状态回滚与重试入口，不永久卡加载页）；`BR.Game.tick(t)` 主循环（dt clamp 0.05）。
@@ -223,6 +242,7 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 ### Level 7 四带按真实垂直深度（gen_l7.js / lv_l7.js）
 - v2.0 的四带按到入口舱室中心的**水平** tile 距离划分（同心圆，审计 §3a），v2.1 改为按玩家**真实下潜深度**：日光 <12m / 暮光 12–30m / 午夜 30–55m / 深渊 ≥55m（游戏尺度改编，原著公里级深度压缩）。
 - 连续海底地形（浅海台地 → 断崖 → 深沟 → 深渊），视觉与物理海床统一；游泳防穿海床（`player.js` 下潜下限按地形钳制）。
+- v2.2 W-l7floor：`floorYAt` 高度查询新增**舱室内部 tile 分支**——`inTileRect(x,z,gm.entry)` 返回 0。根因：此前缺此分支，舱室 tile 落到开放水域分支返回海床高度（约 -3~-6m），而视觉地板钢板在 y=0.02，玩家出生瞬间穿过视觉地板掉进海床（地基箱体只是视觉遮挡，不承重）。**分支顺序固定**：船 > 甲板 > 门/平台 > 楼梯坡道 > 舱室 > 海床回退；舱室分支必须在平台/门/楼梯之后、海床之前。
 - 水上：海雾近/中/远三层 + 阴天云层 + 阴云穹顶（两层灰云平面 + 大球体内壁渐变）；水下：透光层（独立朝下网格跟随波浪，海面 -0.22m，太阳透光斑）+ 按深度分档压暗（浅水透光）+ 散射颗粒。
 
 ### 移动端（input.js / ui.js / css/style.css）
