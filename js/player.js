@@ -443,6 +443,7 @@
   };
 
   P.hurt = function (n, cause) {
+    if (BR.Dev && BR.Dev.infHp) { this.hp = 999; return; } // 开发者模式：无限生命——锁血（不是无敌穿墙）
     if (BR.Game.state !== 'playing' || this.hurtCd > 0 && cause !== 'steam') return;
     this.hp -= n;
     if (cause !== 'steam') this.hurtCd = 0.6;
@@ -470,11 +471,12 @@
   };
   // —— 理智 ——
   P.drainSanity = function (n) {
-    if (BR.Dev && BR.Dev.infSanity) return; // 开发者模式：无限理智
+    if (BR.Dev && BR.Dev.infSanity) return; // 开发者模式：无限理智——冻结 999
     if (BR.Game.state !== 'playing') return;
     this.sanity = Math.max(0, this.sanity - n);
   };
   P.restoreSanity = function (n) {
+    if (BR.Dev && BR.Dev.infSanity) return; // 开发者模式：无限理智——冻结 999，不恢复
     this.sanity = Math.min(100, this.sanity + n);
   };
   P.landDip = function () { this.landDipT = 1; };
@@ -805,8 +807,8 @@
     if (adrenOn) this.adrenalineT = Math.max(0, this.adrenalineT - dt);
     if (stamCfg && !adrenOn) {
       if (BR.Dev && BR.Dev.infStamina) {
-        // 开发者模式：无限体力——不扣且回满
-        this.stamina = stamCfg.max; this._staminaOut = false;
+        // 开发者模式：无限体力——冻结 999（本帧不扣不回；帧末 pin 到 999）
+        this._staminaOut = false;
       } else if (wantRun) {
         // 注意：moving 在下面才算出；这里用输入强度近似（疾跑要求 mv.z>0.1 已保证在动）
         // v1.5 W6：staminaDrainMul 钩子（默认 1；Level ! 追逐时置 0，肾上腺素爆发不耗耐力）
@@ -1033,6 +1035,14 @@
     }
     if (input.consumeInteract() && this._curIt) {
       this._curIt.use();
+    }
+    // —— 开发者模式：作弊冻结（v2.2）——
+    // 每帧末尾 pin 住 999：任何绕开 drainSanity/hurt 的直接扣减（腰果水、L4 未封窗、饿死等）
+    // 都在这里被纠正；跑步消耗/伤害逻辑本身也已被对应钩子短路。sanity=999 时低理智特效不触发。
+    if (BR.Dev) {
+      if (BR.Dev.infStamina) { this.stamina = 999; this._staminaOut = false; }
+      if (BR.Dev.infSanity) this.sanity = 999;
+      if (BR.Dev.infHp) this.hp = 999;
     }
   };
 })();
