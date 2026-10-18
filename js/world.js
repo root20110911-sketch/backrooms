@@ -686,39 +686,216 @@
     this.addChunkContent(def.tx, def.ty, (group) => this.buildDoorMesh(def.id, group));
     return this.doors[def.id];
   };
+  /* ---------------- 门（v2.2 重写） ----------------
+   * 根因（2026-10-17 审计）：gen.js findDoorSpot 给门 axis 时四面全写反
+   * （南北墙给 'z'、东西墙给 'x'），而本函数的渲染语义是
+   * 'x' = 门跨世界 X（不旋转）、'z' = 绕 Y 旋转 90° 跨世界 Z，
+   * 导致 L2/L1/FUN 的门全部侧着嵌在墙里（用户原话"全都是斜着的门"）。
+   * gen.js 已修正（findDoorSpot / manualWallSpot / L1 走廊门）。
+   * 本重写保证：
+   *   1) 门框四边（双柱 + 门楣 + 门槛）与墙面共面、端正，门扇关闭时落在框内；
+   *   2) 开合动画绕正确的轴：平开门绕铰链 Y 轴，推拉门沿墙面平移；
+   *   3) 按关卡风格区分视觉（DOOR_STYLES），不再一个模子；
+   *   4) 碰撞沿用 tile 级（门 tile：关着阻挡、开着可通行），与可见门框/门扇一致。
+   * 交互（开/关、准星提示）与存档（openedDoors 按关保存）行为保持不变。
+   */
+  // ---- v2.2：按关卡风格的门扇贴图（256 小道具规格；painter(w,h) 返回 canvas）----
+  (function registerDoorTextures() {
+    if (!BR.Textures || !BR.Textures.registerTex || typeof document === 'undefined') return;
+    const reg = BR.Textures.registerTex;
+    function cv(w, h, base) {
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d');
+      x.fillStyle = base; x.fillRect(0, 0, w, h);
+      return [c, x];
+    }
+    function vshade(x, bx, bw, h, dark, lite) { // 竖板明暗
+      const g = x.createLinearGradient(bx, 0, bx + bw, 0);
+      g.addColorStop(0, dark); g.addColorStop(0.5, lite); g.addColorStop(1, dark);
+      x.fillStyle = g; x.fillRect(bx, 0, bw, h);
+    }
+    function planks(x, w, h, n, dark, lite, seam) {
+      for (let i = 0; i < n; i++) {
+        const bx = i * w / n;
+        vshade(x, bx, w / n, h, dark, lite);
+        x.fillStyle = seam; x.fillRect(bx, 0, 2, h);
+      }
+    }
+    // L0：黄色木门
+    reg('door_wood_yellow', function (w, h) {
+      const r = cv(w, h, '#c99a45'), c = r[0], x = r[1];
+      planks(x, w, h, 4, 'rgba(90,55,15,0.25)', 'rgba(255,240,200,0.10)', 'rgba(70,40,10,0.6)');
+      for (let k = 0; k < 70; k++) {
+        x.strokeStyle = 'rgba(120,75,25,' + (0.05 + Math.random() * 0.09).toFixed(3) + ')';
+        x.lineWidth = 1 + Math.random();
+        const gx = Math.random() * w, gy = Math.random() * h, len = 20 + Math.random() * 60;
+        x.beginPath(); x.moveTo(gx, gy);
+        x.quadraticCurveTo(gx + 4, gy + len / 2, gx - 3, gy + len); x.stroke();
+      }
+      return c;
+    });
+    // L1：混凝土门
+    reg('door_concrete', function (w, h) {
+      const r = cv(w, h, '#8f9296'), c = r[0], x = r[1];
+      for (let k = 0; k < 260; k++) {
+        const v = 120 + (Math.random() * 60 | 0);
+        x.fillStyle = 'rgba(' + v + ',' + v + ',' + (v + 4) + ',' + (0.05 + Math.random() * 0.08).toFixed(3) + ')';
+        const s = 2 + Math.random() * 14;
+        x.fillRect(Math.random() * w, Math.random() * h, s, s);
+      }
+      x.strokeStyle = 'rgba(40,42,45,0.5)'; x.lineWidth = 3;
+      x.strokeRect(20, 16, w - 40, h * 0.42); x.strokeRect(20, h * 0.54, w - 40, h * 0.40);
+      return c;
+    });
+    // L2：管道层金属门（铆钉 + 管箍）
+    reg('door_metal_pipe', function (w, h) {
+      const r = cv(w, h, '#5d6672'), c = r[0], x = r[1];
+      const g = x.createLinearGradient(0, 0, w, 0);
+      g.addColorStop(0, 'rgba(0,0,0,0.28)'); g.addColorStop(0.5, 'rgba(255,255,255,0.10)'); g.addColorStop(1, 'rgba(0,0,0,0.28)');
+      x.fillStyle = g; x.fillRect(0, 0, w, h);
+      x.fillStyle = 'rgba(20,24,28,0.55)';
+      x.fillRect(0, h * 0.30, w, 10); x.fillRect(0, h * 0.66, w, 10);
+      x.fillStyle = 'rgba(200,210,220,0.5)';
+      for (let i = 0; i < 6; i++) for (const yy of [14, h - 14]) {
+        x.beginPath(); x.arc(14 + i * (w - 28) / 5, yy, 4, 0, 7); x.fill();
+      }
+      return c;
+    });
+    // L188：酒店深色雕花木
+    reg('door_wood_dark', function (w, h) {
+      const r = cv(w, h, '#3a2a18'), c = r[0], x = r[1];
+      planks(x, w, h, 3, 'rgba(0,0,0,0.35)', 'rgba(190,140,80,0.08)', 'rgba(10,5,2,0.7)');
+      for (let k = 0; k < 60; k++) {
+        x.strokeStyle = 'rgba(200,150,90,' + (0.04 + Math.random() * 0.06).toFixed(3) + ')';
+        x.lineWidth = 1;
+        const gx = Math.random() * w, gy = Math.random() * h;
+        x.beginPath(); x.moveTo(gx, gy); x.lineTo(gx + 3, gy + 30 + Math.random() * 40); x.stroke();
+      }
+      return c;
+    });
+    // L37：白瓷砖
+    reg('door_tile_white', function (w, h) {
+      const r = cv(w, h, '#edf0f0'), c = r[0], x = r[1];
+      x.strokeStyle = 'rgba(120,130,135,0.55)'; x.lineWidth = 2;
+      const nx = 4, ny = 8;
+      for (let i = 0; i <= nx; i++) { x.beginPath(); x.moveTo(i * w / nx, 0); x.lineTo(i * w / nx, h); x.stroke(); }
+      for (let j = 0; j <= ny; j++) { x.beginPath(); x.moveTo(0, j * h / ny); x.lineTo(w, j * h / ny); x.stroke(); }
+      return c;
+    });
+    // FUN：派对红木门
+    reg('door_party_red', function (w, h) {
+      const r = cv(w, h, '#7a2e2e'), c = r[0], x = r[1];
+      planks(x, w, h, 4, 'rgba(30,5,5,0.30)', 'rgba(255,180,150,0.08)', 'rgba(25,5,5,0.6)');
+      return c;
+    });
+  })();
+  // ---- v2.2：门风格表（按关卡）----
+  // axis 约定：'x' = 门跨世界 X（南北墙，不旋转）；'z' = 旋转 90° 跨世界 Z（东西墙）。
+  // anim: 'swing' 平开（绕铰链 Y 轴）/ 'slide' 推拉（沿墙面平移）。
+  function doorStyleFor(level) {
+    const S = {
+      L0:   { frame: 0x4a3a24, frameFinish: 'wood',     panelTex: 'door_wood_yellow', panelFinish: 'wood',     handle: 'knob',    handleColor: 0xc9a227, decor: 'none',    anim: 'swing', openAngle: -1.9 },
+      L1:   { frame: 0x4c4f54, frameFinish: 'concrete', panelTex: 'door_concrete',    panelFinish: 'concrete', handle: 'lever',   handleColor: 0x242628, decor: 'none',    anim: 'swing', openAngle: -1.9 },
+      L2:   { frame: 0x333a42, frameFinish: 'metal',    panelTex: 'door_metal_pipe',  panelFinish: 'metal',    handle: 'lever',   handleColor: 0x1d2126, decor: 'rivets',  anim: 'swing', openAngle: -1.9 },
+      L188: { frame: 0x2a1e12, frameFinish: 'wood',     panelTex: 'door_wood_dark',   panelFinish: 'wood',     handle: 'knob',    handleColor: 0xc9a227, decor: 'carve',   anim: 'swing', openAngle: -1.9 },
+      L4:   { frame: 0x9aa0a6, frameFinish: 'metal',    panelGlass: true, panelColor: 0xbdd8e4, panelOpacity: 0.38, panelFinish: 'metal', handle: 'lever', handleColor: 0x6a7076, decor: 'midrail', anim: 'swing', openAngle: -1.9 },
+      L37:  { frame: 0x7d838a, frameFinish: 'metal',    panelTex: 'door_tile_white',  panelFinish: 'tile',     handle: 'pullbar', handleColor: 0x5a6068, decor: 'toprail', anim: 'slide' },
+      L6:   { frame: 0x2c2e33, frameFinish: 'metal',    panelTex: 'l6_door_steel',    panelFinish: 'metal',    handle: 'lever',   handleColor: 0x111214, decor: 'none',    anim: 'swing', openAngle: -1.9 },
+      FUN:  { frame: 0x3a2420, frameFinish: 'wood',     panelTex: 'door_party_red',   panelFinish: 'wood',     handle: 'knob',    handleColor: 0xd8b13a, decor: 'none',    anim: 'swing', openAngle: -1.9 },
+      L3:   { frame: 0x4a3a28, frameFinish: 'rust',     panelTex: 'door_metal_pipe',  panelFinish: 'rust', panelColor: 0xc09a78, handle: 'lever', handleColor: 0x1d2126, decor: 'none', anim: 'swing', openAngle: -1.9 },
+    };
+    return S[level] || { frame: 0x6a7076, frameFinish: 'metal', panelTex: 'doorMetal', panelFinish: 'metal', handle: 'lever', handleColor: 0x2b2d30, decor: 'none', anim: 'swing', openAngle: -1.9 };
+  }
   W.buildDoorMesh = function (id, group) {
     const d = this.doors[id]; if (!d || d.mesh) return;
     const def = d.def, th = this.theme, wallH = th.wallH || 3;
+    const level = (this.map && this.map.level) || '';
+    const st = doorStyleFor(level);
     const wx = BR.tileCX(def.tx), wz = BR.tileCZ(def.ty);
     const g = new THREE.Group();
     // v2.0 P5（L188 真垂直二层）：门定义可选 yBase（门组整体抬升，用于二层门）；
     // 缺省 0，旧关行为不变。
     g.position.set(wx, def.yBase || 0, wz);
-    const metal = this.mat('doorMetal');
     const G = sharedGeo();
     const dh = Math.min(2.6, wallH - 0.4), dw = T * 0.92;
-    // 门框
-    const post = new THREE.Mesh(G.box, metal);
-    post.scale.set(0.18, dh + 0.15, 0.24); post.position.set(0, (dh + 0.15) / 2, 0);
-    const mkPost = (sx) => { const p = post.clone(); p.position.x = sx * dw / 2; return p; };
-    g.add(mkPost(-1)); g.add(mkPost(1));
-    const lintel = new THREE.Mesh(G.box, metal);
-    lintel.scale.set(dw + 0.36, 0.18, 0.24); lintel.position.set(0, dh + 0.09, 0);
-    g.add(lintel);
-    // 门扇（铰链在 -x 侧）
-    const hinge = new THREE.Group();
-    hinge.position.set(-dw / 2, 0, 0);
-    const panel = new THREE.Mesh(G.box, metal.clone());
-    panel.material.map = BR.Textures.get('doorMetal');
-    panel.scale.set(dw, dh, 0.12);
-    panel.position.set(dw / 2, dh / 2, 0);
-    hinge.add(panel);
+    const frameMat = BR.Textures.finishMaterial(null, st.frameFinish, { color: st.frame });
+    const panelMat = st.panelGlass
+      ? BR.Textures.finishMaterial(null, 'metal', { color: st.panelColor, transparent: true, opacity: st.panelOpacity, side: THREE.DoubleSide })
+      : BR.Textures.finishMaterial(st.panelTex, st.panelFinish, st.panelColor ? { color: st.panelColor } : null);
+    const trimMat = BR.Textures.finishMaterial(null, st.frameFinish, { color: st.handleColor });
+    const handleMat = BR.Textures.finishMaterial(null, 'metal', { color: st.handleColor });
+    const mkBox = (parent, sx, sy, sz, mat, x, y, z) => {
+      const m = new THREE.Mesh(G.box, mat);
+      m.scale.set(sx, sy, sz); m.position.set(x, y, z);
+      parent.add(m); return m;
+    };
+    // —— 门框：双柱 + 门楣 + 门槛（四边与墙面共面、端正）——
+    const postH = dh + 0.15;
+    mkBox(g, 0.18, postH, 0.24, frameMat, -dw / 2, postH / 2, 0);
+    mkBox(g, 0.18, postH, 0.24, frameMat, dw / 2, postH / 2, 0);
+    mkBox(g, dw + 0.36, 0.18, 0.24, frameMat, 0, dh + 0.09, 0);
+    mkBox(g, dw + 0.2, 0.07, 0.3, frameMat, 0, 0.035, 0);
+    // —— 门扇（动子）——
+    const pw = dw - 0.12, pt = st.panelGlass ? 0.06 : 0.12;
+    const mover = new THREE.Group();   // 铰链 / 滑轨动子（d.panel 指向它）
+    const panelG = new THREE.Group();  // 门扇本体（居中坐标系，x=0 为门扇中心）
+    mover.add(panelG);
+    const panel = new THREE.Mesh(G.box, panelMat);
+    panel.scale.set(pw, dh, pt); panel.position.set(0, dh / 2, 0);
+    panelG.add(panel);
+    d.animKind = st.anim; d.openAngle = st.openAngle || -1.9;
+    if (st.anim === 'slide') {
+      // L37 推拉门：谷仓式——导轨装在房间一侧墙面上，门扇沿墙面平移
+      const t = this.map.tiles, mw = this.map.w;
+      const at = (x, y) => (x < 0 || y < 0 || x >= mw || y >= this.map.h) ? 0 : t[y * mw + x];
+      // 局部 z 的正方向 = 世界法线方向：axis 'x' 时 local z = world z；'z' 时 local z = world x
+      const zoff = def.axis === 'z'
+        ? (at(def.tx + 1, def.ty) === 1 ? 1 : -1)
+        : (at(def.tx, def.ty - 1) === 1 ? -1 : 1);
+      const zface = zoff * (T / 2 + 0.14);
+      mkBox(g, dw * 2, 0.1, 0.12, frameMat, 0, dh + 0.14, zface); // 顶部导轨
+      mover.position.set(0, 0, zface);
+      mkBox(mover, 0.08, 0.22, 0.08, handleMat, -pw * 0.32, dh + 0.03, 0); // 吊件
+      mkBox(mover, 0.08, 0.22, 0.08, handleMat, pw * 0.32, dh + 0.03, 0);
+      d.slideDist = dw * 0.98;
+    } else {
+      mover.position.set(-pw / 2, 0, 0); // 铰链在 -x 侧
+      panelG.position.set(pw / 2, 0, 0); // 门扇中心对准框中心（铰链在门扇边缘）
+    }
+    // —— 把手（随门扇一起动）——
+    const hx = pw / 2 - 0.2, hy = 1.05, hz = pt / 2;
+    if (st.handle === 'knob') {
+      const k = new THREE.Mesh(G.sph, handleMat);
+      k.scale.set(0.18, 0.18, 0.18); k.position.set(hx, hy, hz + 0.08);
+      panelG.add(k);
+    } else if (st.handle === 'pullbar') {
+      mkBox(panelG, 0.06, 0.55, 0.06, handleMat, hx, 1.15, hz + 0.08);
+    } else { // lever
+      mkBox(panelG, 0.05, 0.05, 0.1, handleMat, hx, hy, hz + 0.03);
+      mkBox(panelG, 0.24, 0.05, 0.06, handleMat, hx - 0.08, hy, hz + 0.08);
+    }
+    // —— 装饰 ——
+    if (st.decor === 'carve') { // L188 雕花：门扇双面各两组凹线框
+      const cw = pw * 0.62, ch1 = dh * 0.32, ch2 = dh * 0.28, tt = 0.035, dp = 0.02;
+      for (const zs of [pt / 2 + 0.008, -pt / 2 - 0.008]) {
+        for (const [bw2, bh2, oy] of [[cw, ch1, dh * 0.70], [cw, ch2, dh * 0.28]]) {
+          mkBox(panelG, bw2, tt, dp, trimMat, 0, oy + bh2 / 2, zs);
+          mkBox(panelG, bw2, tt, dp, trimMat, 0, oy - bh2 / 2, zs);
+          mkBox(panelG, tt, bh2, dp, trimMat, -bw2 / 2, oy, zs);
+          mkBox(panelG, tt, bh2, dp, trimMat, bw2 / 2, oy, zs);
+        }
+      }
+    } else if (st.decor === 'midrail') { // L4 玻璃门中横梁
+      mkBox(panelG, pw, 0.09, pt + 0.03, frameMat, 0, 1.15, 0);
+    }
+    // 'rivets' 走贴图；'toprail' 即导轨本身；'none' 无装饰
     if (def.axis === 'z') g.rotation.y = Math.PI / 2;
-    g.add(hinge);
+    g.add(mover);
     this.reg(group, g);
-    d.mesh = g; d.panel = hinge;
-    hinge.rotation.y = d.open ? -1.9 : 0;
-    // 交互
+    d.mesh = g; d.panel = mover; d.doorPanel = panel; d.styleName = level + ':' + (st.panelGlass ? 'glass' : st.panelTex);
+    if (d.animKind === 'slide') mover.position.x = d.open ? d.slideDist : 0;
+    else mover.rotation.y = d.open ? d.openAngle : 0;
+    // 交互（行为与旧版一致）
     const self = this;
     this.addInteractable({
       id: 'door_' + id, kind: 'door', chunkKey: d.chunkKey,
@@ -736,7 +913,10 @@
   W.setDoor = function (id, open, instant) {
     const d = this.doors[id]; if (!d || d.open === open) return;
     d.open = open; d.anim = instant ? 1 : 0;
-    if (d.panel && instant) d.panel.rotation.y = open ? -1.9 : 0;
+    if (d.panel && instant) {
+      if (d.animKind === 'slide') d.panel.position.x = open ? d.slideDist : 0;
+      else d.panel.rotation.y = open ? d.openAngle : 0;
+    }
     if (open) {
       BR.Audio.doorOpen();
       if (this.state && !this.state.openedDoors.includes(id)) {
@@ -750,9 +930,16 @@
       const d = this.doors[id];
       if (!d.panel || d.anim >= 1) continue;
       d.anim = Math.min(1, d.anim + dt * 1.6);
-      const target = d.open ? -1.9 : 0;
-      d.panel.rotation.y = BR.lerp(d.panel.rotation.y, target, Math.min(1, dt * 6));
-      if (d.anim >= 1) d.panel.rotation.y = target;
+      const k = Math.min(1, dt * 6);
+      if (d.animKind === 'slide') {
+        const target = d.open ? d.slideDist : 0;
+        d.panel.position.x = BR.lerp(d.panel.position.x, target, k);
+        if (d.anim >= 1) d.panel.position.x = target;
+      } else {
+        const target = d.open ? d.openAngle : 0;
+        d.panel.rotation.y = BR.lerp(d.panel.rotation.y, target, k);
+        if (d.anim >= 1) d.panel.rotation.y = target;
+      }
     }
   };
 
