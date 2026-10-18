@@ -402,7 +402,7 @@
       surface: 'metal', fixtureEvery: 1000, hum: 0
     },
 
-    // 地面高度查询（楼梯坡道/平台/甲板/船座；player.js _groundYAt 钩子）
+    // 地面高度查询（舱室地板/楼梯坡道/平台/甲板/船座；player.js _groundYAt 钩子）
     floorYAt: function (x, z) {
       var L = BR.World && BR.World._l7;
       if (!L || !L.geom) return 0;
@@ -418,6 +418,11 @@
         var k = (along + 1.5) / 3;
         return gm.deckH * Math.max(0, Math.min(1, k));
       }
+      // v2.2 W-l7floor：舱室内部 tile（干燥安全区）地板 y=0。
+      // 顺序必须在平台/门/楼梯分支之后（它们也在舱室内）、海床回退之前。
+      // 之前缺此分支 → 舱室落到海床分支返回约 -3~-6m，玩家开局穿过视觉地板
+      // （钢板 y=0.02）掉下去；地基箱体只是视觉遮挡，不承重。
+      if (inTileRect(x, z, gm.entry)) return 0;
       // 开放水域：连续海床（v2.0 P3 高度场）。
       // 物理海床与视觉地形用同一函数 BR.L7Terrain.seabedY：_swimVertical 按
       // max(groundY, w.floor) 钳制，w.floor 设为极低值后 groundY 即海床，
@@ -448,7 +453,9 @@
         deckH: meta.deckH, deckTiles: meta.deck,
         door: meta.door, landing: meta.landing,
         stair: meta.stair, stairFlat: !!meta.stair.flat,
-        dnx: meta.door.nx, dny: meta.door.ny
+        dnx: meta.door.nx, dny: meta.door.ny,
+        // v2.2 W-l7floor：舱室内部矩形（tile 坐标，闭区间），地板高度查询用
+        entry: { x0: entry.x, y0: entry.y, x1: entry.x + entry.w - 1, y1: entry.y + entry.h - 1 }
       };
       // v2.0 P3：连续海床地形参数 + 海洋世界包围盒（碰撞/生成/生物共用）
       L.ter = meta.terrain || null;
