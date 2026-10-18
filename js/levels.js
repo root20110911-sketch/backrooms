@@ -15,6 +15,18 @@
     diving_suit: '深海潜水服'
   };
 
+  /* ================= 通风管固定映射（v2.2 W-exits） =================
+   * 用户需求："通风管道可以直接切入固定的层级"。实现为确定性映射：
+   * 起点层 → 固定目标层；边框色 = 目标层主题色（全游戏统一），玩家看颜色即知去向。
+   * 映射表（文档即契约，另见 LORE.md「通风管」节与各关内的 M.E.G. 管路图字条）：
+   *   L0 通风管 → L1（绿色边框）    L1 通风管 → L2（琥珀色边框）    L2 通风管 → L3（蓝色边框）
+   * 无条件、无随机：走近看交互提示即显示目的地，钻进去必达。放置为种子确定性
+   * （map.seed + ':vent:' + level 派生 RNG），同一种子同位置，可复现、可测试。
+   */
+  BR.VENT_ROUTES = { L0: 'L1', L1: 'L2', L2: 'L3' };
+  BR.VENT_COLORS = { L1: 0x39ff6a, L2: 0xffb347, L3: 0x6ab8ff };
+  BR.VENT_COLOR_NAMES = { L1: '绿色', L2: '琥珀色', L3: '蓝色' };
+
   /* ================= 主题 ================= */
   BR.Levels = {
     L0: {
@@ -1132,6 +1144,145 @@
   BR.thinWallTick = thinWallTick;
   BR.addBerryBush = addBerryBush; // 迁跃浆果灌木建造器（L1/L2/L3 共用）
 
+  /* ---------- 通风管（v2.2 W-exits）：固定映射切出点 ---------- */
+  // 常驻位置循环声的跨关清理：W.dispose 包一层（world.js 非本 worker 领地，不改其源码）。
+  // 每关 buildContent 里调一次即可（幂等）；换关/重建世界时自动停掉本关的循环声。
+  function ensureLoopCleanup(W, ids) {
+    W._loopCleanupIds = W._loopCleanupIds || [];
+    for (const id of ids) if (W._loopCleanupIds.indexOf(id) < 0) W._loopCleanupIds.push(id);
+    if (W._loopCleanupWrapped) return;
+    W._loopCleanupWrapped = true;
+    const _dispose = W.dispose.bind(W);
+    W.dispose = function () {
+      if (BR.Audio && BR.Audio.removeLoop) {
+        for (const id of (this._loopCleanupIds || [])) { try { BR.Audio.removeLoop(id); } catch (e) {} }
+      }
+      _dispose();
+    };
+  }
+
+  // 在关卡内放置通风管（墙面格栅 + 目标色边框 + 交互钻入）。
+  // level 必须在 BR.VENT_ROUTES 中；want 为数量（L0/L1/L2 各 2）。
+  // 放置规则：非出生房间的地板格、贴一面墙、离出生点 ≥5 格、从出生点 BFS 可达、
+  // 不压已有 POI tile。全部满足才放（宁缺毋滥，绝不挡路/卡死）。
+  function buildVents(map, W, level) {
+    const dest = BR.VENT_ROUTES[level];
+    W._vents = []; // 每关重建时重置（W 为单例，dispose 不清自定义字段）
+    if (!dest || !BR.Levels[dest]) return 0;
+    const color = BR.VENT_COLORS[dest] == null ? 0x9fd8ff : BR.VENT_COLORS[dest];
+    const colorName = BR.VENT_COLOR_NAMES[dest] || '灰色';
+    const destName = BR.Levels[dest].name;
+    const rng = new BR.RNG(BR.hashSeed(map.seed + ':vent:' + level));
+    const sp = (map.pois || []).find(p => p.type === 'spawn');
+    const rooms = (map.rooms || []).filter(r => r.tag !== 'spawn');
+    if (!rooms.length || !sp) return 0;
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const poiTiles = {};
+    (map.pois || []).forEach(p => { poiTiles[p.ty * map.w + p.tx] = 1; });
+    const doorTiles = {};
+    (map.doors || []).forEach(d => { doorTiles[d.ty * map.w + d.tx] = 1; });
+    const used = {};
+    let placed = 0, guard = 0;
+    const want = 2;
+    while (placed < want && guard++ < 240) {
+      const r = rooms[(rng.next() * rooms.length) | 0];
+      if (r.w <= 0 || r.h <= 0) continue;
+      const tx = r.x + ((rng.next() * r.w) | 0), ty = r.y + ((rng.next() * r.h) | 0);
+      if (tx < 1 || ty < 1 || tx >= map.w - 1 || ty >= map.h - 1) continue;
+      const idx = ty * map.w + tx;
+      if (map.tiles[idx] !== 1) continue;
+      if (poiTiles[idx] || doorTiles[idx] || used[idx]) continue;
+      if (Math.hypot(tx - sp.tx, ty - sp.ty) < 5) continue; // 别糊脸
+      let wall = null;
+      for (const dd of dirs) {
+        const nx = tx + dd[0], ny = ty + dd[1];
+        if (map.tiles[ny * map.w + nx] !== 1 && !doorTiles[ny * map.w + nx]) { wall = dd; break; }
+      }
+      if (!wall) continue;
+      if (!BR.Gen.reachable(map, sp.tx, sp.ty, tx, ty)) continue;
+      used[idx] = 1;
+      buildVentGrate(W, tx, ty, wall, dest, destName, color, colorName, level);
+      // 可测试性：记录已放置通风管（e2e 冒烟用；本函数开头已重置）
+      W._vents.push({ tx: tx, ty: ty, dest: dest });
+      placed++;
+      // 第一个通风管旁放一张 M.E.G. 管路图字条（颜色→层级对照表，玩家可学会）：
+      // 在管子周围 3 格内螺旋搜索合适的字条位（地板、非 POI/门/已用）
+      if (placed === 1) {
+        let nb = null;
+        for (let rad = 1; rad <= 3 && !nb; rad++) {
+          for (let dy = -rad; dy <= rad && !nb; dy++) {
+            for (let dx2 = -rad; dx2 <= rad && !nb; dx2++) {
+              if (Math.max(Math.abs(dx2), Math.abs(dy)) !== rad) continue;
+              const bx = tx + dx2, by = ty + dy;
+              if (bx < 1 || by < 1 || bx >= map.w - 1 || by >= map.h - 1) continue;
+              const bi = by * map.w + bx;
+              if (bi === idx) continue;
+              if (map.tiles[bi] !== 1 || poiTiles[bi] || doorTiles[bi] || used[bi]) continue;
+              nb = [bx, by];
+            }
+          }
+        }
+        if (nb) addNote(W, nb[0], nb[1], 'M.E.G. 通风管路图', ventMapNoteBody());
+      }
+    }
+    return placed;
+  }
+  function ventMapNoteBody() {
+    return 'M.E.G. 前哨站手抄，贴在管子旁边：\n\n' +
+      '这几层的通风管是通的，钻进去会切到固定的层级。\n' +
+      '记住边框的颜色就行，管子只认颜色不认位置：\n\n' +
+      '绿色边框 → Level 1「宜居地带」\n' +
+      '琥珀色边框 → Level 2「废弃公共带」\n' +
+      '蓝色边框 → Level 3「发电站」\n\n' +
+      '——别钻没有颜色边框的管子，那是死的。';
+  }
+  // 墙面通风格栅：深色框体 + 百叶 + 目标色顶条 + 微光
+  function buildVentGrate(W, tx, ty, wall, dest, destName, color, colorName, level) {
+    const id = 'vent_' + level + '_' + tx + '_' + ty;
+    W.addChunkContent(tx, ty, (group) => {
+      const x = BR.tileCX(tx), z = BR.tileCZ(ty);
+      const g = new THREE.Group();
+      const dark = new THREE.MeshLambertMaterial({ color: 0x1a1c1e });
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.0, 0.1), dark);
+      g.add(frame);
+      const slatM = new THREE.MeshLambertMaterial({ color: 0x3d4145 });
+      for (let i = 0; i < 4; i++) {
+        const s = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.09, 0.06), slatM);
+        s.position.set(0, -0.32 + i * 0.21, 0.045);
+        s.rotation.x = 0.5;
+        g.add(s);
+      }
+      // 目标色顶条（可学习的固定映射视觉锚点）
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.09, 0.12),
+        new THREE.MeshBasicMaterial({ color: color }));
+      stripe.position.y = 0.545;
+      g.add(stripe);
+      const glow = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.2),
+        new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.10, side: THREE.DoubleSide, depthWrite: false }));
+      glow.position.z = 0.02;
+      g.add(glow);
+      g.position.set(x + wall[0] * (T / 2 - 0.08), 1.05, z + wall[1] * (T / 2 - 0.08));
+      // wall 为 tile→墙方向；格栅正面（百叶/色条/微光）须朝房间（-wall），旧值会让正面贴进墙里
+      g.rotation.y = Math.atan2(-wall[0], -wall[1]);
+      W.reg(group, g);
+      // v2.2-fix：交互射线（world.js rayInteract）是非递归的，Group 本身 raycast 为空，
+      // meshes 传 Group 会导致准星永远命中不了通风管。展平成 Mesh 数组（与 L4 等关一致）。
+      const ventMeshes = [];
+      g.traverse(function (o) { if (o.isMesh) ventMeshes.push(o); });
+      W.addInteractable({
+        id, kind: 'vent', chunkKey: W.chunkKeyOf(tx, ty),
+        meshes: ventMeshes, pos: new THREE.Vector3(x, 1.05, z), radius: 2.8,
+        prompt: () => '钻进通风管（' + colorName + '边框 → ' + destName + '）',
+        canUse: () => true,
+        use: () => {
+          BR.UI.toast('你钻进通风管，向' + colorName + '的另一头爬去……', 2200);
+          BR.bus.emit('vent:enter', { id: id, from: level, to: dest });
+          BR.Cutout.travelTo(dest, { mode: 'door', dropText: '你从通风管爬出来，拍掉身上的灰——' + destName + '。' });
+        }
+      });
+    });
+  }
+
   /* ---------- 程序化家具（桌子/柜子）与家具拾取（L0 马尼拉房间 / L1 家具 POI 共用） ---------- */
   // 桌子：桌面 + 四腿，木纹色
   function buildTableMesh() {
@@ -1748,13 +1899,15 @@
       });
     });
     // v1.5.1：L0 主出口（游戏性改编）——金属门 + 绿色 EXIT 灯牌 + 门缝透光
+    // v2.2 W-exits：可发现性加强——灯牌加大+双面、绿色光柱（房间内远处可见）、
+    // 点光增强、常驻电流声引导（60m 内按距离衰减+声像，换关自动清理）。
     poiList(map, 'main_exit').forEach(p => {
       const dx = (p.data.fx - p.tx), dz = (p.data.fy - p.ty); // 门 → 房间内方向
       const nx = Math.sign(dx), nz = Math.sign(dz);
       W.addChunkContent(p.tx, p.ty, (group) => {
         const wx = BR.tileCX(p.tx), wz = BR.tileCZ(p.ty);
         const faceA = Math.atan2(nx, nz);
-        // 绿色 EXIT 灯牌（canvas 手绘）
+        // 绿色 EXIT 灯牌（canvas 手绘），双面
         const cv = document.createElement('canvas'); cv.width = 256; cv.height = 96;
         const g2 = cv.getContext('2d');
         g2.fillStyle = '#061206'; g2.fillRect(0, 0, 256, 96);
@@ -1762,20 +1915,35 @@
         g2.fillStyle = '#39ff6a'; g2.font = 'bold 56px sans-serif';
         g2.textAlign = 'center'; g2.textBaseline = 'middle';
         g2.fillText('EXIT', 128, 52);
-        const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.56),
-          new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }));
+        const signTex = new THREE.CanvasTexture(cv);
+        const signMat = new THREE.MeshBasicMaterial({ map: signTex });
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.7), signMat);
         sign.position.set(wx + nx * 0.35, 2.35, wz + nz * 0.35);
         sign.rotation.y = faceA; W.reg(group, sign);
+        const signBack = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.7), signMat);
+        signBack.position.copy(sign.position);
+        signBack.rotation.y = faceA + Math.PI; W.reg(group, signBack);
         // 门缝透光：门底一条冷白色光带（房间内侧）
         const slit = new THREE.Mesh(new THREE.PlaneGeometry(T * 0.8, 0.09),
           new THREE.MeshBasicMaterial({ color: 0xd8f4ff }));
         slit.position.set(wx + nx * (T / 2 - 0.06), 0.055, wz + nz * (T / 2 - 0.06));
         slit.rotation.y = faceA; W.reg(group, slit);
-        // 绿色小点光：远处可见
-        const gl = new THREE.PointLight(0x39ff6a, 0.9, 14, 2);
+        // 绿色光柱：房间内远处可见的垂直信标
+        const wallH = (W.theme && W.theme.wallH) || 2.7;
+        const shaft = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.9, 1.1, wallH, 12, 1, true),
+          new THREE.MeshBasicMaterial({ color: 0x39ff6a, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false }));
+        shaft.position.set(wx + nx * 1.2, wallH / 2, wz + nz * 1.2);
+        W.reg(group, shaft);
+        // 绿色点光：增强
+        const gl = new THREE.PointLight(0x39ff6a, 1.15, 18, 2);
         gl.position.set(wx + nx * 1.2, 2.3, wz + nz * 1.2); W.reg(group, gl);
         // 交互走门自带的 door 交互（推门 → L1），牌子只做视觉指引
       });
+      // 电流声引导（灯牌是通电的）：常驻，60m 内可闻
+      ensureLoopCleanup(W, ['l0_exit_buzz']);
+      BR.Audio.addLoop('l0_exit_buzz', 'buzz',
+        BR.tileCX(p.tx) + nx * 1.5, BR.tileCZ(p.ty) + nz * 1.5, 0.45);
     });
     // 红房间：红色灯光
     poiList(map, 'red_room').forEach(p => {
@@ -2086,7 +2254,9 @@
       W._funPit = { x: hx, z: hz, solid: solid };
     });
     buildThinWalls(map, W);
-    W.objective = '探索 Level 0，找到那面"不太对劲"的墙';
+    // v2.2 W-exits：通风管（固定映射 L0→L1，绿色边框）+ M.E.G. 管路图字条
+    buildVents(map, W, 'L0');
+    W.objective = '探索 Level 0，找到那面"不太对劲"的墙——或绿色 EXIT 门、绿色边框通风管';
   };
 
   BR.Levels.L0.onEnter = function () {
@@ -2199,5 +2369,5 @@
   };
 
   /* v1.5: levels.js 拆分，共享 helpers 给 levels2.js */
-  BR._lvShare = { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList, Container: BR.Container };
+  BR._lvShare = { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList, buildVents, ensureLoopCleanup, Container: BR.Container };
 })();
