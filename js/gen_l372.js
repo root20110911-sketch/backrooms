@@ -26,11 +26,26 @@
  *
  *   map.meta.l372 = { surface, rects, pits, pillars, chanRects,
  *                      openRooms:[room ids], pinkOpenings:[{tx,ty,face}],
- *                      arrivalGate:{tx,ty,wx,wz,face}, returnGate:{tx,ty,wx,wz,face} }
+ *                      arrivalGate:{tx,ty,wx,wz,face}, returnGate:{tx,ty,wx,wz,face},
+ *                      roles:{gallery,grand,abyss,returnRoom}, mirrorRect, crackRect,
+ *                      arches:[{tx,ty,dir}], colonnade:[[tx,ty]] }
  * 纯函数（Node 可测，无 document/THREE）：
  *     BR.Gen.L372waterAt(map, x, z) -> null | {surface, floor, depth}
  *     BR.Gen.L372isWater(map, x, z) -> bool
  *     BR.Gen.L372floorAt(map, x, z) -> 池底 Y（坑外/无水区返回 0）
+ *
+ * v2.3（W-l372）：让 L37.2 真正独立于 L37，不再是换皮 ——
+ *   气质：L37 封闭/池核/静谧 → L37.2 明亮/开阔/天空之境（lv 侧更强光照+更远雾+露天庭院）。
+ *   空间序列（按离出生房距离/面积分配角色，宁静休息关里"值得的 5 分钟"）：
+ *     发现(gallery,最近厅)：粉色开口画廊 —— 粉色阳光开口加密；
+ *     开阔(grand,最大厅)：露天大庭院 —— 柱廊+下沉浅滩+中央平台，一眼见天；
+ *     倒影(mirror,大庭院内 3x3)：镜面池 —— 静水（去波纹层）+ 无源涟漪（原创异常）；
+ *     异常(abyss,次远厅)：裂纹区 —— 瓷砖裂纹（原著称瓷砖"永远保持崭新"，裂纹即异常，
+ *       原创，非原著）+ 深水更暗 + 本厅无粉色开口；
+ *     返回(return,最远厅)：黑暗开口 → L37（契约不变）。
+ *   拾取/木箱只放有意义的：平台边杏仁水（休息）、深水坑边荧光棒（潜水）、
+ *   返回厅木箱+绷带（有人在回去前留下补给）。字条两处：出生房（身份+改编声明）、
+ *   裂纹区（异常目击记录，游戏内虚构）。
  * ============================================================ */
 (function () {
   var BR = window.BR;
@@ -213,6 +228,24 @@
       picked.push(best);
     }
 
+    /* ---- v2.3 空间角色：发现(gallery)→开阔(grand)→倒影(mirror,大庭院内)→异常(abyss)→返回(return)
+     * 按"离出生房距离/面积"分配；房间太少时允许角色合并（测试按 picked 数量放宽断言）。 */
+    var spawnD2 = function (r) { var dx = r.cx - spawnR.cx, dy = r.cy - spawnR.cy; return dx * dx + dy * dy; };
+    var byDist = picked.slice().sort(function (a, b) { return spawnD2(a) - spawnD2(b); });
+    var returnRoom = byDist[byDist.length - 1]; // 最远：返回厅（黑暗开口→L37）
+    var galleryRoom = byDist[0];                // 最近：发现厅（粉色开口画廊）
+    var byArea = picked.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+    var grandRoom = null, gi2;
+    for (gi2 = 0; gi2 < byArea.length; gi2++) {
+      if (byArea[gi2] !== galleryRoom && byArea[gi2] !== returnRoom) { grandRoom = byArea[gi2]; break; }
+    }
+    if (!grandRoom) grandRoom = byArea[0];
+    var abyssRoom = null, ai2;
+    for (ai2 = byDist.length - 2; ai2 >= 0; ai2--) {
+      if (byDist[ai2] !== galleryRoom && byDist[ai2] !== grandRoom) { abyssRoom = byDist[ai2]; break; }
+    }
+    if (!abyssRoom) abyssRoom = byDist.length > 1 ? byDist[byDist.length - 2] : byDist[0];
+
     /* ---- 水道：泳池厅两两之间 tile BFS 连水（走廊 tile 记为 channel） ---- */
     var flooded = {}; // room.id -> true
     for (var f0 = 0; f0 < picked.length; f0++) flooded[picked[f0].id] = true;
@@ -248,14 +281,13 @@
      * 中央有干燥平台（tile=2，floorY=0.55），四周浅水 + 柱。 */
     var openRooms = [];
     (function pickCourts() {
-      var byArea = picked.slice().sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
-      if (byArea.length && byArea[0].w * byArea[0].h >= 48) {
-        byArea[0].tag = 'open_court';
-        openRooms.push(byArea[0]);
-      }
-      if (byArea.length > 1 && byArea[1].w * byArea[1].h >= 40 && rng.chance(0.6)) {
-        byArea[1].tag = 'open_court';
-        openRooms.push(byArea[1]);
+      // v2.3：大庭院恒为露天（开阔记忆点）；第二庭院看面积+概率
+      grandRoom.tag = 'open_court';
+      openRooms.push(grandRoom);
+      var rest = byArea.filter(function (r) { return r !== grandRoom; });
+      if (rest.length && rest[0].w * rest[0].h >= 32 && rng.chance(0.7)) {
+        rest[0].tag = 'open_court';
+        openRooms.push(rest[0]);
       }
     })();
     function isCourt(r) { return openRooms.indexOf(r) >= 0; }
@@ -274,19 +306,27 @@
 
     var pits = [];
     var deckRects = []; // 干燥平台（swim zone 的 holes 用）
-    /* ---- 深水坑：最大非庭院泳池厅里 1 个（3x3，-1.2），台阶 + 扶梯 ---- */
+    /* ---- 深水坑：v2.3 改放到异常厅（裂纹区的水下部分）；太小则回退到最大非庭院厅 ----
+     * 异常厅的深水更暗（pit.dark，原创视觉，非原著），台阶 + 扶梯。 */
     (function carveDeep() {
-      var halls = picked.filter(function (r) { return !isCourt(r); })
-        .sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
-      if (!halls.length) return;
-      var r = halls[0];
+      function fits(r) { return r && (r.w - 2) >= 3 && (r.h - 2) >= 3; }
+      var target = (fits(abyssRoom) && !isCourt(abyssRoom)) ? abyssRoom : null;
+      if (!target) {
+        var halls = picked.filter(function (r) { return !isCourt(r); })
+          .sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+        for (var hi = 0; hi < halls.length; hi++) {
+          if (fits(halls[hi])) { target = halls[hi]; break; }
+        }
+      }
+      if (!target) return;
+      var r = target;
       var iw = r.w - 2, ih = r.h - 2;
-      if (iw < 3 || ih < 3) return;
       var pw = Math.min(3, iw), ph = Math.min(3, ih);
       var px = r.x + 1 + Math.floor(rng.next() * Math.max(1, iw - pw + 1));
       var py = r.y + 1 + Math.floor(rng.next() * Math.max(1, ih - ph + 1));
       var pit = { tx0: px, ty0: py, tx1: px + pw - 1, ty1: py + ph - 1,
-                  floorY: DEEP_FLOOR, kind: 'deep', steps: null, ramp: null };
+                  floorY: DEEP_FLOOR, kind: 'deep', steps: null, ramp: null,
+                  dark: (target === abyssRoom) };
       var edge = edgeTowardCenter(r, px, py, pw, ph);
       pit.steps = [{ edge: edge, n: 3 }];
       pit.ladder = { edge: oppEdge(edge) };
@@ -326,6 +366,73 @@
         }
       }
     })();
+    /* ---- v2.3 下沉浅滩：大庭院 3x2（floorY=0.2，淹没在水下约 0.25m，可涉行） ----
+     * lv 侧按实心台体渲染，水面会漫过它（只有 floorY>SURF 的干平台才避水）。
+     * 全房间扫描找空位，确定性顺序（rectFree 为函数声明，提升可用）。 */
+    (function carveShelf() {
+      var r = grandRoom;
+      if (!r || r.w < 6 || r.h < 5) return;
+      for (var yy = r.y + 1; yy + 1 < r.y + r.h - 1; yy++) {
+        for (var xx = r.x + 1; xx + 2 < r.x + r.w - 1; xx++) {
+          if (!rectFree(xx, yy, 3, 2, r, 0)) continue;
+          var shelf = { tx0: xx, ty0: yy, tx1: xx + 2, ty1: yy + 1,
+                        floorY: 0.2, kind: 'shelf', steps: null, ramp: null };
+          shelf.steps = [{ edge: edgeTowardCenter(r, xx, yy, 3, 2), n: 2 }];
+          carvePitTiles(shelf);
+          pits.push(shelf);
+          return;
+        }
+      }
+    })();
+    /* ---- v2.3 镜面池（倒影）与裂纹区（异常） ----
+     * 镜面池：大庭院内 3x3 静水区（lv 侧只留天空反射层、无波纹）+ 无源涟漪；
+     * 裂纹区：异常厅内 3x2 瓷砖裂纹。两者均为原创异常，非原著
+     * （原著只有粉色开口+白色虚空+恒定微小涟漪+永葆崭新的瓷砖）。 */
+    function rectFree(tx0, ty0, w, h, r, margin) {
+      var m = margin || 0;
+      if (tx0 < r.x || ty0 < r.y || tx0 + w > r.x + r.w || ty0 + h > r.y + r.h) return false;
+      for (var q = 0; q < pits.length; q++) {
+        var p = pits[q];
+        if (tx0 < p.tx1 + 1 + m && tx0 + w > p.tx0 - m &&
+            ty0 < p.ty1 + 1 + m && ty0 + h > p.ty0 - m) return false;
+      }
+      return true;
+    }
+    function inMirrorT(tx, ty) {
+      return !!mirrorRect && tx >= mirrorRect.tx0 && tx <= mirrorRect.tx1 &&
+             ty >= mirrorRect.ty0 && ty <= mirrorRect.ty1;
+    }
+    function inCrack(tx, ty) {
+      return !!crackRect && tx >= crackRect.tx0 && tx <= crackRect.tx1 &&
+             ty >= crackRect.ty0 && ty <= crackRect.ty1;
+    }
+    var mirrorRect = null;
+    (function placeMirror() {
+      var r = grandRoom;
+      if (!r || r.w < 5 || r.h < 5) return;
+      // 全房间扫描 3x3 空位（避开平台/坑/浅滩），确定性顺序
+      for (var yy = r.y + 1; yy + 2 < r.y + r.h - 1; yy++) {
+        for (var xx = r.x + 1; xx + 2 < r.x + r.w - 1; xx++) {
+          if (rectFree(xx, yy, 3, 3, r, 0)) {
+            mirrorRect = { tx0: xx, ty0: yy, tx1: xx + 2, ty1: yy + 2 };
+            return;
+          }
+        }
+      }
+    })();
+    var crackRect = null;
+    (function placeCrack() {
+      var r = abyssRoom;
+      if (!r || r.w < 5 || r.h < 4) return;
+      for (var yy = r.y + 1; yy + 1 < r.y + r.h - 1; yy++) {
+        for (var xx = r.x + 1; xx + 2 < r.x + r.w - 1; xx++) {
+          if (rectFree(xx, yy, 3, 2, r, 0)) {
+            crackRect = { tx0: xx, ty0: yy, tx1: xx + 2, ty1: yy + 1 };
+            return;
+          }
+        }
+      }
+    })();
     // 经过房间打 tag（柱子避让/装饰用）
     for (var fi = 0; fi < rooms.length; fi++) {
       if (flooded[rooms[fi].id] && !rooms[fi].tag) rooms[fi].tag = 'pool_hall';
@@ -361,6 +468,36 @@
       }
       return cnt === total;
     }
+    /* ---- v2.3 柱廊：大庭院内缘立柱成排（池核建筑语言） ----
+     * 沿庭院长边布置（宽庭院走南侧横排，高庭院走东侧竖排），tile=0 真实碰撞，
+     * 先于随机柱阵放置，走 roomConnected 连通校验。 */
+    var colonnade = [];
+    (function placeColonnade() {
+      var r = grandRoom;
+      if (!r) return;
+      var horiz = r.w >= r.h;
+      var line, from, to, x, y, ok;
+      if (horiz) {
+        if (r.w < 8 || r.h < 6) return;
+        line = r.y + r.h - 2; from = r.x + 2; to = r.x + r.w - 3;
+      } else {
+        if (r.h < 8 || r.w < 6) return;
+        line = r.x + r.w - 2; from = r.y + 2; to = r.y + r.h - 3;
+      }
+      function tryCol(cx, cy) {
+        if (tiles[T(cx, cy)] !== 1) return;
+        if (pitRing(cx, cy)) return;
+        if (pathSet[cx + ',' + cy]) return;
+        if (inCrack(cx, cy) || inMirrorT(cx, cy)) return;
+        if (Math.hypot(cx - r.cx, cy - r.cy) < 1.5) return;
+        tiles[T(cx, cy)] = 0;
+        if (roomConnected(r)) { colonnade.push([cx, cy]); pillars.push([cx, cy]); }
+        else tiles[T(cx, cy)] = 1; // 回退
+      }
+      for (var t = from; t <= to && colonnade.length < 4; t += 3) {
+        if (horiz) tryCol(t, line); else tryCol(line, t);
+      }
+    })();
     for (var rn = 0; rn < picked.length; rn++) {
       (function () {
         var r = picked[rn];
@@ -370,6 +507,7 @@
           for (px2 = r.x + 2; px2 <= r.x + r.w - 3; px2 += 3) {
             if (tiles[T(px2, py2)] !== 1) continue;
             if (pitRing(px2, py2)) continue;
+            if (inCrack(px2, py2) || inMirrorT(px2, py2)) continue; // v2.3：裂纹/镜面保持干净
             if (pathSet[px2 + ',' + py2]) continue;
             if (Math.hypot(px2 - r.cx, py2 - r.cy) < 1.5) continue;
             if (!rng.chance(0.5)) continue;
@@ -397,7 +535,7 @@
      * 记录 {tx,ty,face}：face 为墙所在方位；lv 侧在墙面上贴粉色发光矩形。 */
     var pinkOpenings = [];
     function tryPink(tx, ty) {
-      if (pinkOpenings.length >= 16) return;
+      if (pinkOpenings.length >= 24) return; // v2.3：画廊加密，上限放宽
       if (tileAt(tx, ty) !== 1 && tileAt(tx, ty) !== 2) return;
       var faces = ['N', 'S', 'E', 'W'];
       for (var f = 0; f < faces.length; f++) {
@@ -421,17 +559,53 @@
       for (var yy = longest.y0; yy <= longest.y1; yy++)
         for (var xx = longest.x0; xx <= longest.x1; xx++) tryPink(xx, yy);
     })();
-    // 庭院与大厅内墙：每间 2~3 个
+    // 庭院与大厅内墙：发现厅 6 个（粉色开口画廊），其余 3 个；异常厅没有（v2.3）
     for (var hr = 0; hr < picked.length; hr++) {
       var hrr = picked[hr];
+      if (hrr === abyssRoom) continue; // v2.3：异常厅里粉色阳光照不进来
+      var want = (hrr === galleryRoom) ? 6 : 3;
       var got = 0;
-      for (var qy = hrr.y; qy < hrr.y + hrr.h && got < 3; qy++)
-        for (var qx = hrr.x; qx < hrr.x + hrr.w && got < 3; qx++) {
+      for (var qy = hrr.y; qy < hrr.y + hrr.h && got < want; qy++)
+        for (var qx = hrr.x; qx < hrr.x + hrr.w && got < want; qx++) {
           var before = pinkOpenings.length;
           tryPink(qx, qy);
           if (pinkOpenings.length > before) got++;
         }
     }
+
+    /* ---- v2.3 拱门：水道上跨水拱（装饰性，不改碰撞） ----
+     * 全水道 tile 候选，按"两侧贴墙"程度评分排序取优（柱础贴墙最稳，无墙也立得住，
+     * 柱础落在水道 tile 自身范围内，不悬空）。相邻拱门至少隔 2 格。 */
+    var arches = [];
+    (function placeArches() {
+      if (!chanRects.length) return;
+      var cands = [], ci, t, tx, ty;
+      for (ci = 0; ci < chanRects.length; ci++) {
+        var cr = chanRects[ci];
+        var horiz = (cr.x1 - cr.x0) >= (cr.y1 - cr.y0);
+        var t0 = horiz ? cr.x0 : cr.y0, t1 = horiz ? cr.x1 : cr.y1;
+        for (t = t0; t <= t1; t++) {
+          tx = horiz ? t : cr.x0; ty = horiz ? cr.y0 : t;
+          if (tileAt(tx, ty) !== 1) continue;
+          if (pitRing(tx, ty)) continue;
+          var s1 = horiz ? tileAt(tx, ty - 1) : tileAt(tx - 1, ty);
+          var s2 = horiz ? tileAt(tx, ty + 1) : tileAt(tx + 1, ty);
+          var score = (s1 === 0 ? 1 : 0) + (s2 === 0 ? 1 : 0);
+          cands.push({ tx: tx, ty: ty, dir: horiz ? 'NS' : 'EW', score: score });
+        }
+      }
+      cands.sort(function (a, b) {
+        return (b.score - a.score) || (a.tx - b.tx) || (a.ty - b.ty);
+      });
+      var n = Math.min(3, cands.length);
+      for (var i = 0; i < cands.length && arches.length < n; i++) {
+        var c = cands[i], ok = true;
+        for (var j = 0; j < arches.length; j++) {
+          if (Math.abs(arches[j].tx - c.tx) + Math.abs(arches[j].ty - c.ty) < 3) { ok = false; break; }
+        }
+        if (ok) arches.push({ tx: c.tx, ty: c.ty, dir: c.dir });
+      }
+    })();
 
     /* ---- POI ---- */
     // 入口对应：L37 侧"墙面异常发光开口"的本侧落点（出生房内贴墙）。
@@ -443,11 +617,8 @@
     addPOI('arrival_gate', arrival.tx, arrival.ty,
       { wx: awx, wz: awz, face: arrival.face });
     // 返回 L37：离出生房最远的泳池厅贴墙处（"黑暗开口"→ 回 L37，原著出口）。
-    var farR = picked[0], farD = -1, pr3;
-    for (pr3 = 0; pr3 < picked.length; pr3++) {
-      var dd3 = roomDist(spawnR, picked[pr3]);
-      if (dd3 > farD) { farD = dd3; farR = picked[pr3]; }
-    }
+    // v2.3：即 roles.returnRoom（与上面空间角色同一房间）。
+    var farR = returnRoom;
     var ret = edgeTileByWall(farR, null);
     if (!ret) {
       var rft = nearestFloorTile(farR, Math.round(farR.cx), Math.round(farR.cy));
@@ -457,9 +628,14 @@
     addPOI('return_gate', ret.tx, ret.ty,
       { wx: rwx, wz: rwz, face: ret.face });
     // Pinnicorns（原著无害实体；孤证趣味设定，见 LORE_V21.md）：水面漂浮装饰
+    // v2.3：优先放在大庭院（开阔水面最显眼）
+    var pinRooms = [grandRoom];
+    for (var pni = 0; pni < picked.length; pni++) {
+      if (picked[pni] !== grandRoom) pinRooms.push(picked[pni]);
+    }
     var pinN = 0;
-    for (var pn3 = 0; pn3 < picked.length && pinN < 2; pn3++) {
-      var pr4 = picked[pn3];
+    for (var pn3 = 0; pn3 < pinRooms.length && pinN < 2; pn3++) {
+      var pr4 = pinRooms[pn3];
       if (!rng.chance(0.55)) continue;
       var pwx = (pr4.x + pr4.w / 2) * TILE, pwz = (pr4.y + pr4.h / 2) * TILE;
       var chk = BR.Gen.L372waterAt(map, pwx, pwz);
@@ -478,39 +654,78 @@
         { wx: pwx, wz: pwz, yaw: rng.range(0, 6.2832) });
       pinN++;
     }
-    // 拾取（tile-1，保证可达性断言）
-    var loot = [['almond', 2], ['almond', 1], ['bandage', 1], ['battery', 1], ['glowstick', 2], ['cashew', 1]];
-    var li2 = 0;
-    for (var pn4 = 0; pn4 < picked.length && li2 < loot.length; pn4++) {
-      var pr5 = picked[pn4];
-      var tries = 0;
-      while (li2 < loot.length && tries < 4) {
-        tries++;
-        var ltx = pr5.x + 1 + Math.floor(rng.next() * Math.max(1, pr5.w - 2));
-        var lty = pr5.y + 1 + Math.floor(rng.next() * Math.max(1, pr5.h - 2));
-        if (tileAt(ltx, lty) !== 1) continue;
-        if (pitRing(ltx, lty)) continue;
-        addPOI('pickup', ltx, lty, { item: loot[li2][0], n: loot[li2][1] });
-        li2++;
-        break;
+    /* ---- v2.3 拾取/木箱：只放有意义的，不许乱塞 ----
+     * 大庭院平台边 2×杏仁水（有人在此休息）、深水坑边 1×荧光棒（潜水照明）、
+     * 返回厅木箱 medkit（有人在回去前留下多余补给）+ 木箱边 1×绷带。
+     * 全部 tile-1、可达（沿用可达性断言）。 */
+    function tilesBesidePit(pit) {
+      var out = [], xx, yy, q;
+      function nearOtherPit(x, y) {
+        for (q = 0; q < pits.length; q++) {
+          var p = pits[q];
+          if (p === pit) continue; // 自身坑的 ring 不算（邻位本就在它旁边）
+          if (x >= p.tx0 - 1 && x <= p.tx1 + 1 && y >= p.ty0 - 1 && y <= p.ty1 + 1) return true;
+        }
+        return false;
       }
+      for (yy = pit.ty0 - 1; yy <= pit.ty1 + 1; yy++)
+        for (xx = pit.tx0 - 1; xx <= pit.tx1 + 1; xx++) {
+          if (xx >= pit.tx0 && xx <= pit.tx1 && yy >= pit.ty0 && yy <= pit.ty1) continue;
+          if (xx < 1 || xx >= W - 1 || yy < 1 || yy >= H - 1) continue;
+          if (tileAt(xx, yy) !== 1 || nearOtherPit(xx, yy) || inCrack(xx, yy)) continue;
+          out.push([xx, yy]);
+        }
+      return out;
     }
-    // 木箱（容器；tile-1）
-    var crateItems = ['almond', 'medkit'];
-    for (var cn = 0; cn < 2; cn++) {
-      var crR = picked[(cn * 2 + 1) % picked.length];
-      var ctx = crR.x + 1 + Math.floor(rng.next() * Math.max(1, crR.w - 2));
-      var cty = crR.y + 1 + Math.floor(rng.next() * Math.max(1, crR.h - 2));
-      if (tileAt(ctx, cty) !== 1 || pitRing(ctx, cty)) continue;
-      addPOI('crate', ctx, cty, { item: crateItems[cn] || 'almond' });
+    function deepPitOf() {
+      for (var i = 0; i < pits.length; i++) if (pits[i].kind === 'deep') return pits[i];
+      return null;
     }
+    var dpit = deepPitOf();
+    if (dpit) {
+      var gpos = tilesBesidePit(dpit);
+      if (gpos.length) addPOI('pickup', gpos[0][0], gpos[0][1], { item: 'glowstick', n: 1 });
+    }
+    if (deckRects.length) {
+      var apos = tilesBesidePit(deckRects[0]);
+      for (var an = 0; an < Math.min(2, apos.length); an++)
+        addPOI('pickup', apos[an][0], apos[an][1], { item: 'almond', n: 1 });
+    }
+    // 木箱：返回厅，离返回门 2~4 格
+    (function placeGateCrate() {
+      var best = null, xx, yy;
+      for (yy = returnRoom.y; yy < returnRoom.y + returnRoom.h; yy++) {
+        for (xx = returnRoom.x; xx < returnRoom.x + returnRoom.w; xx++) {
+          if (tileAt(xx, yy) !== 1 || pitRing(xx, yy) || inCrack(xx, yy)) continue;
+          if (xx === ret.tx && yy === ret.ty) continue;
+          var cd = Math.max(Math.abs(xx - ret.tx), Math.abs(yy - ret.ty));
+          if (cd < 2 || cd > 4) continue;
+          best = [xx, yy]; break;
+        }
+        if (best) break;
+      }
+      if (!best) return;
+      addPOI('crate', best[0], best[1], { item: 'medkit' });
+      var nb = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (var d = 0; d < 4; d++) {
+        var bx = best[0] + nb[d][0], by = best[1] + nb[d][1];
+        if (tileAt(bx, by) === 1 && !pitRing(bx, by) && !inCrack(bx, by) &&
+            !(bx === ret.tx && by === ret.ty)) {
+          addPOI('pickup', bx, by, { item: 'bandage', n: 1 });
+          break;
+        }
+      }
+    })();
 
     map.meta.l372 = {
       surface: SURF, rects: rects, pits: pits, pillars: pillars, chanRects: chanRects,
       openRooms: openRooms.map(function (r) { return r.id; }),
       pinkOpenings: pinkOpenings,
       arrivalGate: { tx: arrival.tx, ty: arrival.ty, wx: awx, wz: awz, face: arrival.face },
-      returnGate: { tx: ret.tx, ty: ret.ty, wx: rwx, wz: rwz, face: ret.face }
+      returnGate: { tx: ret.tx, ty: ret.ty, wx: rwx, wz: rwz, face: ret.face },
+      // v2.3：空间角色与新要素（旧存档读档重建时缺字段，lv 侧全部按缺省兜底）
+      roles: { gallery: galleryRoom.id, grand: grandRoom.id, abyss: abyssRoom.id, returnRoom: returnRoom.id },
+      mirrorRect: mirrorRect, crackRect: crackRect, arches: arches, colonnade: colonnade
     };
   }
 

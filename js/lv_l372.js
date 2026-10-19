@@ -11,6 +11,14 @@
 * （Fandom 主站只有粉色开口光、无露天蓝天；liminality 同人版的天空无云无太阳。）
 * 游戏内字条（buildLoreNote）同样如实标注为改编。
 *
+* v2.3（W-l372）：与 L37 的气质彻底区分 ——
+*   L37：封闭/池核/静谧（雾近、光弱 0.55、无天空）；
+*   L37.2：明亮/开阔/天空之境（光强 1.35、暖阳光色、雾远 120、露天庭院直见天）。
+*   空间序列：粉色开口画廊（发现）→ 露天大庭院+柱廊（开阔）→ 镜面池（倒影，
+*   静水+无源涟漪，原创异常）→ 裂纹区（异常：瓷砖裂纹+无粉色开口+深水更暗，
+*   原创异常；原著称瓷砖"永远保持崭新"）→ 黑暗开口（返回 L37）。
+*   镜面池/无源涟漪/裂纹/深水变暗均为原创设计，非原著，注释与字条如实标注。
+*
 * 实现要点：
 * - 天空：渐变穹顶（canvas 程序化贴图）+ 太阳精灵 + 漂移云层（精灵），
 * 无重型后处理；白色虚空 = 穹顶下半纯白 + 远景雾（bg 亮色）。
@@ -141,6 +149,30 @@ g.addColorStop(1, 'rgba(255,240,200,0)');
 x.fillStyle = g; x.fillRect(0, 0, w, h);
 return c;
 });
+// v2.3 裂纹瓷砖（原创异常：原著称瓷砖"永远保持崭新"，裂纹即异常；非原著）
+BR.Textures.registerTex('sunlit_crack', function (w, h) {
+var c = mkCanvas(w, h), x = c.getContext('2d');
+x.fillStyle = '#f2f7f8'; x.fillRect(0, 0, w, h);
+x.strokeStyle = 'rgba(178,198,206,0.85)'; x.lineWidth = 2;
+var i;
+for (i = 0; i <= 2; i++) {
+x.beginPath(); x.moveTo(i * w / 2, 0); x.lineTo(i * w / 2, h); x.stroke();
+x.beginPath(); x.moveTo(0, i * h / 2); x.lineTo(w, i * h / 2); x.stroke();
+}
+var rnd = lcg(0xc4ac);
+x.strokeStyle = 'rgba(42,56,63,0.92)';
+for (var k = 0; k < 5; k++) {
+x.lineWidth = 1 + rnd() * 1.6;
+var px = rnd() * w, py = rnd() * h;
+x.beginPath(); x.moveTo(px, py);
+for (var s = 0; s < 6; s++) {
+px += (rnd() - 0.5) * w * 0.32; py += (rnd() - 0.5) * h * 0.32;
+x.lineTo(px, py);
+}
+x.stroke();
+}
+return c;
+});
 BR.Textures.registerWallTex('L372', 'pool_tile');
 
 /* ---------------- 环境音 ---------------- */
@@ -152,7 +184,7 @@ var n = R.noise(), bp = R.filter('bandpass', 1600, 0.7), ng = R.gain(0.16);
 n.connect(bp); bp.connect(ng); ng.connect(R.group);
 var lfo = R.osc('sine', 0.35), lg = R.gain(0.08);
 lfo.connect(lg); lg.connect(ng.gain); // 恒定微小涟漪的水声起伏
-var w = R.noise(), hp = R.filter('highpass', 5000), wg = R.gain(0.05);
+var w = R.noise(), hp = R.filter('highpass', 5000), wg = R.gain(0.065); // v2.3：更开阔，风声稍强
 w.connect(hp); hp.connect(wg); wg.connect(R.group);
 var wlfo = R.osc('sine', 0.09), wlg = R.gain(0.03);
 wlfo.connect(wlg); wlg.connect(wg.gain); // 微风
@@ -176,6 +208,8 @@ skyGroup: null, // 穹顶/太阳/云（场景级，随关卡重建释放）
 clouds: [], // [{spr, ang, r, y, speed}]
 pins: [], // pinnicorn 漂浮物 [{g, phase, baseY, yaw0}]
 pinkMat: null, // 粉色开口辉光材质（tick 微脉动）
+whiteMat: null, // v2.3：入口白光开口材质（tick 呼吸）
+phantom: null, // v2.3：镜面池无源涟漪 {mesh, t}
 ladders: [],
 laneGeo: null
 };
@@ -267,10 +301,32 @@ M.darkEdge = new THREE.MeshBasicMaterial({
 color: 0x3d6a8a, transparent: true, opacity: 0.5,
 blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
+// v2.3 新增
+var crackTex = BR.Textures.get('sunlit_crack');
+M.crack = new THREE.MeshBasicMaterial({ // 裂纹瓷砖覆盖层（原创异常）
+map: crackTex || null, transparent: true, opacity: 0.96, depthWrite: false
+});
+M.deepShadeDark = new THREE.MeshBasicMaterial({ // 异常厅深水：更暗（原创）
+color: 0x0e3a50, transparent: true, opacity: 0.45, depthWrite: false
+});
+M.reflectStill = new THREE.MeshBasicMaterial({ // 镜面池静水：只留天空反射
+map: reflTex, transparent: true, opacity: 0.72,
+color: 0xe4f3fe, depthWrite: false, side: THREE.DoubleSide
+});
+M.phantom = new THREE.MeshBasicMaterial({ // 无源涟漪（原创异常；tick 动画）
+color: 0xffffff, transparent: true, opacity: 0,
+blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+});
+M.whiteSpill = new THREE.MeshBasicMaterial({ // 入口地面光 spill
+map: BR.Textures.get('sunlit_whiteglow'), transparent: true, opacity: 0.35,
+blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+});
 FX.pinkMat = M.pink;
+FX.whiteMat = M.whiteGlow;
 W._levelMats = W._levelMats || [];
 [M.reflect, M.water, M.pitWall, M.deepShade, M.deckTop, M.pillar, M.trim,
-M.sunStreak, M.pink, M.pinkFloor, M.whiteGlow, M.darkPanel, M.darkEdge]
+M.sunStreak, M.pink, M.pinkFloor, M.whiteGlow, M.darkPanel, M.darkEdge,
+M.crack, M.deepShadeDark, M.reflectStill, M.phantom, M.whiteSpill]
 .forEach(function (m) { W._levelMats.push(m);});
 if (M.caust) W._levelMats.push(M.caust);
 return M;
@@ -334,7 +390,8 @@ FX.skyGroup = g;
 
 /* ---------------- 水面：双层（天空反射 + 波纹）+ 太阳倒影光柱 ---------------- */
 function buildWaterPlanes(W, L, M) {
-var deckPits = L.pits.filter(function (pt) { return pt.floorY > 0;});
+// v2.3：只有干平台（floorY>SURF）避水；下沉浅滩（0.2）在水下，水面漫过它
+var deckPits = L.pits.filter(function (pt) { return pt.floorY > SURF;});
 function inDeck(tx, ty) {
 for (var i = 0; i < deckPits.length; i++) {
 var d = deckPits[i];
@@ -342,15 +399,21 @@ if (tx >= d.tx0 && tx <= d.tx1 && ty >= d.ty0 && ty <= d.ty1) return true;
 }
 return false;
 }
+// v2.3 镜面池：这些 tile 只留天空反射层（静水），去掉波纹与 caustics
+var mirror = L.mirrorRect || null;
+function inMirrorT(tx, ty) {
+return !!mirror && tx >= mirror.tx0 && tx <= mirror.tx1 && ty >= mirror.ty0 && ty <= mirror.ty1;
+}
 function runsOf(r) {
 var runs = [], ty, x, x1;
 for (ty = r.y0; ty <= r.y1; ty++) {
 x = r.x0;
 while (x <= r.x1) {
 if (inDeck(x, ty)) { x++; continue;}
+var mir = inMirrorT(x, ty);
 x1 = x;
-while (x1 + 1 <= r.x1 &&!inDeck(x1 + 1, ty)) x1++;
-runs.push({ x0: x, y0: ty, x1: x1, y1: ty});
+while (x1 + 1 <= r.x1 &&!inDeck(x1 + 1, ty) && inMirrorT(x1 + 1, ty) === mir) x1++;
+runs.push({ x0: x, y0: ty, x1: x1, y1: ty, still: mir});
 x = x1 + 1;
 }
 }
@@ -362,11 +425,14 @@ eachChunkRect(run.x0, run.y0, run.x1, run.y1, function (ax, ay, ix0, iy0, ix1, i
 W.addChunkContent(ix0, iy0, function (group) {
 var w = (ix1 - ix0 + 1) * TILE, h = (iy1 - iy0 + 1) * TILE;
 var cx = (ix0 + ix1 + 1) / 2 * TILE, cz = (iy0 + iy1 + 1) / 2 * TILE;
-// 下层：天空反射（天空之境近似）
-W.reg(group, hPlane(w, h, M.reflect, cx, SURF - 0.015, cz, true));
+var still = !!run.still;
+// 下层：天空反射（天空之境近似）；镜面池用更强的静水反射
+W.reg(group, hPlane(w, h, still? M.reflectStill: M.reflect, cx, SURF - 0.015, cz, true));
+if (!still) {
 // 上层：波纹
 W.reg(group, hPlane(w, h, M.water, cx, SURF + 0.01, cz, true));
 if (M.caust) W.reg(group, hPlane(w, h, M.caust, cx, SURF + 0.025, cz, true));
+}
 });
 });
 });
@@ -425,9 +491,9 @@ plat.position.set(qcx, pit.floorY / 2, qcz);
 W.reg(group, plat);
 W.reg(group, hPlane(qw, qh, M.deckTop, qcx, pit.floorY + 0.01, qcz, true));
 } else {
-// 深水坑：池底 + 深度 shade + 池壁
+// 深水坑：池底 + 深度 shade（v2.3：异常厅的深水更暗，原创）+ 池壁
 W.reg(group, hPlane(qw, qh, W.mat('pool_floor'), qcx, pit.floorY, qcz, true));
-W.reg(group, hPlane(qw, qh, M.deepShade, qcx, pit.floorY + 0.03, qcz, true));
+W.reg(group, hPlane(qw, qh, pit.dark? M.deepShadeDark: M.deepShade, qcx, pit.floorY + 0.03, qcz, true));
 var EPS = 0.01;
 function wall(x0, z0, x1, z1) {
 var len = Math.hypot(x1 - x0, z1 - z0);
@@ -511,6 +577,107 @@ W.reg(group, cap);
 });
 }
 
+/* ---------------- v2.3 拱门：水道上跨水拱（装饰性，不改碰撞） ----------------
+ * gen 侧已保证拱门 tile 两侧是实墙；柱础贴墙，拱跨过水道。 */
+function buildArches(W, L, M) {
+(L.arches || []).forEach(function (a) {
+W.addChunkContent(a.tx, a.ty, function (group) {
+var cx = BR.tileCX(a.tx), cz = BR.tileCZ(a.ty);
+var g = new THREE.Group();
+function pil(px, pz) {
+var m = new THREE.Mesh(new THREE.BoxGeometry(0.42, 2.1, 0.42), M.trim);
+m.position.set(px, 1.05, pz); g.add(m);
+var cap = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.16, 0.58), M.pillar);
+cap.position.set(px, 2.18, pz); g.add(cap);
+}
+var off = TILE / 2 - 0.28;
+if (a.dir === 'NS') { pil(cx, cz - off); pil(cx, cz + off); }
+else { pil(cx - off, cz); pil(cx + off, cz); }
+// 半圆拱：默认在 XY 平面跨 E-W；跨 N-S 时转 90°
+var arc = new THREE.Mesh(new THREE.TorusGeometry(1.32, 0.17, 8, 20, Math.PI), M.trim);
+arc.position.set(cx, 2.1, cz);
+if (a.dir === 'NS') arc.rotation.y = Math.PI / 2;
+g.add(arc);
+W.reg(group, g);
+});
+});
+}
+
+/* ---------------- v2.3 裂纹区：异常厅水下瓷砖裂纹 ----------------
+ * [原创异常，非原著] 原著（Fandom 主站）称本层瓷砖"永远保持崭新"，
+ * 因此裂纹本身就是异常。字条（buildAbyssNote）记录目击。 */
+function buildCracks(W, L, M) {
+var cr = L.crackRect;
+if (!cr || !M.crack) return;
+var w = (cr.tx1 - cr.tx0 + 1) * TILE, h = (cr.ty1 - cr.ty0 + 1) * TILE;
+var cx = (cr.tx0 + cr.tx1 + 1) / 2 * TILE, cz = (cr.ty0 + cr.ty1 + 1) / 2 * TILE;
+W.addChunkContent(cr.tx0, cr.ty0, function (group) {
+var m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), M.crack);
+m.rotation.x = -Math.PI / 2;
+m.position.set(cx, 0.015, cz);
+W.reg(group, m);
+});
+}
+
+/* ---------------- v2.3 无源涟漪：镜面池中央周期性扩散的光环 ----------------
+ * [原创异常，非原著] 水面本该只有恒定微小涟漪（原著），这里却有一圈
+ * 找不到源头的涟漪在缓慢扩散。纯视觉，无交互。 */
+function buildPhantomRipple(W, L, M) {
+FX.phantom = null;
+var mr = L.mirrorRect;
+if (!mr) return;
+var cx = (mr.tx0 + mr.tx1 + 1) / 2 * TILE, cz = (mr.ty0 + mr.ty1 + 1) / 2 * TILE;
+W.addChunkContent(mr.tx0, mr.ty0, function (group) {
+var ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.55, 40), M.phantom);
+ring.rotation.x = -Math.PI / 2;
+ring.position.set(cx, SURF + 0.015, cz);
+W.reg(group, ring);
+FX.phantom = { mesh: ring, t: 2.5 };
+});
+}
+
+/* ---------------- v2.3 裂纹区字条：异常目击记录（游戏内虚构，非原著） ---------------- */
+function buildAbyssNote(W, map, L, M) {
+var cr = L.crackRect;
+if (!cr) return;
+// 裂缝旁找一个可行走 tile 放字条，面向裂缝
+var ax = -1, ay = -1, fx = 0, fz = 1, found = false;
+for (var yy = cr.ty0 - 1; yy <= cr.ty1 + 1 && !found; yy++)
+for (var xx = cr.tx0 - 1; xx <= cr.tx1 + 1 && !found; xx++) {
+if (xx >= cr.tx0 && xx <= cr.tx1 && yy >= cr.ty0 && yy <= cr.ty1) continue;
+if (W.tile(xx, yy) !== 1) continue;
+ax = xx; ay = yy; found = true;
+var ccx = (cr.tx0 + cr.tx1 + 1) / 2 * TILE, ccz = (cr.ty0 + cr.ty1 + 1) / 2 * TILE;
+fx = ccx - BR.tileCX(xx); fz = ccz - BR.tileCZ(yy);
+}
+if (!found) return;
+W.addChunkContent(ax, ay, function (group) {
+var n = new THREE.Mesh(
+new THREE.PlaneGeometry(0.55, 0.75),
+new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') })
+);
+n.position.set(BR.tileCX(ax), 1.5, BR.tileCZ(ay));
+n.rotation.y = Math.atan2(fx, fz);
+W.reg(group, n);
+W.addInteractable({
+id: 'note_l372_abyss', kind: 'note', chunkKey: W.chunkKeyOf(ax, ay),
+meshes: [n], pos: n.position.clone(), radius: 2.4,
+prompt: function () { return (BR.interactKeyLabel ? BR.interactKeyLabel() : 'E') + ' 阅读墙上的刻字'; },
+canUse: function () { return true; },
+use: function () {
+BR.Audio.paper();
+// [原创，非原著] 游戏内虚构的流浪者记录，用来点出"瓷砖不该裂"这一异常。
+BR.UI.showNote('墙上的刻字',
+'第四天。\n\n瓷砖裂了。\n这里的瓷砖永远是新的 —— 每一个进来的人都这么说。\n不该裂的。\n\n裂缝是从深水那边开始的。别往深处去。');
+if (W.state.picked.indexOf('note_l372_abyss') < 0) {
+W.state.picked.push('note_l372_abyss');
+BR.bus.emit('picked', { id: 'note_l372_abyss' });
+}
+}
+});
+});
+}
+
 /* ---------------- 粉色阳光开口（原著核心元素；纯装饰，不可穿过） ----------------
 * 开口之外只有白色虚空 —— 原著称试图穿过去查明光源的流浪者神秘失踪，
 * 因此本关的开口一律不可交互（墙体碰撞本就挡住），只做视觉。 */
@@ -574,6 +741,19 @@ var quad = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 2.2), M.whiteGlow);
 quad.position.set(px, 1.35, pz);
 quad.rotation.y = rotY;
 W.reg(group, quad);
+// v2.3：地面光 spill + 门槛拼花 —— 强调这是"空间之间的边界"，不是普通传送门
+var spill = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.8), M.whiteSpill);
+spill.rotation.x = -Math.PI / 2;
+var spx = px, spz = pz;
+if (face === 'N') spz += 1.3;
+else if (face === 'S') spz -= 1.3;
+else if (face === 'W') spx += 1.3;
+else spx -= 1.3;
+spill.position.set(spx, 0.02, spz);
+W.reg(group, spill);
+var sill = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.04, 0.35), M.trim);
+sill.position.set(px, 0.02, pz);
+W.reg(group, sill);
 });
 }
 
@@ -763,7 +943,8 @@ BR.UI.showNote('流浪者字条 —— Level 37.2',
 '白瓷砖永远崭新，及膝的清水，墙上的矩形开口透着粉色的阳光 —— ' +
 '别想着穿过去查明光源，之前这么干的人都没回来。\n\n' +
 '本层在游戏里能看到露天蓝天和太阳，是制作者按玩家要求加的' +
-'改编；按原书记载，这里只有粉色开口光，开口之外是白色虚空。');
+'改编；按原书记载，这里只有粉色开口光，开口之外是白色虚空。\n\n' +
+'往粉色开口多的方向走，穿过水道，能看到天。');
 if (W.state.picked.indexOf('note_l372_intro') < 0) {
 W.state.picked.push('note_l372_intro');
 BR.bus.emit('picked', { id: 'note_l372_intro'});
@@ -776,7 +957,8 @@ BR.bus.emit('picked', { id: 'note_l372_intro'});
 /* ---------------- 游泳区域注册 ---------------- */
 function registerSwimZones(L) {
 BR.Swim.clearZones();
-var deckPits = L.pits.filter(function (pt) { return pt.floorY > 0;});
+// v2.3：只有干平台（floorY>SURF）是 holes；下沉浅滩（0.2）在水下，水面漫过它
+var deckPits = L.pits.filter(function (pt) { return pt.floorY > SURF;});
 L.rects.forEach(function (r) {
 var holes = [];
 deckPits.forEach(function (d) {
@@ -880,10 +1062,12 @@ FX.ladders.push({ x: lx, z: lz});
 BR.Levels.L372 = {
 name: 'Level 37.2 ——「Sunlit Pools」',
 theme: {
-bg: 0xdceefb, fogNear: 16, fogFar: 95, ambient: 0xf4f9ff, ambInt: 1.0,
-sky: 0xbfe0f7, ground: 0x9fc4dd, light: 0xfff6e8, lightInt: 1.0,
-wallH: 3.2, wall: 'pool_tile', floor: 'pool_floor', ceil: 'pool_ceil',
-surface: 'tile', fixtureEvery: 6, hum: 0
+  // v2.3：与 L37（lightInt 0.55 / fogFar 60 / 无天空）拉开气质差距 ——
+  // 更亮、更暖、看得更远，一眼即知不是 L37。
+  bg: 0xe8f4fd, fogNear: 22, fogFar: 120, ambient: 0xf6fbff, ambInt: 1.15,
+  sky: 0xcfe8fa, ground: 0xa9cfe4, light: 0xfff3da, lightInt: 1.35,
+  wallH: 3.2, wall: 'pool_tile', floor: 'pool_floor', ceil: 'pool_ceil',
+  surface: 'tile', fixtureEvery: 6, hum: 0
 },
 
 buildContent: function (map, W) {
@@ -891,6 +1075,7 @@ BR.Swim.clearZones();
 FX.t = 0;
 FX.ladders = [];
 FX.pins.length = 0;
+FX.phantom = null; // v2.3
 var L = map.meta && map.meta.l372;
 var M = makeMats(W);
 // 露天庭院：跳过天花板实例（直接见天）
@@ -908,11 +1093,15 @@ if (L) {
 buildWaterPlanes(W, L, M);
 buildPits(W, L, M, map);
 buildPillars(W, L, M);
+buildArches(W, L, M); // v2.3
+buildCracks(W, L, M); // v2.3
+buildPhantomRipple(W, L, M); // v2.3
 buildLadders(W, L, M, map);
 buildPinkOpenings(W, L, M);
 buildArrivalGate(W, L, M, map);
 buildReturnGate(W, L, M, map);
 buildPinnicorns(W, map);
+buildAbyssNote(W, map, L, M); // v2.3
 registerSwimZones(L);
 }
 buildPickups(W, map);
@@ -924,9 +1113,13 @@ ladders: FX.ladders,
 cloudCount: FX.clouds.length,
 pinCount: FX.pins.length,
 returnGate: (L && L.returnGate) || null,
-arrivalGate: (L && L.arrivalGate) || null
+arrivalGate: (L && L.arrivalGate) || null,
+roles: (L && L.roles) || null, // v2.3
+archCount: (L && L.arches ? L.arches.length : 0), // v2.3
+hasMirror: !!(L && L.mirrorRect), // v2.3
+hasCrack: !!(L && L.crackRect) // v2.3
 };
-W.objective = '阳光泳池：沿浅水探索露天庭院；墙上的黑暗开口可以回到 Level 37';
+W.objective = '阳光泳池：穿过粉色开口的长廊，去大庭院看天，在镜面池边歇一会；墙上的黑暗开口可以回到 Level 37';
 },
 
 onEnter: function () {
@@ -989,6 +1182,16 @@ ca.offset.x = (FX.t * 0.011) % 1; ca.offset.y = (FX.t * 0.014) % 1;
 }
 // 粉色开口辉光微脉动
 if (FX.pinkMat) FX.pinkMat.opacity = 0.88 + Math.sin(FX.t * 1.1) * 0.07;
+// v2.3：入口白光开口呼吸（空间过渡感）
+if (FX.whiteMat) FX.whiteMat.opacity = 0.90 + Math.sin(FX.t * 0.7) * 0.08;
+// v2.3：镜面池无源涟漪 —— 7 秒一圈，缓慢扩散后消散（原创异常）
+if (FX.phantom && FX.phantom.mesh) {
+FX.phantom.t += dt;
+var cyc = FX.phantom.t % 7, kk = cyc / 7;
+var psc = 0.6 + kk * 3.4;
+FX.phantom.mesh.scale.set(psc, psc, 1);
+FX.phantom.mesh.material.opacity = 0.30 * (1 - kk);
+}
 // Pinnicorn 漂浮
 for (var j = 0; j < FX.pins.length; j++) {
 var pn = FX.pins[j];
