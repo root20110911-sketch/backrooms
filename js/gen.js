@@ -1087,9 +1087,31 @@
     var boR = pickRoom(rng, map, [spawn, safeR]);
     var bt = [Math.round(boR.cx), Math.round(boR.cy)];
     addPOI(map, 'blackout', bt[0], bt[1], { cx: bt[0], cy: bt[1], r: 4 });
-    // 潜伏者 ×1：盘踞在闪烁区房间。平时蜷伏，灯灭/风暴期出来狩猎——
-    // L1 的"闪烁期判断"：听到风暴嗡鸣或灯灭时，别往黑的地方凑（entities.js 给 lurker 加了黑暗增益）
-    var lz1t = randTileInRoom(rng, map, boR);
+    // 潜伏者 ×1（v2.3 W-entity）：从随机闪烁区房间搬到出口走廊起点房间——
+    // 出生→出口动线上的逻辑位置：玩家去出口必然穿过该房间，不再"大概率错过"。
+    // 落点取走廊起点 tile 附近 2~4 格的房间内 tile（出口前房间的关键位置）：
+    // 必经之路上（≤4 格），但不在走廊里——房间内有腾挪空间，玩家可绕开/蹲伏潜行。
+    // 蜷伏，休眠/激活与玩家接近度挂钩：
+    // 28m 痕迹（巢穴抓痕+耳语+抬头一瞥）→12m 凝视警告→扑击。
+    // 灯灭/风暴期仍有黑暗增益（见 entities.js isDark）。
+    var exitR1 = null;
+    for (var er1 = 0; er1 < map.rooms.length; er1++) {
+      if (map.rooms[er1].tag === 'exit') { exitR1 = map.rooms[er1]; break; }
+    }
+    var lz1t = null;
+    if (exitR1) {
+      var mouthCands = [];
+      for (var mcx = exitR1.x; mcx < exitR1.x + exitR1.w; mcx++) {
+        for (var mcy = exitR1.y; mcy < exitR1.y + exitR1.h; mcy++) {
+          var mchd = Math.max(Math.abs(mcx - ec.sx), Math.abs(mcy - ec.sy));
+          if (mchd >= 2 && mchd <= 4) mouthCands.push([mcx, mcy]);
+        }
+      }
+      if (mouthCands.length) lz1t = rng.pick(mouthCands);
+      else lz1t = randTileInRoom(rng, map, exitR1);
+    } else {
+      lz1t = randTileInRoom(rng, map, boR);
+    }
     addPOI(map, 'lurker_zone', lz1t[0], lz1t[1], { cx: lz1t[0], cy: lz1t[1], r: 5 });
     // 支线入口：异常天花板（破洞），藏在某个非出生房间
     var fhR = pickRoom(rng, map, [spawn, safeR, boR]);
