@@ -104,82 +104,17 @@
     return g;
   }
 
-  /* ---------- L94 观察者 / L7 利维坦（扩建新实体） ----------
-   * TODO(与关卡 builder 对齐)：L94/L7 的 builder 尚未交付，此为 Systems B 按
-   * 现有实体模式先写的占位实现。POI 类型 watcher_post / leviathan_route、
-   * 行为参数（视距/移速/伤害）待 builder 交付片段后替换对齐。
+  /* ---------- 已退役实体（v2.3 W-entity 清理） ----------
+   * 观察者（watcher）：L94「动画」已于 v1.5 W6 退役（被 Level ! 替换；
+   * gen_l94.js / lv_l94.js 不再加载，LORE.md 有退役说明）——它是 L94 的
+   * 标志性实体，硬塞进其他关卡不符合原著定位，故明确退役：buildWatcher /
+   * updateWatcher / watcherAggressive 及 POI 生成分支已删除，不留"代码存在
+   * 但玩家永远见不到"的第三种状态。
+   * 利维坦（leviathan）：v1.5 W3 起 L7 的深海实体只做环境演出（lv_l7.js 的
+   * L.entity 真 AI：dormant→lurk→stalk→strike→retreat），不再经 entities.js
+   * 的 POI 生成追逐实体；此处的旧 buildLeviathan / updateLeviathan（"保留未用"）
+   * 已删除。L7 POI type 'leviathan' 仍保留为环境演出锚点（lv_l7.js initEntity 用）。
    */
-  function buildWatcher() {
-    const g = new THREE.Group();
-    const skin = lam(0x14161c);
-    // 细长躯干
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.7, 0.32), skin);
-    torso.position.y = 1.35; g.add(torso);
-    // 长脖子 + 头
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.6, 8), skin);
-    neck.position.y = 2.45; g.add(neck);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), skin);
-    head.position.y = 2.85; head.scale.set(1, 1.35, 1); g.add(head);
-    // 独眼（注视感）
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), basic(0xe8f4ff));
-    eye.position.set(0, 2.85, 0.22); g.add(eye);
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), basic(0x0a0a0a));
-    pupil.position.set(0, 2.85, 0.3); g.add(pupil);
-    // 细长四肢
-    const limbG = new THREE.CylinderGeometry(0.05, 0.04, 1.5, 6);
-    const legs = [];
-    [-1, 1].forEach(s => {
-      const l = new THREE.Mesh(limbG, skin);
-      l.position.set(s * 0.16, 0.75, 0); g.add(l); legs.push(l);
-    });
-    const armG = new THREE.CylinderGeometry(0.04, 0.03, 1.6, 6);
-    const arms = [];
-    [-1, 1].forEach(s => {
-      const a = new THREE.Mesh(armG, skin);
-      a.position.set(s * 0.36, 1.5, 0); a.rotation.z = s * 0.08;
-      g.add(a); arms.push(a);
-    });
-    g.userData.legs = legs;
-    g.userData.arms = arms;
-    g.userData.height = 3.1;
-    return g;
-  }
-
-  function buildLeviathan() {
-    const g = new THREE.Group();
-    const skin = lam(0x1d3038);
-    const belly = lam(0x9fb3ad);
-    // 蛇形躯干：5 节
-    const segs = [];
-    const segG = new THREE.BoxGeometry(1.1, 0.9, 1.5);
-    for (let i = 0; i < 5; i++) {
-      const s = new THREE.Mesh(segG, i % 2 ? belly : skin);
-      s.position.set(0, 0.75, -i * 1.35);
-      s.scale.set(1 - i * 0.09, 1 - i * 0.07, 1);
-      g.add(s); segs.push(s);
-    }
-    // 头：宽吻 + 眼
-    const head = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.85, 1.3), skin);
-    head.position.set(0, 1.0, 1.0); g.add(head);
-    const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.25, 1.1), belly);
-    jaw.position.set(0, 0.62, 1.1); g.add(jaw);
-    const eyeG = new THREE.SphereGeometry(0.09, 8, 6);
-    const eyeM = basic(0x7df0ff);
-    [-1, 1].forEach(s => {
-      const e = new THREE.Mesh(eyeG, eyeM);
-      e.position.set(s * 0.45, 1.15, 1.5); g.add(e);
-    });
-    // 背鳍
-    for (let i = 0; i < 3; i++) {
-      const fin = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.55, 6), belly);
-      fin.position.set(0, 1.35 - i * 0.06, -0.6 - i * 1.35);
-      g.add(fin);
-    }
-    g.userData.segs = segs;
-    g.userData.height = 1.6;
-    return g;
-  }
-
   function buildPartygoer() {
     const g = new THREE.Group();
     const skin = lam(0xe8b820); // 金黄
@@ -216,7 +151,7 @@
   /* ---------- 实体基类 ---------- */
   let eid = 0;
   function spawn(type, tx, ty, W, data) {
-    const builders = { hound: buildHound, lurker: buildLurker, partygoer: buildPartygoer, watcher: buildWatcher, leviathan: buildLeviathan };
+    const builders = { hound: buildHound, lurker: buildLurker, partygoer: buildPartygoer };
     const group = builders[type]();
     group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
     W.scene.add(group);
@@ -227,18 +162,43 @@
       target: null, lastSeen: null, loseT: 0,
       atkCd: 0, sndCd: 0, animT: Math.random() * 9,
       lureCd: 0, lured: false, // 发电机噪音引怪用
+      // —— 遭遇光谱（v2.3 W-entity）：0 未察觉 / 1 痕迹·远处目击 / 2 警告 / 3 危险。
+      // 状态机只允许逐级升级（不许 0→3 跳级）；回到平静状态时归 0。
+      alert: 0, traceDone: false, peekT: 0, stareT: 0,
       data: data || {},
       active: true
     };
     // 初始状态
     if (type === 'hound') { ent.state = 'patrol'; ent.wp = (data.route || []).slice(); ent.wpi = 0; }
-    if (type === 'lurker') { ent.state = 'hide'; ent.home = { x: ent.x, z: ent.z }; }
+    if (type === 'lurker') {
+      ent.state = 'hide'; ent.home = { x: ent.x, z: ent.z };
+      placeLurkerTraces(ent, W); // 巢穴周围的抓痕：光谱第 1 级"环境痕迹"的物理载体
+    }
     if (type === 'partygoer') { ent.state = 'wander'; }
-    if (type === 'watcher') { ent.state = 'stand'; ent.gazeT = 0; }
-    if (type === 'leviathan') { ent.state = 'dwell'; ent.home = { x: ent.x, z: ent.z }; }
     E.list.push(ent);
     BR.log('spawn entity', type, tx, ty);
     return ent;
+  }
+
+  /* 潜伏者巢穴痕迹：3 道抓痕（暗色薄片，贴地），手电照到才能看清。
+   * 这是"环境痕迹"阶段——玩家先看到"这里住过东西"，然后才遇到东西本身。
+   * 纯实体行为（不碰场景生成），随实体一起释放。 */
+  function placeLurkerTraces(ent, W) {
+    try {
+      ent._traces = [];
+      for (let i = 0; i < 3; i++) {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.5 + Math.random() * 0.6, 0.05 + Math.random() * 0.04),
+          new THREE.MeshBasicMaterial({ color: 0x0b0b0d, transparent: true, opacity: 0.6 })
+        );
+        m.rotation.x = -Math.PI / 2;
+        m.rotation.z = Math.random() * Math.PI;
+        const a = Math.random() * 6.2832, r = 2.5 + Math.random() * 3.5;
+        m.position.set(ent.x + Math.cos(a) * r, 0.02, ent.z + Math.sin(a) * r);
+        W.scene.add(m);
+        ent._traces.push(m);
+      }
+    } catch (e) { /* 无痕也无妨：痕迹是加分项 */ }
   }
 
   E.spawnForMap = function (map, W) {
@@ -250,7 +210,7 @@
         route: patrols.map(p => ({ x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty) }))
       });
     }
-    // 潜伏者：L2
+    // 潜伏者：L1/L2（lurker_zone POI）
     pois.filter(p => p.type === 'lurker_zone').forEach(p => {
       spawn('lurker', p.tx, p.ty, W, { r: p.data.r || 5 });
     });
@@ -258,20 +218,25 @@
     pois.filter(p => p.type === 'partygoer').forEach(p => {
       spawn('partygoer', p.tx, p.ty, W, {});
     });
-    // 观察者：L94（POI type 'watcher', data.mode: 'day' 白天只注视不追击）
-    pois.filter(p => p.type === 'watcher').forEach(p => {
-      spawn('watcher', p.tx, p.ty, W, p.data || {});
-    });
-    // 利维坦：v1.5 W3 重构——L7 的深海实体只做环境演出（lv_l7.js 的远影/极低频声/
-    // 局部水面变化/超尺度身体局部），不再经 POI 生成追逐实体。
-    // POI type 'leviathan' 保留为环境演出的锚点（lv_l7.js initEntity 用 homeX/homeZ）。
-    // 此处不再 spawn('leviathan', …)；buildLeviathan/updateLeviathan 保留未用。
+    // v2.3 W-entity：观察者已退役（见文件头注释），此处不再生成；
+    // 'leviathan' POI 是 L7 环境演出的锚点（lv_l7.js initEntity 用），此处不生成实体。
   };
 
   // v2.0 P2：释放几何体与材质（审计遗留：只 remove 不 dispose 会跨关累积 GPU 缓冲）。
   // 实体材质均为 lam()/basic() 逐实体新建，贴图走 BR.Textures 共享缓存（此处不碰贴图）。
   E.dispose = function () {
     for (const e of this.list) {
+      // 巢穴痕迹是加到场景上的独立 mesh（不在 group 内），随实体一起清理
+      if (e._traces) {
+        for (const t of e._traces) {
+          try {
+            if (t.parent) t.parent.remove(t);
+            if (t.geometry) t.geometry.dispose();
+            if (t.material) t.material.dispose();
+          } catch (err3) {}
+        }
+        e._traces = null;
+      }
       if (e.group.parent) e.group.parent.remove(e.group);
       e.group.traverse(function (o) {
         if (o.geometry) { try { o.geometry.dispose(); } catch (err) {} }
@@ -441,8 +406,6 @@
 
       if (ent.type === 'hound') updateHound(ent, dt, ctx, dist, seen);
       else if (ent.type === 'lurker') updateLurker(ent, dt, ctx, dist, seen);
-      else if (ent.type === 'watcher') updateWatcher(ent, dt, ctx, dist, seen);
-      else if (ent.type === 'leviathan') updateLeviathan(ent, dt, ctx, dist, seen);
       else updatePartygoer(ent, dt, ctx, dist, seen);
 
       // 落位 + 朝向 + 步行动画
@@ -458,8 +421,6 @@
     // 潜伏者 11→12（黑暗 16→17）；派对客 15→16。配合听觉，不单纯靠移速。
     if (ent.type === 'hound') v = ctx.flashlightOn ? 22 : 14;
     else if (ent.type === 'lurker') v = isDark(ent) ? 17 : 12; // 黑暗增益：灯灭/风暴期它看得更远
-    else if (ent.type === 'watcher') v = 18;
-    else if (ent.type === 'leviathan') v = 22;
     else v = 16;
     // 低理智：你更容易被"注意"到（也更难集中精神躲藏）
     if (BR.Player && BR.Player.sanity < 30) v *= 1.35;
@@ -508,11 +469,25 @@
     const W = ent.W;
     switch (ent.state) {
       case 'patrol': {
+        // —— 遭遇光谱第 1 级：痕迹/远处目击（v2.3 W-entity）——
+        // 34m 内首次：远处一声低吼 + 停步朝你注视 1.5s，然后继续巡逻。
+        // 它"注意"到你了，但还没把你当猎物——这是绕开/关手电/蹲下的窗口。
+        // 贴脸（<6m）则跳过注视，直接进 investigate 预警。
+        if (!ent.traceDone && dist < 34) {
+          ent.traceDone = true; ent.alert = 1; ent.stareT = 1.5;
+          BR.Audio.growl();
+          break;
+        }
+        if (ent.stareT > 0) {
+          ent.stareT -= dt;
+          ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
+          if (dist < 6) ent.stareT = 0; else break;
+        }
         if (ent.lureCd > 0) ent.lureCd -= dt;
         if (seen && (dist < 10 || ctx.playerNoise > 0.5 || (ctx.flashlightOn && dist < 16))) {
           // 预警：先进入 investigate 跟踪并低吼示警，不直接 chase；
           // 玩家有约 1.5s 窗口决定跑/蹲/关手电（见 investigate 的 warnT 逻辑）
-          ent.state = 'investigate';
+          ent.state = 'investigate'; ent.alert = 2;
           ent.target = { x: ctx.playerPos.x, z: ctx.playerPos.z };
           ent.lured = false; ent.warnT = 0; ent.loseT = 0;
           ent.stateT = 0; pathTo(ent, ent.target.x, ent.target.z);
@@ -522,7 +497,7 @@
         if (ctx.playerNoise > 0.4 && dist < 24) {
           // 听觉：步行 0.45 也能被听见（原来只有疾跑 1.0 才触发）——走廊里走路不再是隐身；
           // 照例先给 growl 预警，玩家有 1.5s 窗口应对
-          ent.state = 'investigate';
+          ent.state = 'investigate'; ent.alert = 2;
           ent.target = { x: ctx.playerPos.x, z: ctx.playerPos.z };
           ent.lured = false; ent.warnT = 0;
           ent.stateT = 0; pathTo(ent, ent.target.x, ent.target.z);
@@ -574,7 +549,7 @@
           ent.repath -= dt;
           if (ent.repath <= 0) { pathTo(ent, ctx.playerPos.x, ctx.playerPos.z); ent.repath = 1.0; }
           if (ent.warnT > 1.5 || dist < 6) {
-            ent.state = 'chase';
+            ent.state = 'chase'; ent.alert = 3;
             notice(ent, ctx, dist); BR.Audio.bark();
             break;
           }
@@ -585,7 +560,7 @@
         if (ent.lured && seen && dist < 11) {
           ent.warnT = (ent.warnT || 0) + dt;
           if (ent.warnT > 1.0 || dist < 6) {
-            ent.lured = false; ent.state = 'chase';
+            ent.lured = false; ent.state = 'chase'; ent.alert = 3;
             notice(ent, ctx, dist); BR.Audio.bark(); break;
           }
           followPath(ent, 3.0, dt);
@@ -594,7 +569,7 @@
         ent.warnT = Math.max(0, (ent.warnT || 0) - dt * 2);
         if (followPath(ent, 3.0, dt)) {
           if (ent.stateT > 4) {
-            ent.state = 'patrol'; ent.path = null;
+            ent.state = 'patrol'; ent.alert = 0; ent.path = null;
             if (ent.lured) { ent.lured = false; ent.lureCd = 25; } // 防在发电机旁反复横跳
           }
         } else ent.stateT = 0;
@@ -624,9 +599,9 @@
         break;
       }
       case 'search': {
-        if (seen && dist < 13) { ent.state = 'chase'; notice(ent, ctx, dist); break; }
+        if (seen && dist < 13) { ent.state = 'chase'; ent.alert = 3; notice(ent, ctx, dist); break; }
         // 搜捕 12s（原来 9s）：在附近多找一会儿，躲猫猫没那么容易
-        if (ent.stateT > 12) { ent.state = 'patrol'; ent.path = null; ent.noticed = false; break; }
+        if (ent.stateT > 12) { ent.state = 'patrol'; ent.alert = 0; ent.path = null; ent.noticed = false; break; }
         if (!ent.path || followPath(ent, 2.6, dt)) {
           if (!ent._searchBiased && ent.lastSeen) {
             // 首腿：沿跟丢瞬间的行进方向延伸搜（玩家大概率继续往那跑），而非原地打转
@@ -666,21 +641,35 @@
     const hd = Math.hypot(ent.x - ent.home.x, ent.z - ent.home.z);
     switch (ent.state) {
       case 'hide': {
-        ent.group.scale.y = BR.damp(ent.group.scale.y, 0.72, 4, dt);
+        // —— 遭遇光谱第 1 级：痕迹/远处目击（v2.3 W-entity）——
+        // 28m 内首次：巢穴周围的抓痕（spawn 时已放置）+ 它抬头朝你的方向
+        // 看了一眼（1.8s），又蜷回去。只响耳语，不进警告——玩家可选择绕开。
+        // 休眠/激活与玩家接近度挂钩：离得远时它一直蜷着，靠近才"醒"。
+        if (!ent.traceDone && dist < 28) {
+          ent.traceDone = true; ent.alert = 1; ent.peekT = 1.8;
+          BR.Audio.whisper();
+        }
+        if (ent.peekT > 0) {
+          ent.peekT -= dt;
+          ent.group.scale.y = BR.damp(ent.group.scale.y, 1, 6, dt);
+          ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
+        } else {
+          ent.group.scale.y = BR.damp(ent.group.scale.y, 0.72, 4, dt);
+        }
         if (seen && dist < (dark ? 15 : 12)) {
-          ent.state = 'warn'; ent.stateT = 0; // 预警：它抬头了，先别动
+          ent.state = 'warn'; ent.stateT = 0; ent.alert = 2; // 光谱第 2 级：凝视警告
           BR.Audio.whisper();
         }
         break;
       }
       case 'warn': {
-        // 1.2s 凝视预警：脱离视线/拉开距离则作罢，否则转 stalk；
+        // 1.2s 凝视预警：脱离视线/拉开距离则作罢（光谱回落：alert 归 0），否则转 stalk；
         // 阴：玩家直接走到 5m 脸上（没听见 whisper），不等 1.2s 直接扑
         ent.group.scale.y = BR.damp(ent.group.scale.y, 1, 6, dt);
         ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
-        if (!seen || dist > (dark ? 17 : 13)) { ent.state = 'hide'; ent.stateT = 0; break; }
+        if (!seen || dist > (dark ? 17 : 13)) { ent.state = 'hide'; ent.stateT = 0; ent.alert = 0; break; }
         if (ent.stateT > 1.2 || dist < 5) {
-          ent.state = 'stalk'; ent.stateT = 0;
+          ent.state = 'stalk'; ent.stateT = 0; ent.alert = 3; // 光谱第 3 级：危险
           notice(ent, ctx, dist);
           BR.Audio.stinger();
         }
@@ -693,7 +682,7 @@
         const still = ctx.playerNoise < 0.1;
         if (ctx.crouching && still && dist < 7) {
           ent.confuseT = (ent.confuseT || 0) + dt;
-          if (ent.confuseT > 3) { ent.state = 'hide'; ent.confuseT = 0; pathTo(ent, ent.home.x, ent.home.z); break; }
+          if (ent.confuseT > 3) { ent.state = 'hide'; ent.alert = 0; ent.confuseT = 0; pathTo(ent, ent.home.x, ent.home.z); break; }
         } else ent.confuseT = 0;
         if (dist < 1.7) { ent.state = 'attack'; break; }
         // 跟丢：不再直接回家，而是在最后目击点附近搜索一番
@@ -713,7 +702,7 @@
         ent.group.scale.y = BR.damp(ent.group.scale.y, 1, 4, dt);
         if (seen && dist < 12) { ent.state = 'stalk'; ent.stateT = 0; notice(ent, ctx, dist); break; }
         if (ent.stateT > 10) {
-          ent.state = 'hide'; ent.stateT = 0; ent.path = null; ent.noticed = false;
+          ent.state = 'hide'; ent.stateT = 0; ent.alert = 0; ent.path = null; ent.noticed = false;
           pathTo(ent, ent.home.x, ent.home.z);
           break;
         }
@@ -757,8 +746,21 @@
     ent.stateT += dt;
     switch (ent.state) {
       case 'wander': {
+        // —— 遭遇光谱第 1 级：痕迹/远处目击（v2.3 W-entity）——
+        // 26m 内首次：远处一声咯咯笑 + 它停下来歪头"看"你 1.2s，然后继续游荡。
+        // 贴脸（<7m）则跳过注视，直接进 stalk。
+        if (!ent.traceDone && dist < 26) {
+          ent.traceDone = true; ent.alert = 1; ent.stareT = 1.2;
+          BR.Audio.giggle();
+          break;
+        }
+        if (ent.stareT > 0) {
+          ent.stareT -= dt;
+          ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
+          if (dist < 7) ent.stareT = 0; else break;
+        }
         // 诡：16m（原来 14m）外就注意到你了，giggle 预警保留
-        if (seen && dist < 16) { ent.state = 'stalk'; notice(ent, ctx, dist); BR.Audio.giggle(); break; }
+        if (seen && dist < 16) { ent.state = 'stalk'; ent.alert = 2; notice(ent, ctx, dist); BR.Audio.giggle(); break; }
         if (!ent.path || followPath(ent, 1.7, dt)) {
           const a = Math.random() * 6.28, r = 5 + Math.random() * 9;
           const nx = ent.x + Math.cos(a) * r, nz = ent.z + Math.sin(a) * r;
@@ -770,10 +772,10 @@
         // 蹲伏静止 4 秒 → 失去兴趣
         if (ctx.crouching && ctx.playerNoise < 0.1) {
           ent.boreT = (ent.boreT || 0) + dt;
-          if (ent.boreT > 4) { ent.state = 'wander'; ent.boreT = 0; ent.path = null; ent.noticed = false; break; }
+          if (ent.boreT > 4) { ent.state = 'wander'; ent.alert = 0; ent.boreT = 0; ent.path = null; ent.noticed = false; break; }
         } else ent.boreT = 0;
-        if (dist < 7 || ctx.playerNoise > 0.72) { ent.state = 'chase'; BR.Audio.giggle(); break; }
-        if (dist > 24) { ent.state = 'wander'; ent.path = null; ent.noticed = false; break; }
+        if (dist < 7 || ctx.playerNoise > 0.72) { ent.state = 'chase'; ent.alert = 3; BR.Audio.giggle(); break; }
+        if (dist > 24) { ent.state = 'wander'; ent.alert = 0; ent.path = null; ent.noticed = false; break; }
         ent.repath -= dt;
         if (ent.repath <= 0 || !ent.path) { pathTo(ent, ctx.playerPos.x, ctx.playerPos.z); ent.repath = 1.2; }
         followPath(ent, 2.9, dt);
@@ -782,7 +784,7 @@
       case 'chase': {
         if (dist < 1.9) { ent.state = 'attack'; break; }
         // 韧性：30m（原来 26m）才降级回 stalk，别想跑两步就甩掉
-        if (dist > 30) { ent.state = 'stalk'; break; }
+        if (dist > 30) { ent.state = 'stalk'; ent.alert = 2; break; }
         ent.repath -= dt;
         // 索敌：和猎犬一样做拦截预测（移速仍是 4.25 上限）
         if (ent.repath <= 0 || !ent.path) {
@@ -812,147 +814,6 @@
     }
   }
 
-  /* ----- 观察者（L94）----- */
-  // 行为：平时静立扫视；看见玩家→注视（理智侵蚀）；手电直照>3s 或贴脸→追击；
-  // 甩掉（>30m）则回到原地。
-  // 白天模式（POI data.mode==='day'，且 L94 昼夜系统未报夜晚）：只注视不追击，
-  // 呼应"L94 白天安全、夜晚高风险"的关卡设计。参数待 L94 builder 对齐。
-  function watcherAggressive(ent) {
-    if (ent.data && ent.data.mode && ent.data.mode !== 'day') return true;
-    try {
-      const L = BR.Levels && BR.Levels.L94;
-      if (L && typeof L.isNight === 'function' && L.isNight()) return true;
-    } catch (e) { /* 昼夜系统未接入时按 POI mode */ }
-    return false;
-  }
-  function updateWatcher(ent, dt, ctx, dist, seen) {
-    ent.stateT += dt;
-    switch (ent.state) {
-      case 'stand': {
-        ent.yaw += Math.sin(ent.animT * 0.3) * dt * 0.5; // 缓慢扫视
-        if (seen && dist < 18) {
-          ent.state = 'watch'; ent.stateT = 0;
-          notice(ent, ctx, dist);
-        }
-        break;
-      }
-      case 'watch': {
-        // 注视玩家
-        ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
-        if (dist < 13) BR.Player.drainSanity(dt * 3);
-        // 手电直照或贴脸 → 激怒（仅攻击性模式）
-        ent.gazeT = (ctx.flashlightOn && dist < 14) || dist < 2.4 ? (ent.gazeT || 0) + dt : 0;
-        if (watcherAggressive(ent) && ent.gazeT > 3) {
-          ent.state = 'chase'; ent.stateT = 0;
-          notice(ent, ctx, dist); BR.Audio.stinger();
-          break;
-        }
-        if (!seen && ent.stateT > 8) { ent.state = 'stand'; ent.stateT = 0; ent.noticed = false; }
-        break;
-      }
-      case 'chase': {
-        if (dist < 2.0) { ent.state = 'attack'; ent.stateT = 0; break; }
-        // 夜晚韧性：35m（原来 30m）才放弃；白天模式依然只注视不追击（昼夜分明保留）
-        if (dist > 35) { ent.state = 'stand'; ent.stateT = 0; ent.noticed = false; ent.gazeT = 0; break; }
-        ent.repath -= dt;
-        if (ent.repath <= 0 || !ent.path) { pathTo(ent, ctx.playerPos.x, ctx.playerPos.z); ent.repath = 1.2; }
-        followPath(ent, 3.4, dt);
-        if (ent.sndCd <= 0 && dist < 16) { BR.Audio.whisper(); ent.sndCd = 6; }
-        break;
-      }
-      case 'attack': {
-        ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
-        if (ent.atkCd <= 0 && dist < 2.5) {
-          ent.atkCd = 1.4;
-          BR.Player.hurt(24, 'watcher');
-          BR.Audio.stinger();
-        }
-        if (dist > 3) ent.state = 'chase';
-        break;
-      }
-    }
-  }
-
-  /* ----- 利维坦（L7）----- */
-  // 行为：栖居最深水区（巢穴 home），巢穴附近缓游；高噪音/目视（22m）→调查；
-  // 确认→追击；近身扑击；跟丢/远离巢穴→搜索→返回巢穴。参数待 L7 builder 对齐。
-  function updateLeviathan(ent, dt, ctx, dist, seen) {
-    ent.stateT += dt;
-    if (!ent.home) ent.home = { x: ent.x, z: ent.z };
-    const homeDist = Math.hypot(ent.x - ent.home.x, ent.z - ent.home.z);
-    switch (ent.state) {
-      case 'dwell': {
-        if (seen && dist < 22) {
-          ent.state = 'chase'; ent.stateT = 0;
-          notice(ent, ctx, dist); BR.Audio.stinger();
-          break;
-        }
-        if (ctx.playerNoise > 0.55 && dist < 26) {
-          ent.state = 'investigate';
-          ent.target = { x: ctx.playerPos.x, z: ctx.playerPos.z };
-          ent.stateT = 0; pathTo(ent, ent.target.x, ent.target.z);
-          break;
-        }
-        // 巢穴附近缓游（圆周巡弋）
-        if (!ent.path || followPath(ent, 1.8, dt)) {
-          const a = ent.animT * 0.25;
-          pathTo(ent, ent.home.x + Math.cos(a) * 6, ent.home.z + Math.sin(a) * 6);
-        }
-        break;
-      }
-      case 'investigate': {
-        if (seen && dist < 20) { ent.state = 'chase'; notice(ent, ctx, dist); break; }
-        if (followPath(ent, 2.6, dt)) {
-          if (ent.stateT > 6) { ent.state = 'dwell'; ent.path = null; }
-        } else ent.stateT = 0;
-        break;
-      }
-      case 'chase': {
-        if (dist < 2.4) { ent.state = 'attack'; ent.stateT = 0; break; }
-        // 离巢穴太远则放弃
-        if (homeDist > 30) { ent.state = 'return'; ent.stateT = 0; ent.path = null; break; }
-        if (seen) { ent.lastSeen = { x: ctx.playerPos.x, z: ctx.playerPos.z }; ent.loseT = 0; }
-        else {
-          ent.loseT += dt;
-          if (ent.loseT > 9) { ent.state = 'search'; ent.stateT = 0; ent.noticed = false; break; }
-        }
-        const tgt = ent.lastSeen || ctx.playerPos;
-        ent.repath -= dt;
-        if (ent.repath <= 0 || !ent.path) { pathTo(ent, tgt.x, tgt.z); ent.repath = 1.2; }
-        if (followPath(ent, 4.2, dt) && !seen) { ent.state = 'search'; ent.stateT = 0; }
-        if (ent.sndCd <= 0 && dist < 20) { BR.Audio.growl(); ent.sndCd = 6; }
-        break;
-      }
-      case 'search': {
-        if (seen && dist < 20 && homeDist < 28) { ent.state = 'chase'; notice(ent, ctx, dist); break; }
-        if (ent.stateT > 10) { ent.state = 'return'; ent.path = null; ent.noticed = false; break; }
-        if (!ent.path || followPath(ent, 2.2, dt)) {
-          const a = Math.random() * 6.28, r = 5 + Math.random() * 6;
-          const lx = ent.lastSeen ? ent.lastSeen.x : ent.x;
-          const lz = ent.lastSeen ? ent.lastSeen.z : ent.z;
-          pathTo(ent, lx + Math.cos(a) * r, lz + Math.sin(a) * r);
-        }
-        break;
-      }
-      case 'return': {
-        if (!ent.path) pathTo(ent, ent.home.x, ent.home.z);
-        if (followPath(ent, 2.8, dt)) { ent.state = 'dwell'; ent.stateT = 0; ent.noticed = false; ent.path = null; }
-        if (seen && dist < 18) { ent.state = 'chase'; ent.stateT = 0; }
-        break;
-      }
-      case 'attack': {
-        ent.yaw = Math.atan2(ctx.playerPos.x - ent.x, ctx.playerPos.z - ent.z);
-        if (ent.atkCd <= 0 && dist < 2.8) {
-          ent.atkCd = 1.5;
-          BR.Player.hurt(26, 'leviathan');
-          BR.Audio.bark();
-        }
-        if (dist > 3.2) ent.state = 'chase';
-        break;
-      }
-    }
-  }
-
   /* ---------- 步行动画 ---------- */
   function animateEnt(ent, dt) {
     const u = ent.group.userData;
@@ -968,10 +829,6 @@
       if (ent.dist < 10) {
         ent.group.rotation.z = Math.sin(t * 1.3) * 0.14;
       }
-    }
-    if (u.segs) {
-      // 利维坦：躯干波浪式摆动
-      u.segs.forEach((s, i) => { s.position.x = Math.sin(t * 0.9 + i * 1.1) * 0.28; });
     }
   }
 })();

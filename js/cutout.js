@@ -234,24 +234,105 @@
     return dest;
   };
 
-  /* ---------- ① kind 专属前段 ---------- */
-  Cutout._pre = async function (kind, opts) {
-    const p = P(), ovEl = ov();
-    const inTrans = !!BR.Trans.active;
-    if (!inTrans) {
-      ovEl.classList.add('show');
-      ovEl.style.transition = 'none';
-      ovEl.style.opacity = 1;
-      ovEl.style.pointerEvents = 'none';
+  /* ================= 切出类型注册表（v2.3 W-cutout 接口整理） =================
+   * 所有切出类型（kind）在此登记：接入新类型只许 Cutout.registerType(name, def)，
+   * 不许改 Cutout._pre / Cutout._arrival 的分发逻辑。
+   * def 字段：
+   *   label: 中文名；desc: 一句话说明；
+   *   media: 介质（'air' | 'water' | 'duct' …，供设计文档与测试分类）；
+   *   sense: 主导身体感（'walk' | 'fall' | 'swim' | 'crawl' | 'slide' | 'vertigo' …）；
+   *   preBudget: 前段时长预算（ms，红线 ≤ 3000）；
+   *   arrivalBudget: 抵达时长预算（ms，红线 ≤ 3500）；
+   *   pre(opts, setOv): 前段演出（this=Cutout；须配合 skipped() 可跳过）；
+   *   arrival(ovEl, opts): 自定义抵达（this=Cutout）；不填则按 arrivalStyle 走既有抵达演出；
+   *   arrivalStyle: 'drop' | 'water' | 'door' | 'none'（既有抵达演出的复用开关）。
+   * 时长红线（详见 docs/CUTOUT_DESIGN.md）：前段 ≤ 3s、抵达 ≤ 3.5s，不许做成冗长动画。
+   */
+  Cutout.TYPES = {};
+  Cutout.PRE_BUDGET_MAX = 3000;
+  Cutout.ARRIVAL_BUDGET_MAX = 3500;
+  Cutout.registerType = function (name, def) {
+    if (typeof name !== 'string' || !name || !def || typeof def !== 'object') {
+      BR.warn('Cutout.registerType 参数非法:', name);
+      return false;
     }
-    const setOv = (op, ms) => new Promise((res) => {
-      ovEl.style.transition = `opacity ${ms}ms linear`;
-      ovEl.style.opacity = op;
-      setTimeout(res, ms);
+    if (this.TYPES[name]) BR.warn('Cutout.registerType 覆盖已有切出类型:', name);
+    const d = Object.assign({
+      label: name, desc: '', media: 'air', sense: 'walk',
+      preBudget: 800, arrivalBudget: 3000,
+      pre: null, arrival: null, arrivalStyle: 'drop'
+    }, def);
+    if (d.preBudget > this.PRE_BUDGET_MAX) BR.warn('切出类型前段超红线:', name, d.preBudget);
+    if (d.arrivalBudget > this.ARRIVAL_BUDGET_MAX) BR.warn('切出类型抵达超红线:', name, d.arrivalBudget);
+    this.TYPES[name] = d;
+    return true;
+  };
+
+  /* ---------- 内建切出类型登记（v2.3：把旧 _pre/_arrival switch 的各分支原样搬入注册表，
+   *   演出代码逐字一致、只搬运不改逻辑；后续新类型只许新增 registerType 调用） ---------- */
+  (function registerBuiltinTypes() {
+    // walk / manila：短暂黑边（manila 为 L0 马尼拉房间专用 kind，演出与 walk 一致）
+    const preStepThrough = (splash) => async function (opts, setOv) {
+      if (splash) BR.Audio.splash(); else BR.Audio.glitch();
+      await waitMs(450);
+      await setOv(1, 350);
+    };
+    Cutout.registerType('walk', {
+      label: '步行切出', desc: '穿门/野切出等默认', media: 'air', sense: 'walk',
+      preBudget: 800, arrivalBudget: 3000,
+      pre: preStepThrough(false), arrivalStyle: 'drop'
     });
-    switch (kind) {
-      case 'slide': {
-        // 进入滑梯俯冲演出：镜头下压 + 呼啸 + 暗角收紧
+    Cutout.registerType('manila', {
+      label: '马尼拉房间', desc: 'L0 马尼拉房间切出（演出与 walk 一致）', media: 'air', sense: 'walk',
+      preBudget: 800, arrivalBudget: 3000,
+      pre: preStepThrough(false), arrivalStyle: 'drop'
+    });
+    // water：旧 default 分支的水下变体；抵达走坠水演出（travelTo mode 'swim' 映射到此）
+    Cutout.registerType('water', {
+      label: '落水切出', desc: '旧水下通道/深水出口', media: 'water', sense: 'swim',
+      preBudget: 800, arrivalBudget: 2300,
+      pre: preStepThrough(true), arrivalStyle: 'water'
+    });
+    // door：穿门前段（门轴声 + 渐暗，无坠落）+ 穿门抵达（淡入）
+    Cutout.registerType('door', {
+      label: '穿门', desc: '门后是平地，无坠落', media: 'air', sense: 'walk',
+      preBudget: 1100, arrivalBudget: 1400,
+      pre: async function (opts, setOv) {
+        BR.Audio.doorCreak();
+        await waitMs(500);
+        await setOv(1, 600);
+      },
+      arrival: async function (ovEl, opts) { await this._arrivalDoor(ovEl, opts); }
+    });
+    // drop：切出坠落前段（短暂异常 → 失重下沉；travelTo mode 'fall' 映射到此）
+    Cutout.registerType('drop', {
+      label: '坠落切出', desc: '异常点/窗等坠落式切出', media: 'air', sense: 'fall',
+      preBudget: 1200, arrivalBudget: 3000,
+      pre: async function (opts, setOv) {
+        const p = P(), ovEl = ov();
+        BR.Audio.glitch();
+        BR.Audio.dropRumble(0.9);
+        const t0d = performance.now(), durd = 900;
+        await new Promise((res) => {
+          const iv = setInterval(() => {
+            if (skipped() || performance.now() - t0d >= durd) { clearInterval(iv); res(); return; }
+            const t = Math.min(1, (performance.now() - t0d) / durd);
+            p.extDipY = -0.5 * t * t;
+            p.extRoll = Math.sin(t * 7) * 0.04 * t;
+            ovEl.style.opacity = Math.max(0.25, 1 - t * 0.75);
+          }, 33);
+        });
+        p.extDipY = 0; p.extRoll = 0;
+        await setOv(1, 300);
+      },
+      arrivalStyle: 'drop'
+    });
+    // slide：滑梯俯冲前段（镜头下压 + 呼啸 + 暗角收紧）
+    Cutout.registerType('slide', {
+      label: '滑梯切出', desc: '七色滑梯（levels2 第一人称滑行之后）', media: 'air', sense: 'slide',
+      preBudget: 1700, arrivalBudget: 3000,
+      pre: async function (opts, setOv) {
+        const p = P(), ovEl = ov();
         BR.Audio.dropRumble(1.3);
         document.body.classList.add('dropping');
         const t0 = performance.now(), dur = 1300;
@@ -268,10 +349,15 @@
         });
         p.extPitch = 0; p.extRoll = 0; p.extDipY = 0; p.extFov = 0;
         await setOv(1, 350);
-        break;
-      }
-      case 'berry': {
-        // 食用后视线眩晕：正弦摇摆（小幅，不许疯狂翻转）
+      },
+      arrivalStyle: 'drop'
+    });
+    // berry：食用后视线眩晕（正弦摇摆，小幅）
+    Cutout.registerType('berry', {
+      label: '浆果切出', desc: '食用浆果后的眩晕切出', media: 'air', sense: 'vertigo',
+      preBudget: 1900, arrivalBudget: 3000,
+      pre: async function (opts, setOv) {
+        const p = P(), ovEl = ov();
         BR.Audio.glitch();
         ovEl.classList.add('glitch');
         const t0 = performance.now(), dur = 1600;
@@ -288,68 +374,165 @@
         ovEl.classList.remove('glitch');
         p.extRoll = 0; p.extPitch = 0;
         await setOv(1, 300);
-        break;
-      }
-      case 'hole':
-      case 'rift': {
-        // 被吸入 / 坠入：下沉 + 嗡鸣
-        BR.Audio.dropRumble(1.1);
-        const t0 = performance.now(), dur = 1100;
+      },
+      arrivalStyle: 'drop'
+    });
+    // hole / rift：被吸入 / 坠入（下沉 + 嗡鸣）
+    const preSinkIn = async function (opts, setOv) {
+      const p = P(), ovEl = ov();
+      BR.Audio.dropRumble(1.1);
+      const t0 = performance.now(), dur = 1100;
+      await new Promise((res) => {
+        const iv = setInterval(() => {
+          if (skipped() || performance.now() - t0 >= dur) { clearInterval(iv); res(); return; }
+          const t = Math.min(1, (performance.now() - t0) / dur);
+          p.extDipY = -0.9 * t * t;
+          p.extRoll = Math.sin(t * 8) * 0.05 * t;
+          ovEl.style.opacity = Math.max(0, 1 - t * 1.1);
+        }, 33);
+      });
+      p.extDipY = 0; p.extRoll = 0;
+      await setOv(1, 300);
+    };
+    Cutout.registerType('hole', {
+      label: '坠入切出', desc: '地板洞/天花板被拉入', media: 'air', sense: 'fall',
+      preBudget: 1400, arrivalBudget: 3000,
+      pre: preSinkIn, arrivalStyle: 'drop'
+    });
+    Cutout.registerType('rift', {
+      label: '裂隙切出', desc: '随机裂隙/实体裂隙', media: 'air', sense: 'fall',
+      preBudget: 1400, arrivalBudget: 3000,
+      pre: preSinkIn, arrivalStyle: 'drop'
+    });
+    // none：无过渡；travel 内部直接跳过 _pre/_arrival，登记仅作目录
+    Cutout.registerType('none', {
+      label: '无过渡', desc: '直接黑场切关', media: 'air', sense: 'walk',
+      preBudget: 0, arrivalBudget: 500,
+      pre: null, arrival: null, arrivalStyle: 'none'
+    });
+
+    /* ---------- v2.3 原型 1：管道爬行切出（duct） ----------
+     * 身体感：入管压低（extDipY）→ 视野收窄（extFov 负向）→ 手脚交替爬行的
+     * 俯仰起伏 + 左右轻摆（extPitch/extRoll）→ 黑场衔接抵达。
+     * 方向连续：全程不碰 yaw；抵达后由目标关 spawn 朝向接管。 */
+    Cutout.registerType('duct', {
+      label: '管道爬行', desc: 'v2.3 原型：真实爬行穿越通风管', media: 'duct', sense: 'crawl',
+      preBudget: 2800, arrivalBudget: 1500,
+      pre: async function (opts, setOv) {
+        const p = P(), ovEl = ov();
+        BR.Audio.dropRumble(2.0); // 管壁低频回声
+        const t0 = performance.now(), dur = 2400;
         await new Promise((res) => {
           const iv = setInterval(() => {
             if (skipped() || performance.now() - t0 >= dur) { clearInterval(iv); res(); return; }
             const t = Math.min(1, (performance.now() - t0) / dur);
-            p.extDipY = -0.9 * t * t;
-            p.extRoll = Math.sin(t * 8) * 0.05 * t;
-            ovEl.style.opacity = Math.max(0, 1 - t * 1.1);
+            // P1 入管（0~0.5s）：压低身体 + 收窄视野 + 微低头
+            const k1 = Math.min(1, t / 0.21);
+            p.extDipY = -0.55 * k1;
+            p.extFov = -8 * k1;
+            p.extPitch = -0.12 * k1;
+            // P2 爬行（0.5~1.9s）：手脚交替的起伏与左右轻摆（管壁近，黑边压暗）
+            if (t > 0.21) {
+              const ct = (t - 0.21) / 0.58;
+              p.extRoll = Math.sin(ct * Math.PI * 6) * 0.05;
+              p.extPitch = -0.12 + Math.sin(ct * Math.PI * 6 + 1) * 0.035;
+              p.extFov = -8 + Math.sin(ct * Math.PI * 4) * 1.5;
+            }
+            ovEl.style.opacity = Math.max(0.55, 1 - t * 0.45);
           }, 33);
         });
-        p.extDipY = 0; p.extRoll = 0;
-        await setOv(1, 300);
-        break;
-      }
-      case 'drop': {
-        // W10 切出坠落前段：短暂异常 → 失重下沉（对应 travelTo mode:'fall'）
-        BR.Audio.glitch();
-        BR.Audio.dropRumble(0.9);
-        const t0d = performance.now(), durd = 900;
+        p.extPitch = 0; p.extRoll = 0;
+        // extDipY/extFov 保留（-0.55/-8），抵达演出负责"钻出站起"，保证身体连续
+        await setOv(1, 400);
+      },
+      arrival: async function (ovEl, opts) {
+        const p = P();
+        // 从管口钻出：视野渐开 + 1 秒内缓缓站起
+        ovEl.style.transition = 'opacity 900ms linear';
+        ovEl.style.opacity = 0;
+        const t0 = performance.now(), dur = 1000;
         await new Promise((res) => {
           const iv = setInterval(() => {
-            if (skipped() || performance.now() - t0d >= durd) { clearInterval(iv); res(); return; }
-            const t = Math.min(1, (performance.now() - t0d) / durd);
-            p.extDipY = -0.5 * t * t;
-            p.extRoll = Math.sin(t * 7) * 0.04 * t;
-            ovEl.style.opacity = Math.max(0.25, 1 - t * 0.75);
+            if (skipped() || performance.now() - t0 >= dur) { clearInterval(iv); res(); return; }
+            const t = Math.min(1, (performance.now() - t0) / dur);
+            p.extDipY = -0.55 * (1 - t);
+            p.extFov = -8 * (1 - t);
           }, 33);
         });
-        p.extDipY = 0; p.extRoll = 0;
-        await setOv(1, 300);
-        break;
+        p.extDipY = 0; p.extFov = 0;
+        if (opts && opts.dropText) BR.UI.toast(opts.dropText, 2200);
+        await waitMs(300);
+        this._hideOv(ovEl);
       }
-      case 'door': {
-        // W10 穿门前段：门轴声 + 渐暗（无坠落，门后是平地；对应 travelTo mode:'door'）
-        BR.Audio.doorCreak();
-        await waitMs(500);
-        await setOv(1, 600);
-        break;
-      }
-      case 'none': break; // W10 无过渡：直接黑场切关（travel 里跳过 _pre/_arrival）
-      default: { // walk / water / manila：短暂黑边
-        if (kind === 'water') BR.Audio.splash(); else BR.Audio.glitch();
-        await waitMs(450);
-        await setOv(1, 350);
-      }
+    });
+
+    /* ---------- v2.3 原型 2：深水穿越（dive） ----------
+     * 身体感：潜入下沉（extDipY）→ 水压（低频 + 视野收窄）→ 介质阻力
+     * （慢速摆动前行）→ 黑场衔接既有坠水抵达（浮起）。
+     * 方向连续：全程不碰 yaw。 */
+    Cutout.registerType('dive', {
+      label: '深水穿越', desc: 'v2.3 原型：真实潜游穿越水下通道', media: 'water', sense: 'swim',
+      preBudget: 2700, arrivalBudget: 2300,
+      pre: async function (opts, setOv) {
+        const p = P(), ovEl = ov();
+        BR.Audio.splash();
+        BR.Audio.dropRumble(1.6); // 水压低频
+        document.body.classList.add('underwater');
+        const t0 = performance.now(), dur = 2200;
+        await new Promise((res) => {
+          const iv = setInterval(() => {
+            if (skipped() || performance.now() - t0 >= dur) { clearInterval(iv); res(); return; }
+            const t = Math.min(1, (performance.now() - t0) / dur);
+            // P1 潜入（0~0.6s）：下沉
+            const k1 = Math.min(1, t / 0.27);
+            p.extDipY = -0.9 * k1;
+            // P2 潜游穿越：身体前倾 + 水流摆动（介质阻力 = 慢）
+            const st = Math.max(0, (t - 0.27) / 0.5);
+            p.extPitch = -0.18 * Math.min(1, st * 2);
+            p.extRoll = Math.sin(st * Math.PI * 4) * 0.06;
+            p.extFov = -4 + Math.sin(st * Math.PI * 3) * 2;
+            ovEl.style.opacity = Math.min(0.9, 0.55 + t * 0.4);
+          }, 33);
+        });
+        p.extPitch = 0; p.extRoll = 0;
+        // extDipY 保留 -0.9（黑场下不可见跳变），抵达演出负责浮起
+        await setOv(1, 500);
+      },
+      arrivalStyle: 'water'
+    });
+  })();
+
+  /* ---------- ① kind 专属前段（分发只走注册表：未知 kind 回落 walk，不许加 switch/if 扩展） ---------- */
+  Cutout._pre = async function (kind, opts) {
+    const ovEl = ov();
+    const inTrans = !!BR.Trans.active;
+    if (!inTrans) {
+      ovEl.classList.add('show');
+      ovEl.style.transition = 'none';
+      ovEl.style.opacity = 1;
+      ovEl.style.pointerEvents = 'none';
     }
+    const setOv = (op, ms) => new Promise((res) => {
+      ovEl.style.transition = `opacity ${ms}ms linear`;
+      ovEl.style.opacity = op;
+      setTimeout(res, ms);
+    });
+    const T = this.TYPES[kind] || this.TYPES.walk;
+    if (T && typeof T.pre === 'function') await T.pre.call(this, opts, setOv);
     document.body.classList.remove('dropping');
     // overlay 保持黑场，抵达演出负责揭开
   };
 
-  /* ---------- ③ 抵达演出 ---------- */
+  /* ---------- ③ 抵达演出（分发只走注册表） ---------- */
   Cutout._arrival = async function (to, kind, opts) {
     const ovEl = ov();
-    if (kind === 'door') { await this._arrivalDoor(ovEl, opts); return; } // W10 穿门：淡入，无坠落
+    const T = this.TYPES[kind] || this.TYPES.walk;
+    // 自定义抵达（如穿门/管道钻出）优先：与旧行为一致，忽略 dropcam 设置
+    if (T && typeof T.arrival === 'function') { await T.arrival.call(this, ovEl, opts); return; }
+    const style = (T && T.arrivalStyle) || 'drop';
+    if (style === 'none') { this._hideOv(ovEl); return; }
     const dropcam = (BR.Input.settings && BR.Input.settings.dropcam) || 'full';
-    const watery = kind.indexOf('water') !== -1 ||
+    const watery = style === 'water' ||
       !!(BR.Levels[to] && BR.Levels[to].theme && BR.Levels[to].theme.waterArrival);
     if (dropcam === 'off') {
       // 用淡入淡出代替抵达演出

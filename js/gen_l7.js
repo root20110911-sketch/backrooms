@@ -299,13 +299,17 @@
 
   /* ================= 3a. 海底地形（v2.0 P3）：连续高度场（纯函数） =================
    * 地貌（世界米，相对海平面 SURF=0.15）：
-   *   浅海台地：舱室周围 r<35m，海床 -4m → -12m（缓坡）；
-   *   大陆坡：r 35~85m，三级断崖 -12m → -48m（台地/陡坎交替）；
-   *   深海平原：r>85m，-48m → -58m，叠加噪声起伏与岩脊；
-   *   海沟：两条种子走向的线状深沟（深水区下切 ≤20m，最深约 -74m）。
+   *   浅海台地：舱室周围 r<shelfR（多种子 32~40m），海床 -4m → -12m（缓坡）；
+   *   大陆坡：r shelfR~85m，三级断崖 -12m → -48m（台地/陡坎交替）；
+   *   深海平原：r>85m，-48m → -58m，叠加噪声起伏与岩脊（幅度/相位多种子）；
+   *   海沟：两条种子走向的线状深沟（深水区下切 14~22m，最深约 -78m），
+   *     ~55% 种子另有一条第三分支（走向/偏移/宽度/深度全多种子）。
    * 四深度带按玩家真实下潜深度划分（米）：日光 <12 / 暮光 12~30 /
    * 午夜 30~55 / 深渊 ≥55。地形最深处保证深渊带可达。
-   * 全部确定性整数哈希噪声；只用 Math.*，不碰随机/DOM/3D 库。 */
+   * 全部确定性整数哈希噪声；只用 Math.*，不碰随机/DOM/3D 库。
+   * v2.3 W-l7：海沟宽度/下切/第三分支、岩脊幅度/相位、台地半径全部多种子，
+   *   只增字段不改签名；老种子地形有微调（同 map.seed 的 POI 锚点位置不变，
+   *   见 placeL7 的 obRng 隔离）。 */
   var L7_SURF = 0.15; // 海平面基准（与 lv_l7 一致）
   function l7ihash(ix, iz, s) {
     var h = Math.imul(ix | 0, 374761393) ^ Math.imul(iz | 0, 668265263) ^ Math.imul(s | 0, 2246822519);
@@ -331,14 +335,30 @@
       for (var i = 0; i < 4; i++) if (d < E[i + 1]) return i;
       return 3;
     },
-    // ter = {seed, ccx, ccy（世界米）, a1,a2（海沟走向弧度）, o1,o2（海沟偏移米）}
+    // ter = {seed, ccx, ccy（世界米）, a1,a2（海沟走向弧度）, o1,o2（海沟偏移米）,
+    //        w1,w2（海沟半宽米）, cut1,cut2（海沟下切米）, has3,a3,o3,w3,cut3（第三海沟分支）,
+    //        ridgeAmp（岩脊隆起米）, ridgePh（岩脊相位）, shelfR（浅海台地半径米）}
+    // v2.3 W-l7：多种子海底变化度 —— 海沟宽度/深度/第三分支、岩脊幅度/相位、
+    // 台地半径全部按种子哈希，全纯函数，确定性不变。
     make: function (seed, ccx, ccy) {
       return {
         seed: seed | 0, ccx: ccx, ccy: ccy,
         a1: l7ihash(11, 77, seed) * Math.PI,
         a2: l7ihash(11, 77, seed) * Math.PI + 0.9 + l7ihash(13, 79, seed) * 1.2,
         o1: (l7ihash(17, 83, seed) - 0.5) * 60,
-        o2: (l7ihash(19, 89, seed) - 0.5) * 60
+        o2: (l7ihash(19, 89, seed) - 0.5) * 60,
+        w1: 10 + l7ihash(21, 91, seed) * 10,               // 海沟半宽 10..20m
+        w2: 10 + l7ihash(23, 93, seed ^ 0x1b3d) * 10,
+        cut1: 14 + l7ihash(25, 95, seed ^ 0x2c4e) * 8,     // 海沟下切 14..22m
+        cut2: 14 + l7ihash(27, 97, seed ^ 0x3d5f) * 8,
+        has3: l7ihash(29, 101, seed ^ 0x4e6a) < 0.55,      // ~55% 种子有第三海沟分支
+        a3: l7ihash(31, 103, seed ^ 0x5f7b) * Math.PI,
+        o3: (l7ihash(33, 107, seed ^ 0x6a8c) - 0.5) * 80,
+        w3: 8 + l7ihash(35, 109, seed ^ 0x7b9d) * 8,
+        cut3: 10 + l7ihash(37, 111, seed ^ 0x8cae) * 8,
+        ridgeAmp: 4 + l7ihash(39, 113, seed ^ 0x9dbf) * 4, // 岩脊隆起 4..8m
+        ridgePh: l7ihash(41, 115, seed ^ 0xaed0) * 40 - 20,
+        shelfR: 32 + l7ihash(43, 117, seed ^ 0xbfe1) * 8  // 浅海台地半径 32..40m
       };
     },
     // 世界坐标 → 海床 y（米）
@@ -346,10 +366,11 @@
       var dx = x - ter.ccx, dz = z - ter.ccy;
       var r = Math.sqrt(dx * dx + dz * dz);
       var s = ter.seed, y;
-      if (r < 35) { // 浅海台地：-4 → -12
-        y = -4 + (-12 + 4) * l7ss(r / 35);
+      var sr = ter.shelfR || 35; // v2.3：浅海台地半径多种子（32..40m；缺省 35 兼容旧参）
+      if (r < sr) { // 浅海台地：-4 → -12
+        y = -4 + (-12 + 4) * l7ss(r / sr);
       } else if (r < 85) { // 大陆坡：三级断崖 -12 → -48
-        var u = (r - 35) / 50, steps = 3;
+        var u = (r - sr) / (85 - sr), steps = 3;
         var f = u * steps, fl = Math.floor(f), fr = f - fl;
         var k = (fl + l7ss((fr - 0.72) / 0.28)) / steps;
         y = -12 + (-48 + 12) * k;
@@ -357,22 +378,30 @@
         y = -48 + (-58 + 48) * l7ss((r - 85) / 40);
       }
       // 噪声起伏（越深越颠簸）
-      var amp = r < 35 ? 1.2 : (r < 85 ? 2.5 : 4.0);
+      var amp = r < sr ? 1.2 : (r < 85 ? 2.5 : 4.0);
       y += (l7vnoise(x * 0.045, z * 0.045, s) - 0.5) * 2 * amp
          + (l7vnoise(x * 0.11 + 31.7, z * 0.11 - 11.3, s ^ 0x9e37) - 0.5) * 2 * amp * 0.45;
-      // 岩脊：深水区隆起（脊状噪声）
-      if (r > 35) {
-        var rn = l7vnoise(x * 0.02 + 7.3, z * 0.02 - 3.1, s ^ 0x51f3);
-        y += Math.pow(1 - Math.abs(rn * 2 - 1), 3) * 6 * Math.min(1, (r - 35) / 30);
+      // 岩脊：深水区隆起（脊状噪声；v2.3 幅度/相位多种子）
+      if (r > sr) {
+        var rph = ter.ridgePh || 0, ramp = ter.ridgeAmp || 6;
+        var rn = l7vnoise(x * 0.02 + 7.3 + rph, z * 0.02 - 3.1 - rph * 0.6, s ^ 0x51f3);
+        y += Math.pow(1 - Math.abs(rn * 2 - 1), 3) * ramp * Math.min(1, (r - sr) / 30);
       }
-      // 海沟：两条走向，深水区下切
+      // 海沟：两条走向 + v2.3 第三分支（~55% 种子）；宽度/下切多种子，深水区下切
       if (r > 55) {
-        var d1 = Math.abs(-Math.sin(ter.a1) * dx + Math.cos(ter.a1) * dz - ter.o1);
-        var d2 = Math.abs(-Math.sin(ter.a2) * dx + Math.cos(ter.a2) * dz - ter.o2);
-        var cut = 0, q;
-        if (d1 < 16) { q = 1 - d1 / 16; cut += q * q * 16; }
-        if (d2 < 16) { q = 1 - d2 / 16; cut += q * q * 16; }
-        y -= Math.min(20, cut) * Math.min(1, (r - 55) / 25);
+        var cut = 0, q, dd;
+        var w1 = ter.w1 || 16, w2 = ter.w2 || 16;
+        var c1 = ter.cut1 || 16, c2 = ter.cut2 || 16;
+        dd = Math.abs(-Math.sin(ter.a1) * dx + Math.cos(ter.a1) * dz - ter.o1);
+        if (dd < w1) { q = 1 - dd / w1; cut += q * q * c1; }
+        dd = Math.abs(-Math.sin(ter.a2) * dx + Math.cos(ter.a2) * dz - ter.o2);
+        if (dd < w2) { q = 1 - dd / w2; cut += q * q * c2; }
+        if (ter.has3) {
+          var w3 = ter.w3 || 12, c3 = ter.cut3 || 14;
+          dd = Math.abs(-Math.sin(ter.a3) * dx + Math.cos(ter.a3) * dz - ter.o3);
+          if (dd < w3) { q = 1 - dd / w3; cut += q * q * c3; }
+        }
+        y -= Math.min(24, cut) * Math.min(1, (r - 55) / 25);
       }
       if (y > -3) y = -3;
       if (y < -78) y = -78;
@@ -419,22 +448,32 @@
     var ocean = collectOcean(map, entry);
 
     /* ---- 海洋障碍物：按带布设（tile 级真实碰撞；视觉由 lv_l7 按 POI 建造） ----
-     * 日光带：无（开阔明亮）；暮光带：礁石 + 沉船残骸；
-     * 午夜带：岩柱 + 遗迹断墙；深渊带：结构残片（稀疏，不封死 deep_exit）。 */
+     * 日光带：无（开阔明亮）；暮光带：礁石 + 沉船残骸 + 礁群 + 出水暗礁；
+     * 午夜带：岩柱 + 遗迹断墙 + 海蚀拱（l7_arch 独立 POI，不封 tile，可游过）；
+     * 深渊带：结构残片（稀疏，不封死 deep_exit）。
+     * v2.3 W-l7：数量/种类多种子可变；障碍物走独立随机流 obRng。
+     * v2.3 W-l7fixup 实测（tools/cmp 脚本，5 种子）：门/字条/补给在障碍物
+     * 之前布设，同种子与 v2.2 位置一致；动静点/巢穴/深处出口/异常点在障碍物
+     * 之后布设（主 rng 不再被障碍物消耗），同种子与 v2.2 位置不同——属 v2.3
+     * 预期行为。存档按种子重建地图，加载不崩溃（位置恢复为世界坐标）。 */
     var placedOb = [];
+    // v2.3：障碍物独立随机流（见上）
+    var obRng = new BR.RNG(BR.hashSeed(map.seed + ':l7obv23'));
     function obClear(tx, ty, gap) {
       for (var i = 0; i < placedOb.length; i++)
         if (Math.hypot(tx - placedOb[i][0], ty - placedOb[i][1]) < gap) return false;
       return true;
     }
-    function tryPlaceOb(kind, band, count, gap, cluster, avoidPts, avoidGap) {
-      var cands = ocean.filter(function (c) { return bandAt(c[0], c[1]) === band; });
+    function tryPlaceOb(kind, band, count, gap, cluster, avoidPts, avoidGap, opts) {
+      opts = opts || {};
+      var bands = Array.isArray(band) ? band : [band];
+      var cands = ocean.filter(function (c) { return bands.indexOf(bandAt(c[0], c[1])) >= 0; });
       if (!cands.length) return;
-      var pts = spreadPick(rng, cands, count, gap, ccx, ccy, 6, avoidPts || null, avoidGap || 0);
+      var pts = spreadPick(obRng, cands, count, gap, ccx, ccy, 6, avoidPts || null, avoidGap || 0);
       for (var i = 0; i < pts.length; i++) {
         var t = pts[i], cells = [[t[0], t[1]]];
         if (cluster > 1) { // 簇形：相邻 tile 扩展（沉船/遗迹/残片）
-          var dirs = rng.shuffle([[1, 0], [-1, 0], [0, 1], [0, -1]]);
+          var dirs = obRng.shuffle([[1, 0], [-1, 0], [0, 1], [0, -1]]);
           for (var k = 0; k < dirs.length && cells.length < cluster; k++) {
             var nx = t[0] + dirs[k][0], ny = t[1] + dirs[k][1];
             if (nx < OX0 || nx > OX1 || ny < OY0 || ny > OY1) continue;
@@ -451,8 +490,54 @@
           placedOb.push(cells[c]);
         }
         addPOI(map, 'l7_obstacle', t[0], t[1], {
-          kind: kind, band: band, rot: rng.next() * 6.2832,
+          kind: kind, band: bandAt(t[0], t[1]), rot: obRng.next() * 6.2832,
           cells: cells.map(function (cc) { return [cc[0] - t[0], cc[1] - t[1]]; })
+        });
+      }
+    }
+    // v2.3 W-l7：礁群 —— band 内选中心，half 半径内 ~55% tile 成暗礁（墙）
+    function placeReefPatch(band, half, avoidPts) {
+      var cands = ocean.filter(function (c) { return bandAt(c[0], c[1]) === band; });
+      if (!cands.length) return;
+      var ctr = spreadPick(obRng, cands, 1, 0, ccx, ccy, 8, avoidPts || null, 4)[0];
+      var cells = [], dx, dy, nx, ny, i;
+      for (dy = -half; dy <= half; dy++)
+        for (dx = -half; dx <= half; dx++) {
+          if (obRng.next() < 0.45) continue;
+          nx = ctr[0] + dx; ny = ctr[1] + dy;
+          if (nx < OX0 || nx > OX1 || ny < OY0 || ny > OY1) continue;
+          if (tileAt(map, nx, ny) !== 1) continue;
+          var clear = true;
+          for (i = 0; i < placedOb.length; i++)
+            if (Math.hypot(nx - placedOb[i][0], ny - placedOb[i][1]) < 1.5) { clear = false; break; }
+          if (!clear) continue;
+          setTile(map, nx, ny, 0);
+          placedOb.push([nx, ny]);
+          cells.push([dx, dy]);
+        }
+      // 中心锚点强制成墙（l7_obstacle 的 POI 中心须为墙 tile）
+      if (tileAt(map, ctr[0], ctr[1]) === 1) {
+        setTile(map, ctr[0], ctr[1], 0);
+        placedOb.push([ctr[0], ctr[1]]);
+        cells.push([0, 0]);
+      }
+      if (cells.length)
+        addPOI(map, 'l7_obstacle', ctr[0], ctr[1], {
+          kind: 'reef', band: band, rot: obRng.next() * 6.2832, cells: cells
+        });
+    }
+    // v2.3 W-l7：海蚀拱 —— 午夜带岩拱（独立 POI 类型 l7_arch，不封 tile，
+    // 玩家可从拱下/拱间游过；只占间距，不参与 l7_obstacle 的"全在墙 tile"断言）
+    function placeArch(avoidPts) {
+      var cands = ocean.filter(function (c) { return bandAt(c[0], c[1]) === 2; });
+      if (!cands.length) return;
+      var pts = spreadPick(obRng, cands, 1 + obRng.int(0, 2), 12, ccx, ccy, 12, avoidPts || null, 4);
+      for (var i = 0; i < pts.length; i++) {
+        var t = pts[i];
+        if (!obClear(t[0], t[1], 6)) continue;
+        placedOb.push([t[0], t[1]]);
+        addPOI(map, 'l7_arch', t[0], t[1], {
+          kind: 'arch', band: 2, rot: obRng.next() * 6.2832
         });
       }
     }
@@ -546,15 +631,23 @@
       { x: (bx + 0.5) * 3, z: (bz + 0.5) * 3, yaw: boatYaw, side: side });
 
     /* ---- 海洋障碍物（v2.0 P3）：停靠点已定，避开它 3 格；按海床深度归带 ----
-     * 日光带无（开阔明亮）；暮光带礁石+沉船残骸；午夜带岩柱+遗迹断墙；
-     * 深渊带结构残片（稀疏，不封死 deep_exit）。 */
+     * 日光带无（开阔明亮）；暮光带礁石+沉船残骸+礁群+出水暗礁；午夜带岩柱+遗迹断墙+海蚀拱；
+     * 深渊带结构残片（稀疏，不封死 deep_exit）。
+     * v2.3 W-l7：数量多种子可变（obRng 独立流；门/字条/补给同种子稳定，
+     *   障碍物之后的海洋 POI 同种子位置有变化，见上）。 */
     var moorT = [Math.max(OX0, Math.min(OX1, Math.round(bx))),
                  Math.max(OY0, Math.min(OY1, Math.round(bz)))];
-    tryPlaceOb('rock', 1, 8, 5, 1, [moorT], 3);    // 暮光带礁石 ×8
-    tryPlaceOb('wreck', 1, 2, 9, 3, [moorT], 3);   // 暮光带沉船残骸 ×2（3 格簇）
-    tryPlaceOb('column', 2, 6, 6, 1, [moorT], 3);  // 午夜带岩柱 ×6
-    tryPlaceOb('ruin', 2, 2, 10, 4, [moorT], 3);   // 午夜带遗迹断墙 ×2（4 格簇）
-    tryPlaceOb('frag', 3, 3, 8, 2, [moorT], 3);    // 深渊带结构残片 ×3（2 格簇，稀疏）
+    tryPlaceOb('rock', 1, 6 + obRng.int(0, 4), 5, 1, [moorT], 3);                 // 暮光带礁石 ×6-10
+    tryPlaceOb('wreck', 1, 1 + obRng.int(0, 2), 9, 2 + obRng.int(0, 2), [moorT], 3); // 暮光带沉船残骸 ×1-3
+    tryPlaceOb('column', 2, 5 + obRng.int(0, 3), 6, 1, [moorT], 3);               // 午夜带岩柱 ×5-8
+    tryPlaceOb('ruin', 2, 1 + obRng.int(0, 2), 10, 3 + obRng.int(0, 2), [moorT], 3); // 午夜带遗迹断墙 ×1-3
+    tryPlaceOb('frag', 3, 2 + obRng.int(0, 3), 8, 2, [moorT], 3);                 // 深渊带结构残片 ×2-5
+    // v2.3 新增：礁群（暮光带成片暗礁）/ 出水暗礁（暮光带，导航地标）/ 海蚀拱（午夜带）
+    var _reefAvoid = [[moorT[0], moorT[1]]];
+    var _nReef = 1 + obRng.int(0, 2);
+    for (var _ri = 0; _ri < _nReef; _ri++) placeReefPatch(1, 1 + obRng.int(0, 1), _reefAvoid);
+    tryPlaceOb('skerry', 1, 2 + obRng.int(0, 2), 10, 1, [moorT], 3); // 出水暗礁 ×2-4（暮光带，窜出水面）
+    placeArch([moorT]); // 海蚀拱 ×1-3（l7_arch 独立 POI，不封 tile）
     // 障碍物挖除后刷新海洋候选（POI 不许落在障碍物上）
     ocean = ocean.filter(function (c) { return tileAt(map, c[0], c[1]) === 1; });
 
