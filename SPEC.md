@@ -79,11 +79,12 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
 - `BR.World.collide(pos, radius)→pos` 原地修正（pos 为 THREE.Vector3，脚底）。
 - `BR.World.isWall(tx,ty)`；`BR.World.tileAt(x,z)→{tx,ty}`；`BR.World.surfaceAt(x,z)→surface名`。
 - `BR.World.los(ax,az,bx,by)→bool` tile 网格视线（实体用）。
-- 交互：`BR.World.interactables` 数组；`BR.World.rayInteract(o,d,maxD)→{it,dist,point}|null`；每项 `{id,kind,mesh,pos:Vector3,prompt(),canUse(),use()}`。
+- 交互：`BR.World.interactables` 数组；`BR.World.rayInteract(o,d,maxD)→{it,dist,point}|null`；每项 `{id,kind,mesh,pos:Vector3,prompt(),canUse(),use()}`。**门交互 radius 3.2**（v2.3 W-hotfix：2.2→3.2。根因：`rayInteract` 按「射线命中点距离 > `it.radius`」过滤，而玩家站在门相邻 tile 瞄准门扇中心时命中距离恒为 ~2.94m；radius=2.2 时所有 `axis='z'` 的门永远被过滤掉、按 E 无反应。门扇 mesh 未动。）
   kind 含：`door/crate/pickup/note/valve/elevator_door/elevator_btn/anomaly_wall/fun_hole/fun_exit/cake` + 各关扩展（`l6_switch`、`cabinet`、`manila_cab`、`exit_door` 等，由 lv_*.js 注册；统一经 INTERACT_KINDS 分发）。
 - L0 无限延伸（v1.5.1）：`W.tile` 越界 L0 走 `BR.Gen.l0InfiniteTile(seed,tx,ty)` 程序化生成；区块构建去掉 L0 的边界上限。
 - 门：`BR.World.setDoor(id, open, instant)` 播动画；`BR.World.doorState(id)`。
 - 门系统（v2.2 W-doors 重写，`world.js:doorStyleFor`/`buildDoorMesh`）：门框四边与墙共面、铰链轴取自 `door.axis`；9 种按关卡风格：L0 黄木门（`door_wood_yellow`）/ L1 混凝土（`door_concrete`）/ L2 管道金属（`door_metal_pipe`+铆钉）/ L188 深色雕花（`door_wood_dark`+carve）/ L4 玻璃（透明度 0.38+中轨）/ L37 白瓷推拉（`door_tile_white`，推拉动画）/ L6 钢（`l6_door_steel`）/ FUN 派对红（`door_party_red`）/ L3 锈蚀金属；未知层级回退灰色金属。纯视觉改编，无 lore 依据。
+- L37 水下通道低板 3D 条件碰撞（v2.3 W-hotfix）：tile 碰撞系是 2D 的，低板是按 tile 的 Y 条件特例（`W._slabTiles`，跨关不残留）——头顶高于低板底（y 0.8~1.05）时水平进入低板 tile 视为撞墙；须下潜（头顶 < yBot）才能从下方穿过；已在低板下/外则不受限，不会困住玩家。
 - `BR.World.getStats()→{fps,chunks,roomsVisible,entities,seed,drawCalls,tris}`。
 - `BR.World.onChunk(fn)` 注册区块加载回调（levels 用来放事件触发器）。
 - 状态恢复：`savedState={openedDoors:[ids],picked:[ids],openedCrates:[ids],events:[ids]}`；build 时跳过已拾取/已开。
@@ -107,8 +108,10 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
 - `BR.Input.setLocked(b)` 转场/菜单时锁定；多点触控按手指 ID 分配。
 
 ## entities.js
-- `BR.Entities.spawn(type, x, z, opts)→ent`；type: `hound`(L3)、`partygoer`(FUN)、`lurker`(L2)、`watcher`（观察者，POI 驱动）。
-- 七层之物（L7）：真 AI 状态机（dormant→lurk→stalk→strike→retreat），实现在 `js/lv_l7.js`（initEntity），`entities.js` 的 `buildLeviathan/updateLeviathan` 为保留未用的旧占位；POI `leviathan_route` 仅作环境演出锚点。
+- `BR.Entities.spawn(type, x, z, opts)→ent`；type: `hound`(L3)、`partygoer`(FUN)、`lurker`(L1/L2)。**观察者（watcher）已于 v2.3 明确退役**：buildWatcher / updateWatcher / watcherAggressive / 旧 buildLeviathan / updateLeviathan / watcher POI 分支全部删除（约 180 行死代码），`entities.js` 内已无 watcher/leviathan 运行时引用（`tools/test-entity-v23.js` Part 4 源码断言）。理由：观察者是 Level 94「动画」的标志性实体，L94 已于 v1.5 W6 退役，硬塞进其他关卡不符合原著定位。
+- 遭遇光谱（v2.3 W-entity）：所有敌对实体共享 `alert` 0→1→2→3，**永不跳级**，脱离→search→hide 后 alert 归 0（平静恢复）。0 未察觉 / 1 环境痕迹·远处目击（潜伏者 28m 一次性耳语+抬头一瞥 1.8s + 巢穴 3 道抓痕 decal；猎犬 34m 远处低吼+停步注视 1.5s；派对客 26m 远处咯咯笑+歪头 1.2s）/ 2 警告（潜伏者 12m 目视→1.2s 凝视预警，退开作罢；猎犬 investigate 1.5s 窗口；派对客 stalk 可蹲伏 4s 劝退）/ 3 危险（stalk→追击；`hd > zoneR+8` 脱离→search→hide）。
+- L1 潜伏者落点：出口走廊起点房间、走廊起点 tile 2~4 格环内（原为随机黑暗区房间，玩家直奔出口可能整关见不到）。L6/L4 不加怪（设计决议）。
+- 七层之物（L7）：真 AI 状态机（dormant→lurk→stalk→strike→retreat），实现在 `js/lv_l7.js`（initEntity）；`nextLurk` 初值 55+40（55~95s，v2.3 提前首潜）；POI `leviathan_route` 仅作环境演出锚点。
 - Level ! 追逐者：实现在 `js/lv_bang.js`（BFS 沿路线真追逐，非 entities.js 通用状态机）。
 - ent: `{type, group, pos, state, update(dt, ctx)}`；ctx=`{playerPos, playerNoise, crouching, flashlightOn, los:boolean, dt}`。
 - 状态机含：`patrol/suspicious/chase/search`（hound）；`idle/wander/notice/approach/attack/lose`（partygoer）；`watch/flee/hide`（lurker）。
@@ -252,6 +255,42 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 
 ### 存档（save.js）
 - 存档键 **`backrooms_save_v2` 不变**；v2.1 无新顶层字段、无 key 升级。L372 状态走按关 `ws` 通透桶（`validate` 未知字段透传，无需新字段）；L188 `W.state.l188floor` 走 `ws.l188floor`（`validate` 缺省回填 0）。
+
+## v2.3 机制（2026-10-18，v2.0+ 整合委托）
+
+### Level 37 池核重制（gen_l37.js 重写 / lv_l37.js，HEADLINE）
+- 弃掉「后室+水池」混合思路，改为**独立 Poolrooms 空间生成逻辑**：9 个固定空间类型（placer 摆放）：`dry_spawn` 出生庭（干燥）/ `dry_gate` 门厅（干燥，Sunlit Gate + 异常门）/ `grand_pool` 异常开阔大池室 / `colonnade` 柱廊大厅 / `arch_pool` 拱门池室 ×2 / `sink` 深水沉降区（带通往深处的宽大楼梯）/ `submerged` 半淹没大厅（v2.1 保留）/ `court` 下沉庭院（v2.1 保留，修嵌套坑视觉遮挡）。
+- 水下通道：低板（y 0.8~1.05）压顶的水道，高出水面（0.5）——须潜水从下方穿过（板下水深不够站立）。低板是按 tile 的 Y 条件碰撞特例（`W._slabTiles`，见 world.js 节）。
+- 三档水深：0.4 / 1.2 / 2.0m（sink 最深，court 最浅），水深参与建筑生成。
+- **零怪物**（原著依据：L37 无活物记录）。
+- 双向契约保留：`sunlit_gate` ↔ L37.2 / `tunnel`/`deep_zone` ↔ L7 / `shallow_exit` → L0；小黄鸭坐骑保留（`BR.Gen.L37DUCK`）。
+
+### Level 37.2 气质拉开（gen_l372.js / lv_l372.js）
+- 与 L37 气质一眼可辨：L37.2 有**露天庭院**（天空+云+阳光），L37 是封闭室内 Poolrooms。
+- 空间角色序列：发现（arrival 粉色开口画廊）→ 开阔（opencourt 露天庭院）→ 倒影（mirror 镜面池）→ 异常（crack 水下裂纹区）→ 返回（return 黑暗开口）；POI 去随机化。
+
+### Level 7 冒险感（gen_l7.js / lv_l7.js）
+- 海底多种子变化度：礁群 / 暗礁 / 海蚀拱（双柱+门楣岩拱，-30m 海床）；海面天空（海天交界线清晰）；游泳涟漪/气泡。
+- 四带玩法挂钩：穿海蚀拱心 +4 理智 / 擦礁 -2（钩子在代码中，实机待验证）。
+- 利维坦首潜提前：`nextLurk` 初值 150+150 → **55+40（55~95s）**；后续重置仍 150~290s 低频。只提前「演出」，stalk/strike 触发条件、38s 上限、反制全部未动，不刷怪。
+
+### Level 188（gen_l188.js / lv_l188.js）
+- 1 处真残留修复：休息室在 gen 侧收窄，吊顶覆盖居中（x 78..90 / y 117..135），不再伸进 208/209 吊顶；南墙 209 窗移到 sx=32（x=97.5 落进 209 房范围）。根因：v2.1 的 `_l188dropCeil` 范围会伸进 208/209 吊顶造成 z-fighting。
+- 魔术窗帘（其中一扇交互后「消失」→随机切出）新增线索字条。
+
+### 遭遇光谱 + 观察者退役（entities.js）
+- 见 entities.js 节（alert 0→3 永不跳级、L1 潜伏者落点、L6/L4 不加怪、观察者退役）。
+
+### 切出框架（cutout.js）
+- `Cutout.registerType(name, def)` 注册表：既有 10 种切出类型（walk/manila/water/door/drop/slide/berry/hole/rift/none）逐字搬运注册，逻辑不变；接入新类型只许走注册表。
+- duct 管道爬行 / dive 深水潜游**原型已落地**（身体感演出实现，未接入真实出口，控制台可调）。
+- 设计文档 `docs/CUTOUT_DESIGN.md`：七种切出身体感设计 + 时长红线 ≤6s（硬性）。
+
+### 架构规划（纯文档）
+- `docs/ARCHITECTURE.md`（文件职责/`window.BR` 命名空间归属/耦合点/关卡契约/接口速查/模块化路线 P0→P2）+ `docs/MODULE_GRAPH.md`（分层图/依赖矩阵/耦合热点）。**零逻辑改动**。
+
+### 存档（save.js）
+- 存档键 **`backrooms_save_v2` 不变**；v2.3 无新顶层字段、无 key 升级。
 
 ## 性能铁律
 - 每区块每材质 1 个 InstancedMesh；fixture 灯光用对象池（≤6 个 PointLight）；无实时阴影（low/mid），high 可选 1 个。
