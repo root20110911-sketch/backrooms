@@ -440,7 +440,8 @@
         seaMesh: null, seaGeo: null, cloudTexs: [],
         gate: null, entity: null, rumble: null, rumbleTarget: 0,
         bands: null, debris: null, plankton: null, abyssLights: null,
-        ter: null, ocB: null, skyDome: null, haze: null, snow: null
+        ter: null, ocB: null, skyDome: null, haze: null, snow: null,
+        sunGlow: null, bubbles: [], arches: null, reefs: null, // v2.3 W-l7fixup
       });
       var meta = map.meta.l7;
       var oc = meta.ocean, entry = meta.entryRoom;
@@ -655,6 +656,9 @@
         var pos = dg.attributes.position, n = pos.count;
         var cols = new Float32Array(n * 3);
         var top = [0.20, 0.23, 0.27], mid = [0.42, 0.45, 0.48], hor = [0.349, 0.380, 0.416];
+        // v2.3 W-l7fixup「海面天空重做」：低日方位暖调 —— 日光从云后透出的一侧，
+        // 地平线附近染一层冷灰里的暖黄（保持阴天基调，只在方位上开一扇"光门"）
+        var sunAz = Math.atan2(-0.62, 0.45); // 与 L._sunDir 的 xz 方位一致
         for (var i = 0; i < n; i++) {
           var yn = pos.array[i * 3 + 1] / 190, c;
           if (yn >= 0.12) {
@@ -664,6 +668,11 @@
             var k2 = Math.max(0, Math.min(1, (yn + 0.05) / 0.17));
             c = [hor[0] + (mid[0] - hor[0]) * k2, hor[1] + (mid[1] - hor[1]) * k2, hor[2] + (mid[2] - hor[2]) * k2];
           }
+          var az = Math.atan2(pos.array[i * 3 + 2], pos.array[i * 3]);
+          var warm = Math.pow(Math.max(0, Math.cos(az - sunAz)), 3) * Math.max(0, 1 - Math.abs(yn) * 2.4);
+          c[0] = Math.min(1, c[0] + warm * 0.11);
+          c[1] = Math.min(1, c[1] + warm * 0.075);
+          c[2] = Math.min(1, c[2] + warm * 0.03);
           cols[i * 3] = c[0]; cols[i * 3 + 1] = c[1]; cols[i * 3 + 2] = c[2];
         }
         dg.setAttribute('color', new THREE.BufferAttribute(cols, 3));
@@ -684,6 +693,28 @@
         trackScene(dome);
         L.skyDome = dome;
         L._skyTex = ct;
+      })();
+
+      /* ---- 2b2. 阴云透日（v2.3 W-l7fixup「海面天空重做」）：云后低日光斑 ----
+       * 加色精灵挂在低日方位，随玩家跟随穹顶；水下隐藏（与 skyDome 同步）。 */
+      (function buildSunGlow() {
+        var c = document.createElement('canvas'); c.width = c.height = 128;
+        var x2 = c.getContext('2d');
+        var rg = x2.createRadialGradient(64, 64, 4, 64, 64, 64);
+        rg.addColorStop(0, 'rgba(255,244,220,0.85)');
+        rg.addColorStop(0.3, 'rgba(238,226,196,0.38)');
+        rg.addColorStop(1, 'rgba(238,226,196,0)');
+        x2.fillStyle = rg; x2.fillRect(0, 0, 128, 128);
+        var st = new THREE.CanvasTexture(c);
+        var sm = new THREE.SpriteMaterial({ map: st, transparent: true, opacity: 0.9, depthWrite: false, fog: false });
+        trackMat(W, sm);
+        var sp = new THREE.Sprite(sm);
+        sp.scale.set(76, 76, 1);
+        sp.renderOrder = -15;
+        W.scene.add(sp);
+        trackScene(sp);
+        L.sunGlow = sp;
+        L._sunDir = { x: 0.45, y: 0.30, z: -0.62 }; // 低日方向（与穹顶暖调方位一致）
       })();
 
       /* ---- 2c. 水上海雾三层（v2.0 P3）：近/中/远三圈竖向渐变雾环 ----
@@ -1520,6 +1551,31 @@
               var mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 7, 7), wood);
               mast.position.set(0.4, 2.6, 0.2); mast.rotation.z = 0.5;
               g.add(mast);
+            } else if (kind === 'reef') {
+              // v2.3 W-l7fixup：成片暗礁 —— 深色不规则岩块群，紧贴海床（暮光带）
+              var reefM = new THREE.MeshLambertMaterial({ color: 0x27333a });
+              trackMat(W, reefM);
+              cells.forEach(function (cc) {
+                var rh = 0.8 + bRng.next() * 1.8, rr2 = 0.9 + bRng.next() * 0.9;
+                var rk2 = new THREE.Mesh(new THREE.IcosahedronGeometry(rr2, 0), reefM);
+                rk2.scale.y = rh / (rr2 * 2) * 1.4;
+                rk2.position.set(cc[0] * T, rh / 2 - 0.5, cc[1] * T);
+                rk2.rotation.y = bRng.next() * 6.28;
+                g.add(rk2);
+              });
+            } else if (kind === 'skerry') {
+              // v2.3 W-l7fixup：出水暗礁 —— 从海床直窜水面的玄武岩柱（暮光带导航地标）
+              var skM = new THREE.MeshLambertMaterial({ color: 0x222b31 });
+              trackMat(W, skM);
+              var skH = (SURF + 1.4) - gy0; // 从海床到水面以上 1.4m
+              if (skH < 2) skH = 2;
+              var col = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.7, skH, 7), skM);
+              col.position.set(0, skH / 2, 0);
+              g.add(col);
+              var cap = new THREE.Mesh(new THREE.IcosahedronGeometry(1.3, 0), skM);
+              cap.position.set(0, skH, 0);
+              cap.scale.y = 0.55;
+              g.add(cap);
             } else { // ruin / frag：遗迹断墙与深渊结构残片
               var conc = new THREE.MeshLambertMaterial({ color: kind === 'ruin' ? 0x5a5e60 : 0x39424a });
               trackMat(W, conc);
@@ -1534,6 +1590,40 @@
             }
             W.reg(group, g);
           });
+        });
+
+        // 9a2. 海蚀拱（v2.3 W-l7fixup）：午夜带岩拱，独立 POI 类型 l7_arch，
+        // 不封 tile，玩家可从拱下/拱间游过（玩法挂钩见 tick 的 bandHooks）
+        L.arches = [];
+        poiList(map, 'l7_arch').forEach(function (p) {
+          var ax = BR.tileCX(p.tx), az = BR.tileCZ(p.ty);
+          var agy0 = L.ter ? BR.L7Terrain.seabedY(ax, az, L.ter) : -20;
+          W.addChunkContent(p.tx, p.ty, function (group) {
+            var g = new THREE.Group();
+            g.position.set(ax, agy0, az);
+            g.rotation.y = (p.data && p.data.rot) || 0;
+            var am = new THREE.MeshLambertMaterial({ color: 0x333c42 });
+            trackMat(W, am);
+            var pillarH = 7 + bRng.next() * 3;
+            [-2.6, 2.6].forEach(function (ox) {
+              var pil = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.3, pillarH, 7), am);
+              pil.position.set(ox, pillarH / 2, 0);
+              pil.rotation.z = (bRng.next() - 0.5) * 0.1;
+              g.add(pil);
+            });
+            var lint = new THREE.Mesh(new THREE.BoxGeometry(7.4, 1.6, 2.2), am);
+            lint.position.set(0, pillarH + 0.4, 0);
+            lint.rotation.z = (bRng.next() - 0.5) * 0.08;
+            g.add(lint);
+            W.reg(group, g);
+          });
+          L.arches.push({ x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty), y: agy0 + 3.5, seen: false });
+        });
+        // 9a3. 礁群/暗礁玩法锚点（暮光带；刮擦判定见 tick 的 bandHooks）
+        L.reefs = [];
+        poiList(map, 'l7_obstacle').forEach(function (p) {
+          if (p.data && (p.data.kind === 'reef' || p.data.kind === 'skerry'))
+            L.reefs.push({ x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty) });
         });
 
         // 9b. 日光带漂浮物（场景级，随波漂移；只放在浅水台地上方，少量）
@@ -1793,7 +1883,10 @@
           crng: crng,
           state: 'dormant',
           tState: 0,
-          nextLurk: 150 + crng.next() * 150,  // 首次潜出：150~300s（低频出现）
+          nextLurk: 55 + crng.next() * 40,  // v2.3 W-entity：首次潜出 55~95s，保证正常探索
+                                          // 至少经历一次环境演出（远影/水面扰动环/偶发出水）；
+                                          // 之后回到低频（150~290s，见 retreat/lurk 结束处的重置）。
+                                          // 只提前"演出"，不刷怪：lurk 本身不伤人，stalk/strike 触发条件不变。
           nextRumble: 25 + crng.next() * 30,  // 休眠期偶发低频声
           x: home ? BR.tileCX(home.tx) : ocx,
           z: home ? BR.tileCZ(home.ty) : ocz,
@@ -1957,6 +2050,42 @@
           rg.m.geometry.dispose();
           try { rg.m.material.dispose(); } catch (e) {}
           R.splice(i, 1);
+        }
+      }
+    },
+
+    /* ---------- v2.3 W-l7fixup「游泳水体感打磨」：水下气泡（纯视觉，不碰物理/实体） ----
+     * 水下快速游动时偶发上浮气泡；水面快速游动时的涟漪复用 _spawnRing 扰动环池。 */
+    _spawnBubble: function (W, L, x, y, z) {
+      var m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06 + Math.random() * 0.08, 6, 5),
+        new THREE.MeshBasicMaterial({ color: 0xcfe8ee, transparent: true, opacity: 0.5, depthWrite: false })
+      );
+      trackMat(W, m.material);
+      m.position.set(x + (Math.random() - 0.5) * 0.5, y, z + (Math.random() - 0.5) * 0.5);
+      W.scene.add(m);
+      trackScene(m);
+      L.bubbles.push({ m: m, t: 0, vy: 0.9 + Math.random() * 0.7 });
+      if (L.bubbles.length > 40) { // 池满：丢最老的
+        var b0 = L.bubbles.shift();
+        W.scene.remove(b0.m);
+        b0.m.geometry.dispose();
+        try { b0.m.material.dispose(); } catch (e) {}
+      }
+    },
+    _updateBubbles: function (W, L, dt) {
+      var B = L.bubbles || [];
+      for (var i = B.length - 1; i >= 0; i--) {
+        var b = B[i];
+        b.t += dt;
+        b.m.position.y += b.vy * dt;
+        b.m.position.x += Math.sin(L.t * 3 + i) * dt * 0.3;
+        b.m.material.opacity = Math.max(0, 0.5 - b.t * 0.25);
+        if (b.t > 2 || b.m.position.y > SURF - 0.1) {
+          W.scene.remove(b.m);
+          b.m.geometry.dispose();
+          try { b.m.material.dispose(); } catch (e) {}
+          B.splice(i, 1);
         }
       }
     },
@@ -2278,6 +2407,11 @@
         L.skyDome.position.x = P.pos.x; // 跟随玩家：穹顶半径 190 < 相机 far 220，永不裁剪
         L.skyDome.position.z = P.pos.z;
       }
+      if (L.sunGlow) { // v2.3：阴云透日光斑跟随玩家（穹顶半径内 170m），水下隐藏
+        var _sd = L._sunDir;
+        L.sunGlow.position.set(P.pos.x + _sd.x * 170, _sd.y * 170, P.pos.z + _sd.z * 170);
+        L.sunGlow.visible = !headUnderNow;
+      }
       for (var cqi = 0; cqi < L.cloudTexs.length; cqi++) {
         if (L.cloudTexs[cqi].mesh) L.cloudTexs[cqi].mesh.visible = !headUnderNow;
       }
@@ -2326,6 +2460,47 @@
 
       // 七层之物 AI（状态机；演出全部走 trackScene/clearSceneObjs 管线）
       this._updateCreature(W, L, dt);
+
+      /* v2.3 W-l7fixup「游泳水体感打磨」+「四带玩法挂钩」：纯视觉/小机制，
+       * 不碰物理钳制（_swimVertical）与实体状态机（_updateCreature）。 */
+      (function swimFeelAndBandHooks() {
+        var _self = this;
+        var spd = (P.vel) ? Math.hypot(P.vel.x, P.vel.z) : 0;
+        var hu = !!(BR.Swim && BR.Swim.headUnder);
+        var inW = !!(BR.Swim && BR.Swim.inWater);
+        L._wakeT = (L._wakeT || 0) - dt;
+        if (!hu && inW && spd > 2.2 && L._wakeT <= 0) {
+          _self._spawnRing(W, L, P.pos.x, P.pos.z, false); // 水面快速游动：扩散涟漪
+          L._wakeT = 0.45;
+        }
+        if (hu && spd > 1.5 && Math.random() < dt * 2.2)
+          _self._spawnBubble(W, L, P.pos.x, P.pos.y + 0.4, P.pos.z); // 水下快速游动：上浮气泡
+        _self._updateBubbles(W, L, dt);
+        if (!hu) return;
+        // 海蚀拱穿越（午夜带）：游过拱心 → 理智 +4（每拱一次）
+        if (L.arches) for (var i = 0; i < L.arches.length; i++) {
+          var a = L.arches[i];
+          if (a.seen) continue;
+          if (Math.hypot(P.pos.x - a.x, P.pos.z - a.z) < 2.8 && Math.abs(P.pos.y - a.y) < 6) {
+            a.seen = true;
+            try { P.restoreSanity(4); } catch (e) {}
+            BR.UI.toast('你从海蚀拱下游过——石环沉默地立在蓝里，莫名安心。（理智+4）', 2800);
+          }
+        }
+        // 礁群/暗礁刮擦（暮光带）：高速擦过礁岩 → 轻微擦伤（3s 全局冷却）
+        L._scrapeT = Math.max(0, (L._scrapeT || 0) - dt);
+        if (L._scrapeT <= 0 && L.reefs && spd > 2.2) {
+          for (var j = 0; j < L.reefs.length; j++) {
+            var r = L.reefs[j];
+            if (Math.hypot(P.pos.x - r.x, P.pos.z - r.z) < 2.4) {
+              P.hurt(2, 'reef');
+              BR.UI.toast('暗礁擦过你的潜水服——慢点游。（-2）', 2200);
+              L._scrapeT = 3;
+              break;
+            }
+          }
+        }
+      }).call(this);
       // 极低频包络
       if (L._rumbleHold > 0) L._rumbleHold -= dt;
       else L.rumbleTarget = Math.max(0, L.rumbleTarget - dt * 0.12);
