@@ -2,10 +2,27 @@
  * Level 37「泳池房」—— 关卡内容 + 共享游泳模块 BR.Swim
  * 独立 IIFE：只用 BR.*，不改动其它文件本体。
  *
- * v1.4 D 路重做：
+ * v2.3 Poolrooms 重塑（W-l37gen）：
+ *   - 生成侧（gen_l37.js）已彻底重写：独立 Poolrooms 空间复合体
+ *     （大池室/柱廊/拱门池室/深水沉降区+大楼梯/半淹没厅/下沉庭院/
+ *     浅水走廊/水下通道），不再是"后室生成器+水池房间"。
+ *   - v2.3 渲染修正：坑 tile 全部 W.setOpenFloor + setOpenCeil ——
+ *     旧版从未抑制引擎默认地板/天花板，v2.1 的"泳池"在视觉上是
+ *     平的（坑体几何被 y=0 地板盖住，截图证实）；现在池底/池壁/
+ *     台阶真实可见。邻坑高差边立高差墙（替代"共边不立墙"）。
+ *   - 柱子改场景级 InstancedMesh（1 draw call，手机/平板友好）。
+ *   - 拱门改为结构拱（双柱 + lintel，柱体 tile=0 真实碰撞）。
+ *   - 删掉自认纯装饰的"无意义台阶"；湿脚印改为有意义的线索：
+ *     从大池扶梯上岸处向北延伸（有人刚从这里爬出）。
+ *   - 删掉随 'lane' 角色退役的泳道浮球线（纯装饰）。
+ *   - 水下通道：顶部低板（0.8m）替代 3.2m 天花板，需潜穿。
+ *   - 大楼梯（grand_stair）：两侧加楼梯扶手。
+ *
+ * v1.4 D 路重做（保留）：
  *   - 水体几何：全关统一水面 SURF=0.5（BR.Gen.L37SURF），深浅由池底几何形成
  *     （浅滩 0 / 泳池坑 -1.2 / 深水坑 -2.2 / 缓坡 / 台阶段），视觉与碰撞一致；
- *   - 坑 tile=2：buildContent 里全部 W.skipWall()，自建池底/池壁/顶面/台阶；
+ *   - 坑：tile 保持 1（v2.3 连通性：bfsDist 只认 tile=1）；buildContent 里按 pit 矩形
+ *     全部 W.skipWall()+setOpenFloor/setOpenCeil，自建池底/池壁/顶面/台阶；
  *   - 瓷柱阵 tile=0：skipWall + 自建细柱（真实碰撞，同 L1 车库柱先例）；
  *   - 水面按 chunk 裁剪铺设（跨区块连续、无接缝消失）；
  *   - 对 E 路接口（本文件末尾绑定）：
@@ -708,6 +725,7 @@
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     });
     M.lightBar = new THREE.MeshBasicMaterial({ color: 0xf2fbff }); // 天花板灯带
+    M.rail = new THREE.MeshLambertMaterial({ color: 0x9fb6c0 }); // v2.3：大楼梯扶手
     // v2.1 W-l37：日光门材质（→L37.2 预留；跳转逻辑由总协调接线）
     var gateTex = BR.Textures.get('sunlit_gate');
     M.gateGlow = new THREE.MeshBasicMaterial({
@@ -726,6 +744,7 @@
     W._levelMats.push(M.pitWall); W._levelMats.push(M.deepShade); W._levelMats.push(M.pillar);
     W._levelMats.push(M.trim); W._levelMats.push(M.midShade);
     W._levelMats.push(M.streak); W._levelMats.push(M.streakCol); W._levelMats.push(M.lightBar);
+    W._levelMats.push(M.rail);
     // tick 动画用（buildContent 里 FX37 重置时清零）
     FX37.waterlineMat = M.waterline;
     FX37.gateHaloMat = M.gateHalo;
@@ -846,19 +865,29 @@
     if (steps) for (var i = 0; i < steps.length; i++) s[steps[i].edge] = steps[i];
     return s;
   }
-  function isPitTile(pit, tx, ty) {
-    return tx >= pit.tx0 && tx <= pit.tx1 && ty >= pit.ty0 && ty <= pit.ty1;
-  }
   function buildPits(W, L, M, map) {
     var wallH = (W.theme && W.theme.wallH) || 3.2;
     var tileAt = function (tx, ty) {
       if (tx < 0 || ty < 0 || tx >= map.w || ty >= map.h) return 0;
       return map.tiles[ty * map.w + tx];
     };
+    // tile -> pit 索引（邻坑查询；v2.3 坑严格无重叠）
+    var pitOf = {};
+    L.pits.forEach(function (pit, pidx) {
+      for (var yy = pit.ty0; yy <= pit.ty1; yy++)
+        for (var xx = pit.tx0; xx <= pit.tx1; xx++) pitOf[xx + ',' + yy] = pidx;
+    });
+    function oppEdge(e) { return e === 'N' ? 'S' : e === 'S' ? 'N' : e === 'W' ? 'E' : 'W'; }
     L.pits.forEach(function (pit) {
       var tx, ty;
       for (ty = pit.ty0; ty <= pit.ty1; ty++)
-        for (tx = pit.tx0; tx <= pit.tx1; tx++) W.skipWall(tx, ty);
+        for (tx = pit.tx0; tx <= pit.tx1; tx++) {
+          W.skipWall(tx, ty);
+          // v2.3 渲染修正：抑制引擎默认地板/天花板 —— 旧版从未调过，
+          // 导致坑体几何被 y=0 地板盖住（v2.1"泳池"视觉上是平的）
+          W.setOpenFloor(tx, ty);
+          W.setOpenCeil(tx, ty);
+        }
       var px0 = pit.tx0 * TILE, px1 = (pit.tx1 + 1) * TILE;
       var pz0 = pit.ty0 * TILE, pz1 = (pit.ty1 + 1) * TILE;
       var topY = Math.max(0, pit.floorY), botY = Math.min(0, pit.floorY);
@@ -906,49 +935,96 @@
             g.computeVertexNormals();
             W.reg(group, new THREE.Mesh(g, W.mat('pool_floor')));
           }
-          // 池壁：裁剪块的边若与坑外边界重合则立墙；
-          //   跳过：台阶边 / 缓坡高边 / 与相邻坑共边（分层泳池不断墙）
+          // 池壁：裁剪块的边若与坑外边界重合则立墙。
+          // v2.3 邻坑感知（替代旧"与相邻坑共边不立墙"）：
+          //   本边有台阶 → 不立墙；邻坑在对边有台阶 → 不立墙（对方台阶覆盖）；
+          //   邻坑同深 → 不立墙；邻坑不同深 → 立高差墙（minFloor..maxFloor）。
           var highEdge = pit.ramp ? (pit.ramp.axis === 'z' ? (pit.ramp.dir > 0 ? 'N' : 'S') : (pit.ramp.dir > 0 ? 'W' : 'E')) : null;
-          function wall(x0, z0, x1, z1) {
+          function wallSeg(x0, z0, x1, z1, wTop, wBot) {
             var len = Math.hypot(x1 - x0, z1 - z0);
-            if (len < 0.01 || topY - botY < 0.01) return;
-            var m = new THREE.Mesh(new THREE.PlaneGeometry(len, topY - botY), M.pitWall);
-            m.position.set((x0 + x1) / 2, (topY + botY) / 2, (z0 + z1) / 2);
+            if (len < 0.01 || wTop - wBot < 0.01) return;
+            var m = new THREE.Mesh(new THREE.PlaneGeometry(len, wTop - wBot), M.pitWall);
+            m.position.set((x0 + x1) / 2, (wTop + wBot) / 2, (z0 + z1) / 2);
             m.rotation.y = Math.atan2(x1 - x0, z1 - z0) + Math.PI / 2;
             W.reg(group, m);
           }
-          // 邻边是否为别的坑 tile（是则不立墙）
-          function adjPit(edge) {
-            var txx = edge === 'W' ? pit.tx0 - 1 : edge === 'E' ? pit.tx1 + 1 : ix0;
-            var tyy = edge === 'N' ? pit.ty0 - 1 : edge === 'S' ? pit.ty1 + 1 : iy0;
-            if (edge === 'W' || edge === 'E') {
-              for (var yy = iy0; yy <= iy1; yy++) if (tileAt(txx, yy) === 2 && !isPitTile(pit, txx, yy)) return true;
-            } else {
-              for (var xx = ix0; xx <= ix1; xx++) if (tileAt(xx, tyy) === 2 && !isPitTile(pit, xx, tyy)) return true;
+          // 沿边第 i 个 tile 的墙体范围（{top, bot} 或 null=不立墙）
+          function edgeWallAt(edge, i) {
+            var nx, ny;
+            if (edge === 'W') { nx = pit.tx0 - 1; ny = iy0 + i; }
+            else if (edge === 'E') { nx = pit.tx1 + 1; ny = iy0 + i; }
+            else if (edge === 'N') { nx = ix0 + i; ny = pit.ty0 - 1; }
+            else { nx = ix0 + i; ny = pit.ty1 + 1; }
+            var qi = pitOf[nx + ',' + ny];
+            var nb = (qi != null && L.pits[qi] !== pit) ? L.pits[qi] : null;
+            if (nb) {
+              if (stepEdgesOf(nb)[oppEdge(edge)]) return null; // 邻坑台阶覆盖
+              if (Math.abs(nb.floorY - pit.floorY) < 0.01) return null; // 同深
+              return { top: Math.max(nb.floorY, pit.floorY), bot: Math.min(nb.floorY, pit.floorY) };
             }
-            return false;
+            return { top: topY, bot: botY };
+          }
+          function buildEdgeWalls(edge) {
+            if (stepEdges[edge] || highEdge === edge) return;
+            var n = (edge === 'W' || edge === 'E') ? (iy1 - iy0 + 1) : (ix1 - ix0 + 1);
+            var run = null, i;
+            function flush() {
+              if (!run) return;
+              var x0, z0, x1, z1;
+              if (edge === 'W') { x0 = x1 = qx0; z0 = (iy0 + run.i0) * TILE; z1 = (iy0 + run.i1 + 1) * TILE; }
+              else if (edge === 'E') { x0 = x1 = qx1; z0 = (iy0 + run.i0) * TILE; z1 = (iy0 + run.i1 + 1) * TILE; }
+              else if (edge === 'N') { z0 = z1 = qz0; x0 = (ix0 + run.i0) * TILE; x1 = (ix0 + run.i1 + 1) * TILE; }
+              else { z0 = z1 = qz1; x0 = (ix0 + run.i0) * TILE; x1 = (ix0 + run.i1 + 1) * TILE; }
+              wallSeg(x0, z0, x1, z1, run.top, run.bot);
+              run = null;
+            }
+            for (i = 0; i < n; i++) {
+              var wb = edgeWallAt(edge, i);
+              if (wb && run && Math.abs(run.top - wb.top) < 0.001 && Math.abs(run.bot - wb.bot) < 0.001) run.i1 = i;
+              else { flush(); if (wb) run = { i0: i, i1: i, top: wb.top, bot: wb.bot }; }
+            }
+            flush();
           }
           var EPS = 0.01;
-          if (Math.abs(qx0 - px0) < EPS && !stepEdges.W && highEdge !== 'W' && !adjPit('W')) wall(qx0, qz0, qx0, qz1);
-          if (Math.abs(qx1 - px1) < EPS && !stepEdges.E && highEdge !== 'E' && !adjPit('E')) wall(qx1, qz0, qx1, qz1);
-          if (Math.abs(qz0 - pz0) < EPS && !stepEdges.N && highEdge !== 'N' && !adjPit('N')) wall(qx0, qz0, qx1, qz0);
-          if (Math.abs(qz1 - pz1) < EPS && !stepEdges.S && highEdge !== 'S' && !adjPit('S')) wall(qx0, qz1, qx1, qz1);
-          // 蓝小砖池沿：非台阶边、非共边的坑沿压一条 0.35m 蓝砖压边（deck 平台临水边同理）
-          function trim(x0, z0, x1, z1) {
+          if (Math.abs(qx0 - px0) < EPS) buildEdgeWalls('W');
+          if (Math.abs(qx1 - px1) < EPS) buildEdgeWalls('E');
+          if (Math.abs(qz0 - pz0) < EPS) buildEdgeWalls('N');
+          if (Math.abs(qz1 - pz1) < EPS) buildEdgeWalls('S');
+          // 蓝小砖池沿：非台阶边、无邻坑的坑沿压一条 0.35m 蓝砖压边；
+          // v2.3：deck 平台的压边放在平台顶面高度。
+          function trim(x0, z0, x1, z1, trimY) {
             var len = Math.hypot(x1 - x0, z1 - z0);
             if (len < 0.05) return;
             var m = new THREE.Mesh(new THREE.BoxGeometry(len, 0.07, 0.35), M.trim);
-            m.position.set((x0 + x1) / 2, 0.035, (z0 + z1) / 2);
+            m.position.set((x0 + x1) / 2, trimY, (z0 + z1) / 2);
             m.rotation.y = Math.atan2(x1 - x0, z1 - z0) + Math.PI / 2;
             W.reg(group, m);
           }
+          function trimEdgeFree(edge) {
+            if (stepEdges[edge]) return false;
+            var n = (edge === 'W' || edge === 'E') ? (iy1 - iy0 + 1) : (ix1 - ix0 + 1);
+            for (var i = 0; i < n; i++) {
+              var nx, ny;
+              if (edge === 'W') { nx = pit.tx0 - 1; ny = iy0 + i; }
+              else if (edge === 'E') { nx = pit.tx1 + 1; ny = iy0 + i; }
+              else if (edge === 'N') { nx = ix0 + i; ny = pit.ty0 - 1; }
+              else { nx = ix0 + i; ny = pit.ty1 + 1; }
+              var qi = pitOf[nx + ',' + ny];
+              if (qi != null && L.pits[qi] !== pit) return false;
+            }
+            return true;
+          }
           var TW = 0.175; // 压边半宽（向坑外）
-          if (Math.abs(qx0 - px0) < EPS && !stepEdges.W && !adjPit('W')) trim(qx0 - TW, qz0, qx0 - TW, qz1);
-          if (Math.abs(qx1 - px1) < EPS && !stepEdges.E && !adjPit('E')) trim(qx1 + TW, qz0, qx1 + TW, qz1);
-          if (Math.abs(qz0 - pz0) < EPS && !stepEdges.N && !adjPit('N')) trim(qx0, qz0 - TW, qx1, qz0 - TW);
-          if (Math.abs(qz1 - pz1) < EPS && !stepEdges.S && !adjPit('S')) trim(qx0, qz1 + TW, qx1, qz1 + TW);
-          // 顶面（tile=2 无默认天花板；坑上无灯具 → 自然暗区）
-          W.reg(group, hPlane(qw, qh, W.mat('pool_ceil'), qcx, wallH, qcz, false));
+          var trimY = pit.floorY > 0 ? pit.floorY + 0.035 : 0.035;
+          if (Math.abs(qx0 - px0) < EPS && trimEdgeFree('W')) trim(qx0 - TW, qz0, qx0 - TW, qz1, trimY);
+          if (Math.abs(qx1 - px1) < EPS && trimEdgeFree('E')) trim(qx1 + TW, qz0, qx1 + TW, qz1, trimY);
+          if (Math.abs(qz0 - pz0) < EPS && trimEdgeFree('N')) trim(qx0, qz0 - TW, qx1, qz0 - TW, trimY);
+          if (Math.abs(qz1 - pz1) < EPS && trimEdgeFree('S')) trim(qx0, qz1 + TW, qx1, qz1 + TW, trimY);
+          // 顶面自建（引擎默认天花板已 setOpenCeil 跳过，不再 z-fighting）。
+          // v2.3：水下通道（noCeil）不建 3.2m 顶，改由低板覆盖（见本函数末尾）。
+          if (!pit.noCeil) {
+            W.reg(group, hPlane(qw, qh, W.mat('pool_ceil'), qcx, wallH, qcz, false));
+          }
           // 台阶：每条 stepEdge 占 1 tile 宽带，n 级；从 fromY（默认甲板 0）走向 pit.floorY
           //   （可上：deck 平台；可下：普通/分层）。实心楼梯：每级只填"本级踏面→上一级踏面"
           //   （k=0 时到 fromY），各级无缝衔接、无重叠、无透视缝。
@@ -996,80 +1072,106 @@
         });
       });
     });
-  }
-
-  // 瓷柱阵：tile=0 真实碰撞；这里 skipWall + 自建 0.8m 细柱（从甲板升出水面）
-  // v2.1：柱体穿出水面处加一圈水线涟漪（每 chunk 独立几何，随 chunk 正常释放；只在有水时建）
-  function buildPillars(W, L, M, map) {
-    L.pillars.forEach(function (pt) {
-      var tx = pt[0], ty = pt[1];
-      W.skipWall(tx, ty);
-      W.addChunkContent(tx, ty, function (group) {
-        var col = new THREE.Mesh(new THREE.BoxGeometry(0.8, 3.2, 0.8), M.pillar);
-        col.position.set(BR.tileCX(tx), 1.6, BR.tileCZ(ty));
-        W.reg(group, col);
-        var cap = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.18, 1.0), M.pillar);
-        cap.position.set(BR.tileCX(tx), 3.15, BR.tileCZ(ty));
-        W.reg(group, cap);
-        if (map && M.waterline && BR.Gen && BR.Gen.L37waterAt) {
-          var wq = BR.Gen.L37waterAt(map, BR.tileCX(tx), BR.tileCZ(ty));
-          if (wq && wq.depth > 0.05) {
-            var ring = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.64, 20), M.waterline);
-            ring.rotation.x = -Math.PI / 2;
-            ring.position.set(BR.tileCX(tx), SURF + 0.012, BR.tileCZ(ty));
-            W.reg(group, ring);
-          }
-        }
+    // v2.3：水下通道低板（每坑一次，非 chunk 裁剪，避免重复）
+    L.pits.forEach(function (pit) {
+      if (!pit.noCeil || !pit.slab) return;
+      var sl = pit.slab;
+      var atx = Math.floor((sl.tx0 + sl.tx1) / 2), aty = Math.floor((sl.ty0 + sl.ty1) / 2);
+      W.addChunkContent(atx, aty, function (group) {
+        var sw = (sl.tx1 - sl.tx0 + 1) * TILE, sh = (sl.ty1 - sl.ty0 + 1) * TILE;
+        var scx = (sl.tx0 + sl.tx1 + 1) / 2 * TILE, scz = (sl.ty0 + sl.ty1 + 1) / 2 * TILE;
+        var slabMesh = new THREE.Mesh(new THREE.BoxGeometry(sw, sl.yTop - sl.yBot, sh), M.pitWall);
+        slabMesh.position.set(scx, (sl.yTop + sl.yBot) / 2, scz);
+        W.reg(group, slabMesh);
       });
     });
-  }
-
-  /* ============ v1.5 W5：泳道线（参考图1：长条泳道中央浮球分道线） ============
-   * lane 角色坑沿长轴中央一条浮球线（蓝白相间），随水面轻微浮动；
-   * 纯装饰（无碰撞，避免游泳被卡住）。 */
-  function laneDividerAssets() {
-    if (!FX37.laneGeo) {
-      FX37.laneGeo = new THREE.SphereGeometry(0.07, 10, 8);
-      FX37.laneMatA = new THREE.MeshLambertMaterial({ color: 0xf4f9fb });
-      FX37.laneMatB = new THREE.MeshLambertMaterial({ color: 0x2b8ab5 });
-    }
-  }
-  function buildLaneDividers(W, L) {
-    laneDividerAssets();
-    FX37.laneBalls = FX37.laneBalls || [];
+    // v2.3：通往深处的楼梯 —— 两侧扶手（沿坡度）+ 立柱
     L.pits.forEach(function (pit) {
-      if (pit.role !== 'lane') return;
+      if (pit.role !== 'grand_stair') return;
       var px0 = pit.tx0 * TILE, px1 = (pit.tx1 + 1) * TILE;
       var pz0 = pit.ty0 * TILE, pz1 = (pit.ty1 + 1) * TILE;
-      var horiz = (px1 - px0) >= (pz1 - pz0);
-      var len = (horiz ? px1 - px0 : pz1 - pz0) - 2.4 * TILE; // 两端避开入水台阶
-      if (len < 2) return;
-      var mid = horiz ? (pz0 + pz1) / 2 : (px0 + px1) / 2;
-      var start = horiz ? px0 + 1.2 * TILE : pz0 + 1.2 * TILE;
-      var n = Math.max(2, Math.floor(len / 0.35));
-      var atx = Math.floor(pit.tx0 + (pit.tx1 - pit.tx0) / 2);
-      var aty = Math.floor(pit.ty0 + (pit.ty1 - pit.ty0) / 2);
+      var run = px1 - px0, rise = 0.55 - pit.floorY;
+      var ang = Math.atan2(rise, run);
+      var railLen = Math.hypot(run, rise) + 1.2;
+      var atx = Math.floor((pit.tx0 + pit.tx1) / 2), aty = Math.floor((pit.ty0 + pit.ty1) / 2);
       W.addChunkContent(atx, aty, function (group) {
-        for (var i = 0; i < n; i++) {
-          var d = start + (i + 0.5) * (len / n);
-          var m = new THREE.Mesh(FX37.laneGeo, i % 2 ? FX37.laneMatB : FX37.laneMatA);
-          var bx = horiz ? d : mid, bz = horiz ? mid : d;
-          m.position.set(bx, SURF + 0.06, bz);
-          W.reg(group, m);
-          FX37.laneBalls.push({ m: m, phase: d * 0.7, baseY: SURF + 0.06 });
-        }
+        [pz0 + 0.3, pz1 - 0.3].forEach(function (rz) {
+          var rail = new THREE.Mesh(new THREE.BoxGeometry(railLen, 0.09, 0.09), M.rail);
+          rail.position.set((px0 + px1) / 2, (0.55 + pit.floorY) / 2 + 1.0, rz);
+          rail.rotation.z = -ang; // 西高东低
+          W.reg(group, rail);
+          for (var pi = 0; pi < 3; pi++) {
+            var postX = px0 + run * (0.15 + 0.35 * pi);
+            var surfY = 0.55 - (postX - px0) / run * rise;
+            var post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.0, 0.09), M.rail);
+            post.position.set(postX, surfY + 0.5, rz);
+            W.reg(group, post);
+          }
+        });
       });
     });
   }
-  function tickLaneDividers() {
-    if (!FX37.laneBalls) return;
-    for (var i = 0; i < FX37.laneBalls.length; i++) {
-      var b = FX37.laneBalls[i];
-      if (!b.m.parent) continue; // chunk 已卸载则跳过
-      b.m.position.y = b.baseY + Math.sin(FX37.t * 1.3 + b.phase) * 0.03;
-      b.m.rotation.y += 0.004;
+
+  // 瓷柱阵：tile=0 真实碰撞；这里 skipWall + 自建细柱
+  // v2.3：场景级 InstancedMesh（柱身 + 柱帽各 1 个 draw call，手机/平板友好；
+  //   不随 chunk 卸载，常驻内存可忽略，雾负责远距离衰减）
+  // v2.1：柱体穿出水面处加一圈水线涟漪（每 chunk 独立几何，随 chunk 正常释放；只在有水时建）
+  function buildPillars(W, L, M, map) {
+    // skipWall 必须同步调（chunk 构建前）
+    L.pillars.forEach(function (pt) { W.skipWall(pt[0], pt[1]); });
+    // 清理上一 build 的场景级柱体
+    if (FX37.pillarMeshes) {
+      for (var di = 0; di < FX37.pillarMeshes.length; di++) {
+        var dm = FX37.pillarMeshes[di];
+        if (dm.parent) dm.parent.remove(dm);
+        if (dm.geometry) dm.geometry.dispose();
+      }
+      FX37.pillarMeshes = null;
+    }
+    if (FX37.pillarRings) {
+      for (var ri = 0; ri < FX37.pillarRings.length; ri++) {
+        var rm = FX37.pillarRings[ri];
+        if (rm.parent) rm.parent.remove(rm);
+        if (rm.geometry) rm.geometry.dispose();
+      }
+      FX37.pillarRings = null;
+    }
+    var n = L.pillars.length;
+    if (!n || !W.scene) return;
+    // v2.3：场景级 InstancedMesh —— 柱身/柱帽各 1 draw call
+    var shaftGeo = new THREE.BoxGeometry(0.8, 3.2, 0.8);
+    var capGeo = new THREE.BoxGeometry(1.0, 0.18, 1.0);
+    var shafts = new THREE.InstancedMesh(shaftGeo, M.pillar, n);
+    var caps = new THREE.InstancedMesh(capGeo, M.pillar, n);
+    var dummy = new THREE.Object3D();
+    for (var i = 0; i < n; i++) {
+      var wx = BR.tileCX(L.pillars[i][0]), wz = BR.tileCZ(L.pillars[i][1]);
+      dummy.position.set(wx, 1.6, wz); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+      shafts.setMatrixAt(i, dummy.matrix);
+      dummy.position.set(wx, 3.15, wz); dummy.updateMatrix();
+      caps.setMatrixAt(i, dummy.matrix);
+    }
+    shafts.instanceMatrix.needsUpdate = true;
+    caps.instanceMatrix.needsUpdate = true;
+    shafts.frustumCulled = false; caps.frustumCulled = false;
+    W.scene.add(shafts); W.scene.add(caps);
+    FX37.pillarMeshes = [shafts, caps];
+    // v2.1：柱体穿出水面处一圈水线涟漪（只在有水时建；场景级，随重建释放）
+    FX37.pillarRings = [];
+    if (map && M.waterline && BR.Gen && BR.Gen.L37waterAt) {
+      L.pillars.forEach(function (pt) {
+        var wq = BR.Gen.L37waterAt(map, BR.tileCX(pt[0]), BR.tileCZ(pt[1]));
+        if (wq && wq.depth > 0.05) {
+          var ring = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.64, 20), M.waterline);
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.set(BR.tileCX(pt[0]), SURF + 0.012, BR.tileCZ(pt[1]));
+          W.scene.add(ring);
+          FX37.pillarRings.push(ring);
+        }
+      });
     }
   }
+
   // placer 在 pit.ladder = {edge} 指定位置；这里建双杆+横档几何，
   // 上岸走统一交互（E/左键）：落点检测最近的坑外甲板 tile，绝不放进墙里。
   function buildLadders(W, L, M, map) {
@@ -1457,23 +1559,71 @@
     }
   }
 
-  function buildArchway(W, p) {
-    var x = BR.tileCX(p.tx), z = BR.tileCZ(p.ty);
-    var marksTunnel = !!(p.data && p.data.tunnel);
+  /* ============ v2.3：结构拱门 ============
+   * 拱门是空间转场的结构标记（非装饰）：双柱 + 顶梁，柱体落在
+   * gen 侧置为 tile=0 的拱门柱 tile 上（真实碰撞），门洞保持通行。
+   * POI data: {tunnel, kind:'mouth'|'passage', dir}
+   *   mouth：POI 在空间门洞 tile 上，dir 为门洞朝向（E/W/N/S）；
+   *          双柱位置由 (tx,ty,dir) 确定性算出，与 gen 侧 tryArch 一致。
+   *   passage：水下通道两端的跨廊拱（纯视觉，不占 tile），dir 为廊道走向；
+   *          双柱贴廊道侧墙（±2.55m），不窄化通行。
+   * 标记水下通道所在厅的拱门顶梁是青色的——观察拱洞标记找路（旧契约保留）。 */
+  function buildArchway(W, p, M, map) {
+    var d = p.data || {};
+    var marksTunnel = !!d.tunnel;
+    var kind = d.kind || 'mouth', dir = d.dir || 'E';
+    var T3 = TILE;
+    var pillars = []; // 世界坐标 [[wx,wz],[wx,wz]]
+    var rotY = 0;
+    if (kind === 'passage') {
+      var ccx = BR.tileCX(p.tx), ccz = (p.ty + 1) * T3; // 廊道 2 tile 行之间
+      if (dir === 'E') { // 廊道东西走向：柱在南北两侧
+        pillars = [[ccx, ccz - 2.55], [ccx, ccz + 2.55]];
+        rotY = 0;
+      } else { // 廊道南北走向
+        pillars = [[ccx - 2.55, ccz], [ccx + 2.55, ccz]];
+        rotY = Math.PI / 2;
+      }
+    } else {
+      // 与 gen_l37.js tryArch 完全一致的柱位公式
+      var qx1, qy1, qx2, qy2;
+      if (dir === 'E') { qx1 = p.tx - 1; qy1 = p.ty - 1; qx2 = p.tx - 1; qy2 = p.ty + 2; }
+      else if (dir === 'W') { qx1 = p.tx + 1; qy1 = p.ty - 1; qx2 = p.tx + 1; qy2 = p.ty + 2; }
+      else if (dir === 'S') { qx1 = p.tx - 1; qy1 = p.ty - 1; qx2 = p.tx + 2; qy2 = p.ty - 1; }
+      else { qx1 = p.tx - 1; qy1 = p.ty + 1; qx2 = p.tx + 2; qy2 = p.ty + 1; }
+      pillars = [[(qx1 + 0.5) * T3, (qy1 + 0.5) * T3], [(qx2 + 0.5) * T3, (qy2 + 0.5) * T3]];
+      rotY = (dir === 'E' || dir === 'W') ? 0 : Math.PI / 2;
+      // 柱 tile：tile=0 真实碰撞；跳过引擎默认墙体（同步，chunk 构建前）
+      W.skipWall(qx1, qy1); W.skipWall(qx2, qy2);
+    }
+    var mx = (pillars[0][0] + pillars[1][0]) / 2;
+    var mz = (pillars[0][1] + pillars[1][1]) / 2;
+    var span = Math.hypot(pillars[1][0] - pillars[0][0], pillars[1][1] - pillars[0][1]);
+    // v2.3：柱基沉到实际池底（柱可立在浅水/平台上）—— 梁高始终相对门洞地面 2.7m
+    var bases = pillars.map(function (pp) {
+      var w = BR.Gen.L37waterAt(map, pp[0], pp[1]);
+      return w ? w.floor : 0;
+    });
     W.addChunkContent(p.tx, p.ty, function (group) {
       var g = new THREE.Group();
-      var white = new THREE.MeshLambertMaterial({ color: 0xf4f8f9 });
-      var pg = new THREE.BoxGeometry(0.5, 2.9, 0.5);
-      var p1 = new THREE.Mesh(pg, white); p1.position.set(-1.5, 1.45, 0);
-      var p2 = new THREE.Mesh(pg, white); p2.position.set(1.5, 1.45, 0);
-      // 标记水下通道的拱洞横梁是青色的——观察水深/拱洞标记找路
+      var colM = M.pillar;
+      for (var i = 0; i < 2; i++) {
+        var baseY = bases[i], colH = 2.6 - baseY;
+        var c = new THREE.Mesh(new THREE.BoxGeometry(0.6, colH, 0.6), colM);
+        c.position.set(pillars[i][0], baseY + colH / 2, pillars[i][1]);
+        g.add(c);
+        var cap = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.14, 0.8), colM);
+        cap.position.set(pillars[i][0], 2.67, pillars[i][1]);
+        g.add(cap);
+      }
+      // 顶梁：标记水下通道所在厅的是青色（旧契约）
       var beam = new THREE.Mesh(
-        new THREE.BoxGeometry(3.6, 0.5, 0.7),
-        marksTunnel ? new THREE.MeshBasicMaterial({ color: 0x7fd4e8 }) : white
+        new THREE.BoxGeometry(span + 0.6, 0.35, 0.9),
+        marksTunnel ? new THREE.MeshBasicMaterial({ color: 0x7fd4e8 }) : colM
       );
-      beam.position.set(0, 3.0, 0);
-      g.add(p1); g.add(p2); g.add(beam);
-      g.position.set(x, 0, z);
+      beam.position.set(mx, 2.775, mz);
+      beam.rotation.y = rotY;
+      g.add(beam);
       W.reg(group, g);
     });
   }
@@ -1590,45 +1740,38 @@
     });
   }
 
-  /* ================= F1：湿脚印 / 跳水台 / 异常门 ================= */
-
-  // 湿脚印：一串 decal 从池边通向干燥区（位置规则同 v1.3；浅水厅按 data.depth<1.0 识别）
-  function buildFootprints(W, map) {
-    var pools = (map.pois || []).filter(function (p) { return p.type === 'pool'; });
-    if (!pools.length) return;
-    var shallow = pools.filter(function (p) { return (p.data.depth || 0) < 1.0; });
-    var cand = (shallow.length ? shallow : pools).slice().sort(function (a, b) {
-      return (b.data.rw * b.data.rh) - (a.data.rw * a.data.rh);
-    });
-    var d = cand[0].data;
-    var rx0 = Math.round(d.wcx / TILE - d.rw / 2), rz0 = Math.round(d.wcz / TILE - d.rh / 2);
-    var rx1 = rx0 + d.rw - 1, rz1 = rz0 + d.rh - 1;
-    var midX = Math.round((rx0 + rx1) / 2), midZ = Math.round((rz0 + rz1) / 2);
-    var dirs = [{ dx: 1, dz: 0 }, { dx: 0, dz: 1 }, { dx: -1, dz: 0 }, { dx: 0, dz: -1 }];
-    var best = null, di, s2;
-    for (di = 0; di < dirs.length; di++) {
-      var dd = dirs[di];
-      var sx = dd.dx === 1 ? rx1 + 1 : dd.dx === -1 ? rx0 - 1 : midX;
-      var sz = dd.dz === 1 ? rz1 + 1 : dd.dz === -1 ? rz0 - 1 : midZ;
-      var run = [];
-      for (s2 = 0; s2 < 8; s2++) {
-        var gx = sx + dd.dx * s2, gz = sz + dd.dz * s2;
-        if (gx < 1 || gz < 1 || gx > map.w - 2 || gz > map.h - 2) break;
-        if (W.map.tiles[gz * W.map.w + gx] !== 1) break;
-        run.push([gx, gz]);
-      }
-      if (!best || run.length > best.run.length) best = { dir: dd, run: run };
+  /* ================= v2.3：湿脚印（有意义的线索） =================
+   * 不再是"从池边通向干燥区"的随机装饰。新含义：
+   *   脚印从大池扶梯（E 边）的上岸点出发，沿东侧临水平台向北延伸 ——
+   *   "有人刚抓住扶梯爬上岸，沿池沿向北走去"。
+   * 玩家含义：标记扶梯这个上岸点，并暗示行进方向。位置完全确定
+   * （gen 侧大池几何恒定），种子只扰动左右脚偏角。 */
+  function buildFootprints(W, map, L) {
+    if (!L) return;
+    var deepPit = null, i;
+    for (i = 0; i < L.pits.length; i++)
+      if (L.pits[i].kind === 'deep') { deepPit = L.pits[i]; break; }
+    if (!deepPit) return;
+    // 东侧临水平台条带（role 'deck_e'，紧贴深水坑东缘 = 扶梯上岸处）
+    var deckE = null;
+    for (i = 0; i < L.pits.length; i++) {
+      var q = L.pits[i];
+      if (q.role === 'deck_e' && q.tx0 === deepPit.tx1 + 1) { deckE = q; break; }
     }
-    if (!best || !best.run.length) return;
+    if (!deckE) return;
     var rng = new BR.RNG(BR.hashSeed(map.seed + ':l37feet'));
-    var n = Math.min(6, best.run.length);
-    var ang = Math.atan2(-best.dir.dx, -best.dir.dz); // 脚尖朝行进方向
-    var px = -best.dir.dz, pz = best.dir.dx; // 横向（左右脚错开）
+    var cx = (deckE.tx0 + 0.5) * TILE;
+    var deckTopY = deckE.floorY; // 0.55
+    var z0 = (deepPit.ty0 + deepPit.ty1 + 1) / 2 * TILE; // 扶梯 z（坑心）
+    var n = 5;
     for (var fi = 0; fi < n; fi++) {
       (function (idx) {
-        var ft = best.run[idx];
-        var op = Math.max(0.25, 0.7 - idx * 0.07);
-        W.addChunkContent(ft[0], ft[1], function (group) {
+        var fz = z0 - 1.2 - idx * 0.55; // 从扶梯处向北
+        var ftx = deckE.tx0, fty = Math.floor(fz / TILE);
+        // 必须落在平台条带内（防越界）
+        if (fty < deckE.ty0 || fty > deckE.ty1) return;
+        var op = Math.max(0.25, 0.7 - idx * 0.07); // 越往北越干
+        W.addChunkContent(ftx, fty, function (group) {
           for (var side = -1; side <= 1; side += 2) {
             var fp = new THREE.Mesh(
               new THREE.PlaneGeometry(0.55, 0.85),
@@ -1637,21 +1780,16 @@
                 opacity: op, depthWrite: false
               })
             );
-            fp._ownMat = true; // chunk 卸载时释放（贴图共享，不释放）
             fp.rotation.x = -Math.PI / 2;
-            fp.rotation.z = ang + (rng.next() - 0.5) * 0.3;
-            fp.position.set(
-              BR.tileCX(ft[0]) + px * 0.16 * side + best.dir.dx * 0.10 * side,
-              0.025,
-              BR.tileCZ(ft[1]) + pz * 0.16 * side + best.dir.dz * 0.10 * side
-            );
+            fp.rotation.z = (rng.next() - 0.5) * 0.3; // 脚尖朝北（贴图上端即北）
+            fp.position.set(cx + side * 0.16, deckTopY + 0.025, fz + side * 0.10);
             W.reg(group, fp);
           }
         });
       })(fi);
     }
     W._l37fx = W._l37fx || {};
-    W._l37fx.feet = { n: n, dir: [best.dir.dx, best.dir.dz], tx: best.run[0][0], ty: best.run[0][1] };
+    W._l37fx.feet = { n: n, from: 'ladder', dir: 'N', tx: deckE.tx0, ty: deckE.ty0 };
   }
 
   // 跳水台：架在深水坑北缘，台面向南伸入坑上方；南腿按坑底高度；
@@ -1854,7 +1992,21 @@
         FX37.board = null;
         FX37.caustTex = null;
         FX37.ladders = [];
-        FX37.laneBalls = [];
+        // v2.3：场景级柱体（InstancedMesh）清理
+        if (FX37.pillarMeshes) {
+          for (var pmi = 0; pmi < FX37.pillarMeshes.length; pmi++) {
+            var pmm = FX37.pillarMeshes[pmi];
+            if (pmm.geometry) pmm.geometry.dispose();
+          }
+          FX37.pillarMeshes = null;
+        }
+        if (FX37.pillarRings) {
+          for (var pri = 0; pri < FX37.pillarRings.length; pri++) {
+            var prm = FX37.pillarRings[pri];
+            if (prm.geometry) prm.geometry.dispose();
+          }
+          FX37.pillarRings = null;
+        }
         FX37._fogCat = null;      // v2.1：水下雾深浅分类（tick 内按 zone 深度切换）
         FX37.waterlineMat = null; // v2.1：makeMats 里重设
         FX37.gateHaloMat = null;  // v2.1：makeMats 里重设
@@ -1868,59 +2020,30 @@
         buildPits(W, L, M, map);
         buildPillars(W, L, M, map);
         buildLadders(W, L, M, map);
-        buildLaneDividers(W, L);
         buildDucks(W, map);
         registerSwimZones(L);
         // 测试钩子：暴露给 e2e（_test_l37.html 风格）
         W._l37fx = W._l37fx || {};
         W._l37fx.ladders = FX37.ladders;
-        W._l37fx.laneBalls = FX37.laneBalls;
         W._l37fx.duckHandles = FX37.duckHandles;
       }
       var i, p;
       for (i = 0; i < map.pois.length; i++) {
         p = map.pois[i];
         // 'pool' POI：水体由 meta.l37 rects 统一建造，这里无需逐个处理
-        if (p.type === 'archway') buildArchway(W, p);
+        if (p.type === 'archway') buildArchway(W, p, M, map);
         else if (p.type === 'tunnel') buildTunnel(W, p);
         else if (p.type === 'deep_zone') buildDeepZone(W, p, map);
         else if (p.type === 'shallow_exit') buildShallowExit(W, p);
         else if (p.type === 'sunlit_gate') buildSunlitGate(W, p, M);
       }
-      // 无意义台阶：纯装饰，种子确定（干燥非泳池房）
-      var srng = new BR.RNG(BR.hashSeed(map.seed + ':l37steps'));
-      var steps = [];
-      for (var ri = 1; ri < map.rooms.length && steps.length < 3; ri++) {
-        var rr = map.rooms[ri];
-        if (rr.tag && rr.tag.indexOf('pool_') === 0) continue;
-        if (srng.next() < 0.5) continue;
-        steps.push({
-          tx: rr.x + 1 + Math.floor(srng.next() * Math.max(1, rr.w - 2)),
-          ty: rr.y + 1 + Math.floor(srng.next() * Math.max(1, rr.h - 2)),
-          rot: Math.floor(srng.next() * 4) * Math.PI / 2
-        });
-      }
-      steps.forEach(function (sp) {
-        W.addChunkContent(sp.tx, sp.ty, function (group) {
-          var g = new THREE.Group();
-          var m = new THREE.MeshLambertMaterial({ color: 0xe4ebec });
-          for (var s2 = 0; s2 < 3; s2++) {
-            var st2 = new THREE.Mesh(new THREE.BoxGeometry(1.4 - s2 * 0.35, 0.16, 1.0), m);
-            st2.position.set(0, 0.08 + s2 * 0.16, s2 * 0.28);
-            g.add(st2);
-          }
-          g.position.set(BR.tileCX(sp.tx), 0, BR.tileCZ(sp.ty));
-          g.rotation.y = sp.rot;
-          W.reg(group, g);
-        });
-      });
-
-      // F1：湿脚印 / 跳水台 / 异常门（切出口）
-      buildFootprints(W, map);
+      // v2.3：删掉自认纯装饰的"无意义台阶"（旧代码注释原话"纯装饰"）。
+      // 湿脚印改为有意义的线索：从大池扶梯上岸处向北延伸（见 buildFootprints）。
+      buildFootprints(W, map, L);
       buildDiveBoard(W, map);
       buildAnomDoor(W, map);
 
-      W.objective = '泳池房：浅水可涉行，深水沿台阶下潜；深水区藏着水下通道（→L7），浅水区有离开的出口（→L0）';
+      W.objective = '泳池房：浅水涉行，深水沿台阶下潜；大池深处藏着水下通道（→L7），拱门廊道通往楼梯与深水区，浅水区有出口（→L0）';
     },
 
     onEnter: function () {
@@ -2046,7 +2169,6 @@
         }
       }
       tickWakeRings(W, dt);
-      tickLaneDividers();
       // v1.5 W5：游泳声音状态机（入水/出水/划水）
       (function swimSounds() {
         var sw = BR.Swim, A = BR.Audio;

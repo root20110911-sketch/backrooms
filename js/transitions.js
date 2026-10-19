@@ -4,7 +4,8 @@
 
   const TR = {
     active: null,       // {name, skipped}
-    _watchdog: null
+    _watchdog: null,
+    _fns: {}            // v2.3：转场注册表（TR.register 接入；内建转场见文件末尾登记）
   };
   BR.Trans = TR;
 
@@ -61,12 +62,8 @@
       setTimeout(() => self._finish(), 600);
     }, 30000);
 
-    const fns = {
-      intro: trIntro, noclip_wall: trNoclip, corridor: trCorridor,
-      ceiling: trCeiling, gate: trGate, elevator: trElevator,
-      fun_escape: trFunEscape, fail: trFail, fade: trFade, drop: trDrop
-    };
-    const fn = fns[name] || trFade;
+    // v2.3：转场只走注册表（新转场用 TR.register(name, fn) 接入，不改 TR.play）
+    const fn = this._fns[name] || this._fns.fade || trFade;
     return Promise.resolve(fn(opts)).then(() => this._finish(), () => this._finish());
   };
 
@@ -253,6 +250,30 @@
     if (opts && opts.then) await opts.then();
     await fade(0, 600);
   }
+
+  /* ---------- 转场注册表（v2.3 接口整理） ----------
+   * 新转场只许 TR.register(name, fn) 接入，不改 TR.play。
+   * fn(opts)：转场演出函数（可为 async），TR.play 会在其 resolve 后统一收尾。 */
+  TR.register = function (name, fn) {
+    if (typeof name !== 'string' || !name || typeof fn !== 'function') {
+      BR.warn('TR.register 参数非法:', name);
+      return false;
+    }
+    if (this._fns[name]) BR.warn('TR.register 覆盖已有转场:', name);
+    this._fns[name] = fn;
+    return true;
+  };
+  // 内建转场登记（行为与旧 fns 字面量一致；以下皆为函数声明，已提升，登记顺序无要求）
+  TR.register('intro', trIntro);
+  TR.register('noclip_wall', trNoclip);
+  TR.register('corridor', trCorridor);
+  TR.register('ceiling', trCeiling);
+  TR.register('gate', trGate);
+  TR.register('elevator', trElevator);
+  TR.register('fun_escape', trFunEscape);
+  TR.register('fail', trFail);
+  TR.register('fade', trFade);
+  TR.register('drop', trDrop);
 
   // 跳过按钮（长按转场可跳过）
   document.addEventListener('DOMContentLoaded', () => {
