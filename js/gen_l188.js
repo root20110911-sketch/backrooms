@@ -506,8 +506,8 @@
     map.rooms.length = 0;
     // 门 axis 取视觉正确的约定（门扇与所在墙共面）：
     //   南北墙（墙沿 X 走向）用 'x'，东西墙（墙沿 Z 走向）用 'z'。
-    // 实测注记：gen.js 的 findDoorSpot 对南北/东西墙给的轴是反的，
-    // L2 里那些门在渲染时是侧着嵌在墙里的；本关不使用它，全部手放。
+    // 注记（2026-10-17 已修）：gen.js 的 findDoorSpot 曾对南北/东西墙给反轴，
+    // L2/L1/FUN 的门渲染时侧着嵌在墙里；现已修正为本约定。本关不使用它，全部手放。
     function DOOR(tx, ty, axis, locked, label) {
       var id = 'd' + (doorN++);
       map.doors.push({ id: id, tx: tx, ty: ty, axis: axis, locked: !!locked, label: label, exitTo: null });
@@ -580,7 +580,10 @@
       carve(g.x, g.y, g.x + g.w - 1, g.y + g.h - 1);
     }
     /* —— 休息室 / 员工室 —— */
-    carve(25, 39, 32, 44);
+    // v2.3 W-l188 缺墙修复：休息室原 x25..32——与 208 房（x21..24）东西相邻无墙、
+    // 与 209 房（x31..34）在 x31..32 重叠，三间并成一间大通间；现收窄为 x26..29，
+    // 两侧各留一格墙（x=25 / x=30）。208/209 房与门位不动。
+    carve(26, 39, 29, 44);
     carve(40, 39, 44, 43);
 
     /* —— 1F 楼梯间大厅（真垂直二层：门厅 + 楼梯井；(37,38) 留墙洞装真门） —— */
@@ -680,7 +683,7 @@
       var rl = [
         ['spawn_room', 26, 16, 4, 4], ['atrium', 20, 22, 16, 14], ['balcony', 20, 21, 16, 1],
         ['corr_w', 17, 22, 1, 14], ['corr_e', 38, 22, 1, 14], ['corr_s', 17, 37, 28, 1],
-        ['lounge', 25, 39, 8, 6], ['staff', 40, 39, 5, 5],
+        ['lounge', 26, 39, 4, 6], ['staff', 40, 39, 5, 5],
         ['stair_hall', 36, 38, 3, 1], ['stair_shaft', 36, 39, 3, 5]
       ];
       for (var gi = 0; gi < guests.length; gi++)
@@ -708,7 +711,7 @@
     /* —— 功能区 POI —— */
     POI('lounge', 28, 41, {});
     POI('staff_room', 41, 42, {});
-    POI('radio', 30, 42, {});                       // 休息室收音机 → L0
+    POI('radio', 27, 42, {});                       // 休息室收音机 → L0（v2.3：随休息室收窄东移，原 30,42 成墙）
     POI('odd_window', 32, 35, { num: '209' });       // 中庭南墙下的异常窗 → L1（对准 s0_32 窗）
     POI('stairwell', 42, 41, {});                   // 员工室楼梯间 → L11
 
@@ -716,7 +719,7 @@
     POI('note', 26, 43, { noteId: 'L188_note0' });
     POI('note', 44, 40, { noteId: 'L188_note1' });
     POI('note', 17, 30, { noteId: 'L188_note2' });
-    POI('crate', 31, 43, { item: 'almond' });
+    POI('crate', 29, 43, { item: 'almond' });       // v2.3：随休息室收窄东移（原 31,43 成墙）
     POI('crate', 40, 40, { item: 'bandage' });
     POI('crate', 33, 21, { item: 'empty' });
 
@@ -781,7 +784,8 @@
       for (k = 0; k < 4; k++) {
         for (sx = 22; sx <= 34; sx += 2) {
           // v2.0 P5：209 窗从 sx=28 移到 sx=32（x=97.5 落进 209 房横向范围 93..105，
-          // 室内窗位置才能对上；sx=28 改挂 lounge，x=85.5 落进休息室 75..99）
+          // 室内窗位置才能对上；sx=28 改挂 lounge，x=85.5 落进休息室 78..90
+          // （v2.3 休息室收窄为 x26..29 后仍在室内））
           var numS = k === 0 ? (sx === 22 ? '208' : sx === 28 ? 'lounge' : sx === 32 ? '209' : null) : null;
           pushWin('s' + k + '_' + sx, 'S', k, (sx + 0.5) * T3, 36 * T3 - 0.07, Math.PI, [sx, 36], numS);
         }

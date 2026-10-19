@@ -140,6 +140,23 @@
       this.state = savedState || { openedDoors: [], picked: [], openedCrates: [], events: [] };
       // v1.5 W1：恢复区块级状态（老存档缺 chunkState 字段 → 空对象，向后兼容）
       BR.ChunkState.deserialize(this.state.chunkState);
+      // W-hotfix(2026-10-18)：L37 水下通道低板 3D 条件碰撞。
+      // 低板 y 0.8~1.05 高出水面(0.5)，须潜水（头顶 < yBot）从下方穿过；
+      // 头顶高于 yBot 时水平进入低板 tile 视为撞墙。tile 碰撞系是 2D 的，
+      // 这里按玩家实时头高做条件阻挡（只读 BR.Player，不改其逻辑；
+      // 不在 W.blocked 里做，避免污染实体 LOS 的 tile 查询）。
+      this._slabTiles = null;
+      const _l37pits = map.meta && map.meta.l37 && map.meta.l37.pits;
+      if (_l37pits) {
+        for (const pit of _l37pits) {
+          if (pit.role === 'underpass' && pit.slab && pit.slab.yBot != null) {
+            this._slabTiles = this._slabTiles || new Map(); // "tx,ty" -> yBot
+            for (let sy = pit.slab.ty0; sy <= pit.slab.ty1; sy++)
+              for (let sx = pit.slab.tx0; sx <= pit.slab.tx1; sx++)
+                this._slabTiles.set(sx + ',' + sy, pit.slab.yBot);
+          }
+        }
+      }
       const th = this.theme;
       sharedGeo();
 
@@ -209,6 +226,7 @@
     this.elevator = null; this.blackout = false;
     this._rbT = null; this._rbDur = 0; // 随机断电事件计时：跨关不残留
     this._noWall = null; this._openCeil = null; this._openFloor = null; this._matCache = null;
+    this._slabTiles = null; // W-hotfix：L37 水下通道低板碰撞（跨关不残留）
     this._funPit = null; // L0 FUN 深坑触发器（levels.js 登记，跨关不残留）
     this._manilaRect = null; // 马尼拉房间灯具禁区（levels.js 登记，跨关不残留）
     this._shopNPC = null;    // M.E.G. 交易站 NPC 动画引用（跨关不残留）
@@ -662,6 +680,14 @@
     // 低矮管道区：必须蹲伏才能进入
     const ltx = Math.floor(nx / T), lty = Math.floor(nz / T);
     if (this.lowDucts.has(ltx + ',' + lty) && BR.Player && !BR.Player.crouching) return false;
+    // W-hotfix(2026-10-18)：L37 水下通道低板 —— 头顶高于低板底则挡住，
+    // 须下潜（头顶 < yBot）才能水平穿过；已在低板下/外则不受限，不会困住玩家。
+    if (this._slabTiles) {
+      const yBot = this._slabTiles.get(ltx + ',' + lty);
+      // BODY_H 取 player.js 的身体总高（1.78），取不到则回退常量
+      const bodyH = (BR.Player && BR.Player.BODY_H) || 1.78;
+      if (yBot != null && BR.Player && BR.Player.pos.y + bodyH > yBot) return false;
+    }
     return true;
   };
   // 轴分离移动（先 x 后 z，贴墙滑动）
@@ -899,7 +925,12 @@
     const self = this;
     this.addInteractable({
       id: 'door_' + id, kind: 'door', chunkKey: d.chunkKey,
-      meshes: [panel], pos: new THREE.Vector3(wx, (def.yBase || 0) + 1.4, wz), radius: 2.2,
+      // W-hotfix(2026-10-18)：radius 2.2→3.2。根因：rayInteract 按"射线命中点距离 >
+      // it.radius" 过滤，而玩家站在门相邻 tile 瞄准门扇中心时命中距离恒为 ~2.94m
+      //（tile 3m - 门扇半厚 0.06m），2.2 恒过滤掉 → _curIt 恒 null、按 E 无反应。
+      // 与 axis 无关（x/z 门实测命中距离一致）；3.2 覆盖相邻 tile 自然站位，
+      // 仍在 INTERACT_DIST+1.2=4.0 的射线范围内，不会隔墙误触（遮挡检查仍在）。
+      meshes: [panel], pos: new THREE.Vector3(wx, (def.yBase || 0) + 1.4, wz), radius: 3.2,
       // W9：统一加按键标签（读 BR.Input 当前绑定，不硬编码；levels.js 在运行时已定义）
       prompt: def.prompt || (() => (BR.interactKeyLabel ? BR.interactKeyLabel() : '') +
         (d.locked ? '🔒 ' + (def.label || '门') + '（锁住了）' : (d.open ? '关上' : '打开') + (def.label || '门'))),
