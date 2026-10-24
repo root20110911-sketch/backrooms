@@ -2,7 +2,7 @@
 (function () {
   const BR = window.BR;
   const T = BR.TILE;
-  const { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList } = BR._lvShare;
+  const { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList, buildVents, ensureLoopCleanup } = BR._lvShare;
 
   /* ================= L1 ================= */
 
@@ -167,18 +167,67 @@
   BR.Levels.L1.buildContent = function (map, W) {
     buildDoors(map, W);
     // 出口长走廊起点：标识 + 提示
+    // v2.2 W-exits：可发现性加强——灯牌加大+双面、走廊口绿光、尽头冷光（走廊内可见目标）、
+    // 管线渐密（LORE 依据："视觉上更长、管线渐密、工业声渐强"）、常驻双电流声引导。
     poiList(map, 'exit_corridor').forEach(p => {
+      const dx = p.data.dirx != null ? p.data.dirx : 0, dz = p.data.dirz != null ? p.data.dirz : 1;
+      const len = p.data.len || 10;
+      const mx = BR.tileCX(p.tx), mz = BR.tileCZ(p.ty);
       W.addChunkContent(p.tx, p.ty, (group) => {
-        const s = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.5),
-          new THREE.MeshBasicMaterial({ map: BR.Textures.get('exitSign') }));
-        const dx = p.data.dirx != null ? p.data.dirx : 0, dz = p.data.dirz != null ? p.data.dirz : 1;
-        s.position.set(BR.tileCX(p.tx) + dx * 2, 2.3, BR.tileCZ(p.ty) + dz * 2);
+        const signMat = new THREE.MeshBasicMaterial({ map: BR.Textures.get('exitSign') });
+        const s = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.72), signMat);
+        s.position.set(mx + dx * 2, 2.3, mz + dz * 2);
         // P5 修：牌面必须朝向走廊入口（来路方向），旧 atan2(dx, dz) 让法线指向走廊深处，
         // 从入口看是背面 → 背面剔除导致牌子"隐形"
         s.rotation.y = Math.atan2(-dx, -dz);
         W.reg(group, s);
+        const sBack = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.72), signMat);
+        sBack.position.copy(s.position);
+        sBack.rotation.y = Math.atan2(-dx, -dz) + Math.PI;
+        W.reg(group, sBack);
+        // 走廊口绿色点光：进房间即见
+        const gl = new THREE.PointLight(0x39ff6a, 1.0, 16, 2);
+        gl.position.set(mx + dx * 1.5, 2.3, mz + dz * 1.5);
+        W.reg(group, gl);
       });
-      W._exitCorr = { x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty) };
+      // 管线渐密：沿走廊走向布管，越往深处越密（LORE 原著依据）。
+      // 每根管子注册到自己所在的 tile chunk（走廊可跨 chunk，不可全挂在走廊口 chunk 下）。
+      (function () {
+        const pipeM = W.mat('pipe');
+        const px = -dz, pz = dx; // 垂直于走廊的方向
+        const dirV = new THREE.Vector3(dx, 0, dz);
+        for (let k = 2; k < len; k += (k < len * 0.6 ? 3 : 2)) {
+          const side = (k % 2 === 0) ? 1 : -1;
+          const ptx = p.tx + dx * k, pty = p.ty + dz * k;
+          W.addChunkContent(ptx, pty, (group) => {
+            const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 2.4, 8), pipeM);
+            pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirV);
+            pipe.position.set(
+              BR.tileCX(ptx) + px * side * (T / 2 - 0.18),
+              2.2,
+              BR.tileCZ(pty) + pz * side * (T / 2 - 0.18));
+            W.reg(group, pipe);
+          });
+        }
+      })();
+      // 尽头门：冷白点光 + 门缝光带（走廊深处可见的视觉目标）
+      const ex = p.tx + dx * (len - 1), ey = p.ty + dz * (len - 1);
+      W.addChunkContent(ex, ey, (group) => {
+        const el = new THREE.PointLight(0xd8f4ff, 1.1, 12, 2);
+        el.position.set(BR.tileCX(ex) - dx * 1.2, 2.2, BR.tileCZ(ey) - dz * 1.2);
+        W.reg(group, el);
+        const slit = new THREE.Mesh(new THREE.PlaneGeometry(T * 0.7, 0.08),
+          new THREE.MeshBasicMaterial({ color: 0xd8f4ff }));
+        slit.position.set(BR.tileCX(ex) - dx * (T / 2 - 0.06), 0.05, BR.tileCZ(ey) - dz * (T / 2 - 0.06));
+        // 法线朝向走廊来路（-dir），从走廊看可见；旧值 atan2(dx,dz) 法线指向门内，背面剔除致隐形
+        slit.rotation.y = Math.atan2(-dx, -dz);
+        W.reg(group, slit);
+      });
+      // 常驻声音引导：走廊口电流滋滋 + 尽头工业低鸣（60m 内按距离衰减+声像）
+      ensureLoopCleanup(W, ['l1_exit_buzz', 'l1_exit_end']);
+      BR.Audio.addLoop('l1_exit_buzz', 'buzz', mx, mz, 0.5);
+      BR.Audio.addLoop('l1_exit_end', 'machine', BR.tileCX(ex), BR.tileCZ(ey), 0.35);
+      W._exitCorr = { x: mx, z: mz };
     });
     // 安全屋：暖光
     poiList(map, 'safe_room').forEach(p => {
@@ -286,7 +335,9 @@
     buildThinWalls(map, W);
     // M.E.G. 前哨交易站（柜台 + 帐篷围挡 + 暖灯 + 队员 NPC + 商店交互）
     poiList(map, 'meg_shop').forEach(p => buildMegShop(W, p));
-    W.objective = '穿过那条异常长的走廊前往 Level 2（注意天花板上的动静）';
+    W.objective = '穿过那条异常长的走廊前往 Level 2（顺着绿光和电流声找；或钻琥珀色边框通风管）';
+    // v2.2 W-exits：通风管（固定映射 L1→L2，琥珀色边框）+ M.E.G. 管路图字条
+    buildVents(map, W, 'L1');
   };
 
   BR.Levels.L1.onEnter = function () {
@@ -329,9 +380,9 @@
       }
     });
     // 出口走廊提示
-    if (W._exitCorr && !W._exitCorrTold && Math.hypot(P.pos.x - W._exitCorr.x, P.pos.z - W._exitCorr.z) < 7) {
+    if (W._exitCorr && !W._exitCorrTold && Math.hypot(P.pos.x - W._exitCorr.x, P.pos.z - W._exitCorr.z) < 10) {
       W._exitCorrTold = true;
-      BR.UI.toast('这条走廊……看起来比别的更长');
+      BR.UI.toast('这条走廊……看起来比别的更长，尽头有光');
     }
     // 闪烁事件
     (W._blackouts || []).forEach(b => {
@@ -473,8 +524,11 @@
         const nn = L2_NOTES[i % L2_NOTES.length];
         addNoteShared(W, p.tx, p.ty, nn[0], nn[1]);
       });
-      W.objective = '找到那扇没上锁的门，前往 Level 3（小心蒸汽和管道阴影）';
+      W.objective = '找到那扇没上锁的门，前往 Level 3（小心蒸汽和管道阴影；或钻蓝色边框通风管）';
       BR.buildThinWalls(map, W);
+      // v2.2 W-exits：通风管（固定映射 L2→L3，蓝色边框）+ M.E.G. 管路图字条
+      // 注：L2 在独立嵌套 IIFE 中，不在外层解构作用域，走 BR._lvShare 拿共享函数
+      BR._lvShare.buildVents(map, W, 'L2');
     };
 
     function addNoteShared(W, tx, ty, title, body) {
