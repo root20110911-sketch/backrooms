@@ -570,3 +570,312 @@ body.underwater #game-canvas { filter: saturate(1.2) brightness(0.85); }
 
 /* ---------- G v1.4：背包详情数量行（选中物品 名称/数量/用途/操作 四要素之一） ---------- */
 .bp-dcount { font-size: 13px; color: #d3ba72; font-weight: 700; letter-spacing: 1px; margin-bottom: 10px; }
+
+/* ============ v2.4 uipolish：视觉统一（W-uipolish） ============
+ * 字体方案：等宽/终端风 —— 系统字体栈（离线可用，零外链）
+ *   中文正文仍走系统黑体（可读性）；UI 铬（按钮/标题/HUD/数字/键位）走等宽栈。
+ * 配色规范（走 AAA_REF 色彩脚本：低饱和世界 + 高饱和诱饵）：
+ *   --uip-yellow  后室黄 #d3ba72 —— 主色（唯一高饱和诱饵色，交互/目标/准星）
+ *   --uip-cold   冷灰 #9aa3b2 —— 次级文本/边框（低饱和）
+ *   --uip-red    警示红 #c8452f —— 危险/低血量/死亡（唯一警示色）
+ * 动效纪律：只用 transform / opacity。
+ */
+:root {
+  --uip-font: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas,
+    "Liberation Mono", "DejaVu Sans Mono", "Courier New", monospace;
+  --uip-yellow: #d3ba72;
+  --uip-yellow-hi: #f2e9cf;
+  --uip-yellow-dim: #8a743d;
+  --uip-cold: #9aa3b2;
+  --uip-cold-dim: #5f6a78;
+  --uip-red: #c8452f;
+  --uip-red-hi: #e05545;
+}
+
+/* ---------- 面板标题：等宽 + 分隔线 ---------- */
+.panel h1, .panel h2, .panel h3 { font-family: var(--uip-font); }
+.panel h2 {
+  border-bottom: 1px solid #3b382e;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+}
+/* 标题下的细分隔线（纯装饰，不占布局） */
+.panel h2::after {
+  content: ""; display: block; width: 56px; height: 2px; margin: 10px auto 0;
+  background: linear-gradient(90deg, transparent, var(--uip-yellow-dim), transparent);
+}
+
+/* ---------- 按钮：hover 动效（transform/opacity/filter 已在 transition 内） ---------- */
+button { font-family: var(--uip-font); }
+button:hover {
+  border-color: var(--uip-yellow-dim);
+  filter: brightness(1.18);
+}
+button:focus-visible {
+  outline: 2px solid var(--uip-yellow);
+  outline-offset: 2px;
+}
+button.big:hover {
+  box-shadow: 0 4px 24px rgba(211,186,114,0.38), inset 0 1px 0 rgba(255,255,255,0.12);
+  filter: brightness(1.12);
+}
+button.ghost:hover {
+  color: var(--uip-yellow-hi);
+  border-color: var(--uip-yellow-dim);
+}
+.shop-buy:hover { border-color: var(--uip-yellow); filter: brightness(1.15); }
+
+/* ---------- HUD：等宽铬 + 状态条统一 ---------- */
+#hud { font-family: var(--uip-font); }
+#crosshair {
+  color: rgba(211,186,114,0.8);
+  font-family: var(--uip-font);
+  text-shadow: 0 0 6px rgba(0,0,0,0.9);
+}
+#objective { font-family: var(--uip-font); letter-spacing: 3px; }
+/* 状态条三件套：统一冷灰边框 + 圆角 + tabular 数字感 */
+#hp-wrap, #san-wrap, #hun-wrap {
+  border-color: #4a4f58;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  font-variant-numeric: tabular-nums;
+}
+/* 危险只走警示红：血条低位沿用 .low 红渐变（语义不变） */
+#hp-fill.low { background: linear-gradient(90deg, var(--uip-red), var(--uip-red-hi)); }
+#hun-fill.weak { background: linear-gradient(90deg, var(--uip-red), var(--uip-red-hi)); }
+#prompt {
+  font-family: var(--uip-font);
+  border-color: var(--uip-yellow-dim);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.55), 0 0 12px rgba(211,186,114,0.12);
+}
+/* toast：左侧黄条 = 唯一高饱和诱饵 */
+.toast {
+  font-family: var(--uip-font);
+  border-left: 3px solid var(--uip-yellow);
+  padding-left: 17px;
+}
+/* 键位提示：等宽 kbd，黄字 */
+#key-hint { font-family: var(--uip-font); }
+#key-hint kbd {
+  font-family: var(--uip-font);
+  color: var(--uip-yellow);
+  border-color: var(--uip-yellow-dim);
+}
+/* 快捷栏/物品名：数字 tabular */
+.inv-item .ct, .bp-cell .ct, .shop-wallet b { font-variant-numeric: tabular-nums; }
+
+/* ---------- 暂停菜单：分隔线 + 行 hover ---------- */
+#screen-pause .panel h3 {
+  border-top: 1px dashed #3b382e;
+  padding-top: 16px;
+  margin-top: 20px;
+  color: var(--uip-cold);
+}
+#bindings-list { border-top: 1px solid rgba(59,56,46,0.8); margin-top: 6px; }
+.bind-row { transition: background 0.15s ease; border-radius: 4px; }
+.bind-row:hover { background: rgba(211,186,114,0.06); }
+.bind-row .bind-name { color: var(--uip-cold); }
+#screen-pause .pause-note {
+  border-top: 1px dashed #3b382e;
+  padding-top: 12px;
+  margin-top: 18px;
+}
+#screen-pause label .val { font-family: var(--uip-font); }
+.binding-note {
+  border-top: 1px dashed #3b382e;
+  padding-top: 10px;
+  margin-top: 12px;
+}
+
+/* ---------- 背包：cell hover 上浮（transform） ---------- */
+.bp-cell { font-family: var(--uip-font); }
+.bp-cell:hover {
+  border-color: var(--uip-yellow);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.5);
+}
+.bp-cell .nm { font-family: var(--uip-font); }
+#bp-detail { border-color: #3f3d33; }
+.bp-dname { font-family: var(--uip-font); }
+.bp-empty, .bp-none { font-family: var(--uip-font); }
+
+/* ---------- 商店：行 hover + 购买按钮 ---------- */
+.shop-row { transition: border-color 0.15s ease, transform 0.1s ease; }
+.shop-row:hover { border-color: var(--uip-yellow-dim); }
+.shop-row .shop-name { font-family: var(--uip-font); }
+.shop-buy { font-family: var(--uip-font); }
+.shop-wallet { font-family: var(--uip-font); }
+
+/* ---------- 字条 ---------- */
+#note-title { font-family: var(--uip-font); }
+.panel.note { box-shadow: 0 18px 60px rgba(0,0,0,0.65), 0 0 24px rgba(211,186,114,0.08); }
+
+/* ---------- 玩法说明：小节分隔线 ---------- */
+.how h4 {
+  border-bottom: 1px solid rgba(59,56,46,0.6);
+  padding-bottom: 4px;
+  font-family: var(--uip-font);
+}
+.keys-table .k { font-family: var(--uip-font); }
+.keys-table th { font-family: var(--uip-font); }
+
+/* ---------- 死亡屏：信号丢失 / 静电噪声 ---------- */
+#screen-death { background: #040405; }
+#screen-death::before {
+  /* 静电噪点层：SVG 湍流噪点（内联 data URI，零外链），transform 步进抖动 */
+  content: ""; position: absolute; inset: -40px; pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.16;
+  animation: deathstatic 0.6s steps(3) infinite;
+}
+@keyframes deathstatic {
+  0% { transform: translate(0, 0); }
+  33% { transform: translate(-18px, 10px); }
+  66% { transform: translate(14px, -14px); }
+  100% { transform: translate(0, 0); }
+}
+#screen-death::after {
+  /* 扫描线层 */
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(0,0,0,0.32) 3px 5px);
+  opacity: 0.55;
+}
+#screen-death .panel {
+  position: relative; z-index: 1;
+  background: rgba(10,8,8,0.72);
+  border-color: #5a2f2f;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.7), 0 0 40px rgba(200,69,47,0.08);
+}
+#screen-death.show .panel { animation: deathin 0.45s ease-out; }
+@keyframes deathin {
+  /* CRT 开机式展开：transform + opacity */
+  0% { opacity: 0; transform: scaleY(0.03) scaleX(1.3); }
+  55% { opacity: 1; transform: scaleY(1.04) scaleX(0.99); }
+  100% { opacity: 1; transform: none; }
+}
+#screen-death h1.red {
+  color: var(--uip-red-hi);
+  font-family: var(--uip-font);
+  /* RGB 分离式故障描边（静态，不参与动画，合规） */
+  text-shadow: 3px 0 0 rgba(200,69,47,0.55), -3px 0 0 rgba(90,180,220,0.4), 0 0 26px rgba(200,69,47,0.25);
+  animation: deathglitch 2.6s steps(1) infinite;
+}
+@keyframes deathglitch {
+  /* 故障抖动：只用 transform / opacity */
+  0%, 88%, 100% { transform: none; opacity: 1; }
+  89% { transform: translate(-4px, 2px); opacity: 0.75; }
+  91% { transform: translate(4px, -1px); opacity: 1; }
+  93% { transform: translate(-2px, 0); opacity: 0.85; }
+  95% { transform: none; opacity: 1; }
+}
+/* 死因行上方：信号丢失字条（保留原死因行不动） */
+#death-cause::before {
+  content: "[ SIGNAL LOST ] 信号丢失";
+  display: block;
+  font-family: var(--uip-font);
+  font-size: 12px; letter-spacing: 5px; text-indent: 5px;
+  color: var(--uip-cold-dim);
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #3b3232;
+}
+#death-cause { font-family: var(--uip-font); }
+#screen-death .panel .big:hover {
+  box-shadow: 0 4px 24px rgba(200,69,47,0.35), inset 0 1px 0 rgba(255,255,255,0.12);
+}
+
+/* ---------- 触屏 HUD ---------- */
+.tbtn { font-family: var(--uip-font); }
+@media (hover: hover) {
+  .tbtn:hover { border-color: rgba(211,186,114,0.75); }
+}
+.tbtn.mini { border-color: rgba(154,163,178,0.4); }
+#touch-sys .tbtn.mini.on, .tbtn.on {
+  border-color: var(--uip-yellow);
+  box-shadow: 0 0 14px rgba(211,186,114,0.35);
+}
+#btn-interact.ready {
+  border-color: var(--uip-yellow);
+  box-shadow: 0 0 18px rgba(211,186,114,0.55);
+}
+/* 触屏教学 pill：等宽 */
+#key-hint.touch-tut { font-family: var(--uip-font); }
+
+/* ---------- 结局屏：与死亡屏同语言，色调转黄（逃出=信号恢复） ---------- */
+#ending-title { font-family: var(--uip-font); color: var(--uip-yellow); }
+#ending-body { font-family: inherit; }
+
+/* ---------- 动效偏好：尊重减少动态 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  #screen-death::before, #screen-death h1.red, #screen-death.show .panel { animation: none; }
+}
+
+/* v2.4 title ————— 标题屏 3D 化 + 质感 logo + 版本水印（独立段；不改既有段，全部靠层叠覆盖） ————— */
+/* 3D 背景：标题屏透明，露出下层 #game-canvas 上的 L0 实景环绕 */
+#screen-title { background: transparent; }
+/* 暗角/压暗罩：保证菜单面板在 3D 背景上可读 */
+.title-vignette {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(ellipse at 50% 42%, transparent 36%, rgba(0,0,0,0.62) 100%),
+    linear-gradient(180deg, rgba(0,0,0,0.38), transparent 28%, transparent 68%, rgba(0,0,0,0.48));
+}
+#screen-title .panel {
+  position: relative; z-index: 1;
+  background: rgba(9,10,12,0.88);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+}
+/* 质感 logo：泛黄旧纸渐变 + 深色描边 + 纸纹颗粒 + 偶发故障抖动（保留原有 lampflicker） */
+#title-logo { position: relative; animation: lampflicker 7s infinite, titleGlitch 13s infinite; }
+#title-logo .logo-en {
+  background: linear-gradient(180deg, #f4e6b6 0%, #e2c886 38%, #b98f4e 62%, #8a6a34 85%, #6e5426 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-text-stroke: 1px rgba(70,52,20,0.9);
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.6)) drop-shadow(0 0 22px rgba(205,184,114,0.22));
+}
+#title-logo::after { /* 旧纸纹理：细横纹 + 斜纹，multiply 压进字里 */
+  content: ''; position: absolute; inset: -6px; pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(60,45,20,0.06) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(60,45,20,0.05) 0 2px, transparent 2px 5px);
+  mix-blend-mode: multiply;
+}
+@keyframes titleGlitch {
+  0%, 91.9%, 94.4%, 100% { transform: translate(0,0) skewX(0); filter: none; }
+  92.1% { transform: translate(-4px,2px) skewX(-6deg);
+    filter: drop-shadow(3px 0 rgba(255,70,60,0.55)) drop-shadow(-3px 0 rgba(90,200,255,0.55)); }
+  92.8% { transform: translate(4px,-2px) skewX(3deg);
+    filter: drop-shadow(-2px 0 rgba(255,70,60,0.4)) drop-shadow(2px 0 rgba(90,200,255,0.4)); }
+  93.5% { transform: translate(-2px,1px) skewX(0); filter: none; }
+}
+/* 中文"切出"：朱砂印章感——红底白字、微旋、内框线、斑驳磨损 */
+.subtitle { margin: 10px 0 18px; }
+.subtitle .seal {
+  display: inline-block; position: relative;
+  background: linear-gradient(160deg, #b0402c, #8e2f20 70%, #7c2a1d);
+  color: #f3e8cf; font-size: 26px; font-weight: 800;
+  letter-spacing: 12px; text-indent: 12px;
+  padding: 12px 10px 12px 22px; border-radius: 4px;
+  transform: rotate(-3.5deg);
+  box-shadow: inset 0 0 0 3px rgba(243,232,207,0.5), inset 0 0 18px rgba(0,0,0,0.35), 0 6px 18px rgba(0,0,0,0.55);
+}
+.subtitle .seal::after { /* 印泥斑驳 */
+  content: ''; position: absolute; inset: 0; border-radius: 4px; pointer-events: none;
+  background:
+    radial-gradient(circle at 20% 30%, rgba(0,0,0,0.22) 0 3px, transparent 4px),
+    radial-gradient(circle at 75% 65%, rgba(0,0,0,0.18) 0 4px, transparent 5px),
+    radial-gradient(circle at 55% 20%, rgba(243,232,207,0.12) 0 5px, transparent 6px),
+    repeating-linear-gradient(45deg, rgba(0,0,0,0.05) 0 2px, transparent 2px 4px);
+}
+/* 版本水印：常驻小字，投稿可证明版本 */
+#screen-title .ver-watermark {
+  position: absolute; right: 14px; bottom: 10px; z-index: 2;
+  font-size: 11px; letter-spacing: 2px; color: #8a8474; opacity: 0.9; pointer-events: none;
+}
+/* 小屏收紧 */
+@media (max-width: 420px) {
+  .subtitle .seal { font-size: 20px; letter-spacing: 8px; text-indent: 8px; padding: 10px 8px 10px 16px; }
+}
+@media (max-height: 500px) {
+  .subtitle { margin: 6px 0 10px; }
+  .subtitle .seal { font-size: 18px; padding: 8px 6px 8px 14px; }
+}
