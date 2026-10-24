@@ -29,6 +29,7 @@
     fixtures: [],               // 全局灯具位置（已加载区块） {x,y,z,chunkKey,phase,flicker}
     lights: [],                 // 点光源池
     playerLight: null, flashSpot: null,
+    flashCone: null, flashDust: null, // v2.4 W-shadowlight：手电光锥/锥内尘埃
     blackout: false,
     state: null,                // {openedDoors,picked,openedCrates,events}
     elevator: null,
@@ -44,6 +45,70 @@
   const key2 = (cx, cy) => cx + ',' + cy;
   const chunkOf = (tx, ty) => key2(Math.floor(tx / CH), Math.floor(ty / CH));
   W.chunkKeyOf = (tx, ty) => chunkOf(tx, ty);
+
+  // v2.4 W-shadowlight：灯光气质用到的模块级常量/纹理缓存
+  const _PINK = new THREE.Color(0xff9ad5);       // 镇流器垂死：灯管衰变偏粉
+  const _BALLAST_DIM = new THREE.Color(0x6a6a6a); // 垂死灯具面板 bake 微暗（instanceColor）
+  const _WHITE = new THREE.Color(0xffffff);       // instanceColor 全实例写色用（r128 混用崩溃规避）
+  let _beamTexCache = null, _dotTexCache = null, _shaftTexCache = null;
+  // 手电光锥渐变纹理：纵向近端弱→中段峰值→远端灭，横向边缘羽化（canvas 顶 = 光束远端）
+  function _beamTexture() {
+    if (_beamTexCache) return _beamTexCache;
+    const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+    const x = c.getContext('2d');
+    const img = x.createImageData(64, 256);
+    for (let j = 0; j < 256; j++) {
+      const v = j / 255; // 0=底（近相机端）→1=顶（远端）
+      // 纵向：近端几乎不可见（避免糊脸）→0.55 处峰值→远端灭
+      const axial0 = v < 0.55 ? (0.03 + 0.97 * (v / 0.55)) : (1 - (v - 0.55) / 0.45);
+      const axial = Math.pow(Math.max(0, axial0), 1.4);
+      for (let i = 0; i < 64; i++) {
+        const u = i / 63;
+        const edge = Math.pow(Math.sin(Math.PI * u), 1.5);
+        const a = Math.max(0, Math.min(1, axial * edge));
+        const k = (j * 64 + i) * 4;
+        img.data[k] = 255; img.data[k + 1] = 244; img.data[k + 2] = 220;
+        img.data[k + 3] = Math.round(a * 255);
+      }
+    }
+    x.putImageData(img, 0, 0);
+    _beamTexCache = new THREE.CanvasTexture(c);
+    return _beamTexCache;
+  }
+  // 尘埃圆点：径向渐变
+  function _dotTexture() {
+    if (_dotTexCache) return _dotTexCache;
+    const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+    const x = c.getContext('2d');
+    const g = x.createRadialGradient(16, 16, 0, 16, 16, 16);
+    g.addColorStop(0, 'rgba(255,250,235,1)');
+    g.addColorStop(0.4, 'rgba(255,250,235,0.5)');
+    g.addColorStop(1, 'rgba(255,250,235,0)');
+    x.fillStyle = g; x.fillRect(0, 0, 32, 32);
+    _dotTexCache = new THREE.CanvasTexture(c);
+    return _dotTexCache;
+  }
+  // L7 深海光柱：纵向顶亮→底灭，横向羽化（canvas 顶 = 光柱顶端）
+  function _shaftTexture() {
+    if (_shaftTexCache) return _shaftTexCache;
+    const c = document.createElement('canvas'); c.width = 32; c.height = 128;
+    const x = c.getContext('2d');
+    const img = x.createImageData(32, 128);
+    for (let j = 0; j < 128; j++) {
+      const v = j / 127; // 0=底 →1=顶
+      const axial = Math.pow(v, 1.8);
+      for (let i = 0; i < 32; i++) {
+        const edge = Math.pow(Math.sin(Math.PI * (i / 31)), 1.5);
+        const a = Math.max(0, Math.min(1, axial * edge));
+        const k = (j * 32 + i) * 4;
+        img.data[k] = 200; img.data[k + 1] = 230; img.data[k + 2] = 255;
+        img.data[k + 3] = Math.round(a * 255);
+      }
+    }
+    x.putImageData(img, 0, 0);
+    _shaftTexCache = new THREE.CanvasTexture(c);
+    return _shaftTexCache;
+  }
 
   // H 路：遮挡检查用的复用向量（避免每 0.12s 的交互检测产生 GC）
   const _occDir = new THREE.Vector3();
@@ -137,6 +202,8 @@
       this.dispose();
       this.map = map;
       this.theme = (BR.Levels[map.level] && BR.Levels[map.level].theme) || {};
+      this._lp = W.lightProfiles[map.level] || {}; // v2.4 W-shadowlight：本关灯光气质（行为归我，排布密度归 W-l0gen）
+      this._levelMats = []; // v2.4 W-shadowlight：提前初始化（_buildFlashFx/_buildLevelFx 在首个 buildChunk 之前 push 材质）
       this.state = savedState || { openedDoors: [], picked: [], openedCrates: [], events: [] };
       // v1.5 W1：恢复区块级状态（老存档缺 chunkState 字段 → 空对象，向后兼容）
       BR.ChunkState.deserialize(this.state.chunkState);
@@ -184,8 +251,17 @@
       // 玩家基础光 + 手电
       this.playerLight = new THREE.PointLight(0xfff6e0, 0.32, 12, 2);
       this.scene.add(this.playerLight);
-      this.flashSpot = new THREE.SpotLight(0xfff2d8, 0, 30, 0.5, 0.45, 1.2);
+      // v2.4 W-shadowlight：手电收窄（AAA_REF 1.1：angle 0.42 / penumbra 0.5 / decay 2 / distance 30，
+      // 硬芯+软边）；手电 = 本关唯一实时阴影灯（阴影相机即其视锥，天然"灯具归属房间"、不穿墙）
+      this.flashSpot = new THREE.SpotLight(0xfff2d8, 0, 30, 0.42, 0.5, 2);
+      this.flashSpot.shadow.camera.near = 0.4;
+      this.flashSpot.shadow.camera.far = 32;
+      this.flashSpot.shadow.camera.fov = 2 * 0.42 * 180 / Math.PI;
+      this.flashSpot.shadow.camera.updateProjectionMatrix();
+      this.flashSpot.shadow.bias = -0.0025;
       this.scene.add(this.flashSpot); this.scene.add(this.flashSpot.target);
+      this.setShadowLevel(BR.QUALITY ? (BR.QUALITY.shadow | 0) : 0);
+      this._buildFlashFx(); // 手电光锥 + 锥内尘埃（加法假体，GPU Gems 交叉面片手法）
 
       // 关卡内容（门/道具/事件物）由 levels.js 注册
       if (BR.Levels[map.level] && BR.Levels[map.level].buildContent) {
@@ -195,10 +271,15 @@
       if (BR.buildGraffitiDecals) BR.buildGraffitiDecals(map, this);
       // 实体
       if (BR.Entities && BR.Entities.spawnForMap) BR.Entities.spawnForMap(map, this);
+      this._buildLevelFx(); // v2.4 W-shadowlight：L37 焦散 / L7 光柱+冷蓝保底（关卡灯光气质）
 
       // 出生点周围立即建好，避免开场空白
       const sp = this.spawnOf(map);
       this.update(0.016, sp.x, sp.z, true);
+      // v2.4 W-shadowlight：透明材质不投射阴影（水面/焦散/涂鸦/加法假体），其余 mesh 投射+接收
+      this._noShadowMats = new Set();
+      for (const mt of (this._levelMats || [])) if (mt && mt.transparent) this._noShadowMats.add(mt);
+      this._flagShadows(this.scene);
       BR.log('world built', map.level, 'seed', map.seed);
       resolve();
     });
@@ -244,6 +325,12 @@
     // 释放本关创建的非共享材质
     if (this._levelMats) { this._levelMats.forEach(m => m.dispose && m.dispose()); this._levelMats = null; }
     this._amb = this._hemi = this.playerLight = this.flashSpot = null;
+    // v2.4 W-shadowlight：灯光 FX 状态清理（mesh 随 scene 释放，这里清引用防跨关残留）
+    this.flashCone = this.flashDust = null;
+    this._caustic = this._causticTex = null;
+    this._shafts = this._shaftGroup = null;
+    this._dustBase = this._dustPh = null;
+    this._noShadowMats = null; this._lp = null; this._coneFade = 0;
   };
 
   // 注册"某区块构建时执行"的内容钩子（可重复执行，卸载重建时恢复）
@@ -318,6 +405,7 @@
             dummy.updateMatrix(); fixM.push(dummy.matrix.clone());
             chunk.fixtures.push({ x: wx, y: wallH - 0.15, z: wz, phase: rngH.next() * 9, flicker: rngH.chance(th.flickerRate != null ? th.flickerRate : 0.12),
               bright: 0.88 + rngH.next() * 0.24 }); // W10：灯具亮度个体差异（种子派生 ±12%，灯下不死板均匀）
+            this._initBallast(chunk.fixtures[chunk.fixtures.length - 1]); // v2.4 W-shadowlight：镇流器垂死灯具登记
           }
         } else {
           // 墙：任一 4 邻域是地面则渲染；门洞/电梯井跳过（专用网格覆盖）
@@ -357,8 +445,22 @@
     if (m) { group.add(m); chunk.meshes.push(m); }
     // v1.2：灯具面板本身也压暗，避免天花板一片死白（仍是发光体观感）
     const fixMat = this._fixMat || (this._fixMat = new THREE.MeshBasicMaterial({ map: BR.Textures.get('fluor'), color: 0xbdb7a6 }));
+    if (this._lp && this._lp.fixTint) fixMat.color.setHex(this._lp.fixTint); // v2.4 W-shadowlight：灯具面板色温
     m = inst(G.plane, fixMat, fixM);
-    if (m) { group.add(m); chunk.meshes.push(m); chunk.fixtureMesh = m; }
+    if (m) {
+      group.add(m); chunk.meshes.push(m); chunk.fixtureMesh = m;
+      // v2.4 W-shadowfix：灯具面板实例一律写 instanceColor（正常纯白、镇流器垂死微暗）。
+      // 根因（r128 源码实证）：WebGLRenderer.setProgram 只按 isInstancedMesh 判 program
+      // 切换、不看 instancingColor；_fixMat 跨关卡缓存在 W 单例上（dispose 不清），
+      // L0（ballast）写色后、切到无 ballast 关卡会复用带 USE_INSTANCING_COLOR 的 program
+      // 去渲染 instanceColor=null 的 mesh，bindingStates 对 null 调 attributes.get
+      // → 每帧抛 isInterleavedBufferAttribute。纯白写色不改变观感。
+      const dimOn = !!(this._lp && this._lp.ballast);
+      for (let fi = 0; fi < m.count; fi++) {
+        m.setColorAt(fi, (dimOn && fi < chunk.fixtures.length && chunk.fixtures[fi]._blBad) ? _BALLAST_DIM : _WHITE);
+      }
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    }
     if (this.blackout && chunk.fixtureMesh) chunk.fixtureMesh.visible = false;
 
     // 内容钩子（门/道具/事件物）
@@ -368,6 +470,7 @@
     this.scene.add(group);
     this.chunks.set(k, chunk);
     for (const f of chunk.fixtures) this.fixtures.push(Object.assign({ chunkKey: k }, f));
+    this._flagShadows(group); // v2.4 W-shadowlight：新区块 mesh 补阴影旗（含内容钩子增补物）
     const dt = performance.now() - t0;
     if (dt > 24) BR.log('chunk build slow', k, dt.toFixed(1) + 'ms');
   };
@@ -612,6 +715,8 @@
     }
     near.sort((a, b) => a.d2 - b.d2);
     const th = this.theme || {};
+    const lp = this._lp || {};
+    const lightHex = lp.light != null ? lp.light : (th.light != null ? th.light : 0xfff0d2); // v2.4 W-shadowlight：关卡灯光气质色温
     // P5：点光源重分配淡入淡出——灯具切换时先快速淡出（~0.17s）再在新位置淡入，
     // 避免玩家看到灯"闪现"。_lfx=当前绑定的灯具（null=未分配），_lfade=0..1 系数。
     const FADE_RATE = 6;
@@ -634,10 +739,26 @@
       if (!f) { L.intensity = 0; continue; }
       let inten = (th.lightInt != null ? th.lightInt : 0.9) * 0.92;
       inten *= (f.bright || 1); // W10：灯具个体亮度差异
-      const flickDepth = th.flickerDepth != null ? th.flickerDepth : 0.15;
-      if (f.flicker && !this.blackout) {
-        const n = Math.sin(this.time * 37 + f.phase) * Math.sin(this.time * 13.7 + f.phase * 2);
-        if (n > 0.93) inten *= flickDepth; // 偶发闪烁
+      let pinkDrift = false;
+      const bl = f._bl;
+      if (bl) {
+        // v2.4 W-shadowlight：镇流器垂死三件套 —— 打火→不规则掉电+色温漂粉→熄灭（AAA_REF 1.3）
+        bl.t += dt;
+        if (bl.st === 'strike') {
+          if (bl.t >= 0 && !bl.buzzed) { bl.buzzed = true; if (BR.Audio && BR.Audio.flickerBuzz) BR.Audio.flickerBuzz(); }
+          if (Math.floor(Math.max(0, bl.t) / 0.08) % 2 === 1) inten *= 0.06; // 0.08s 级打火明灭
+          if (bl.t > bl.n * 0.16) { bl.st = 'unstable'; bl.t = 0; }
+        } else if (bl.st === 'unstable') {
+          const n2 = Math.sin(this.time * 47 + f.phase * 3) * Math.sin(this.time * 19.3 + f.phase);
+          if (n2 > 0.86) { inten *= 0.15; pinkDrift = true; } // 不规则掉电 + 色温漂粉
+          if (bl.t > 22 + bl.n * 6) { bl.st = 'dead'; bl.t = 0; }
+        } else { inten = 0; } // dead：灯管熄灭（面板已 bake 微暗）
+      } else {
+        const flickDepth = th.flickerDepth != null ? th.flickerDepth : 0.15;
+        if (f.flicker && !this.blackout) {
+          const n = Math.sin(this.time * 37 + f.phase) * Math.sin(this.time * 13.7 + f.phase * 2);
+          if (n > 0.93) inten *= flickDepth; // 偶发闪烁
+        }
       }
       // 闪烁风暴：范围内灯具剧烈闪烁
       const st = this.flickerStorm;
@@ -646,7 +767,8 @@
         if (sd < st.r && Math.sin(this.time * 31 + f.phase * 3) > 0.1) inten *= 0.08;
       }
       L.intensity = inten * fade;
-      L.color.setHex(th.light != null ? th.light : 0xfff0d2); // 默认灯色偏微黄
+      L.color.setHex(lightHex);
+      if (pinkDrift) L.color.lerp(_PINK, 0.55); // 灯管衰变偏粉偏紫（真实故障色温）
     }
     // 玩家光跟随
     if (this.playerLight && BR.Player) {
@@ -663,6 +785,252 @@
         this.flashSpot.target.position.set(px + d.x * 8, P.eyeY() + d.y * 8, pz + d.z * 8);
       }
     }
+    this._updateFx(dt, px, pz); // v2.4 W-shadowlight：光锥/尘埃/焦散/光柱逐帧
+  };
+
+  /* ============ v2.4 W-shadowlight：实时阴影 + 灯光重设计 + 手电筒 ============
+   * 分工：灯具"排布密度"归 W-l0gen（fixtureEvery/钩子），灯光"行为/气质"归我。
+   * 阴影架构：玩家手电 SpotLight = 每关唯一实时阴影灯（castShadow 按画质档开关；
+   *   移动端 512 / 桌面 1024(中)/2048(高)）。阴影相机即其视锥 → 天然"灯具归属房间"；
+   *   墙体/地面同时投射+接收 → 光被墙挡住，不穿墙。灯具点光源池保持无阴影（perf），
+   *   靠 decay=2 + 按档收紧 distance 控制漏光（applyLightTuning）。
+   * 投射物：实体/家具/玩家身体/墙体地面的 mesh；透明加法假体（光锥/尘埃/焦散/
+   *   水面/涂鸦/光柱）不投射（userData.noShadow 或 _noShadowMats）。
+   * 体积感：r128 无后期链，一律加法面片/粒子等价物（AAA_REF 3.2/3.3）。
+   */
+  W.lightProfiles = {
+    // L0：冷白荧光 + 镇流器垂死三件套
+    L0:  { light: 0xd8ffe8, fixTint: 0xcfe0d8, ballast: true, coneColor: 0xf2f7ff },
+    // L1：暖黄钨丝
+    L1:  { light: 0xffb46b, fixTint: 0xd8b28a, coneColor: 0xffe2b8 },
+    // L2：锈橙（沿用主题色）
+    L2:  { coneColor: 0xffe8c8 },
+    // L37：青白瓷砖 + 水面焦散
+    L37: { light: 0xeaf6ff, fixTint: 0xd8ecf2, caustics: true, coneColor: 0xf4fbff },
+    // L37.2：过曝暖白（沿用主题）
+    L372:{ coneColor: 0xfff6e8 },
+    // L7：深海冷蓝保底 + 光柱
+    L7:  { light: 0x9fd8ff, hemiBoost: 0.14, deepTint: 0x2a4a5a, shafts: true, coneColor: 0xdff2ff },
+    // L11：钠灯橙（沿用主题）；其余关卡用主题色
+  };
+
+  // 画质档 → 阴影灯开关/尺寸。world 未 build 时只记档，build 后生效。
+  W.setShadowLevel = function (n) {
+    this._shadowN = n | 0;
+    const on = this._shadowN > 0;
+    if (!this.flashSpot) return;
+    this.flashSpot.castShadow = on;
+    if (on) {
+      const touch = !!(BR.Input && BR.Input.isTouch);
+      const sz = touch ? 512 : (this._shadowN >= 2 ? 2048 : 1024);
+      if (this.flashSpot.shadow.mapSize.x !== sz) {
+        this.flashSpot.shadow.mapSize.set(sz, sz);
+        if (this.flashSpot.shadow.map) { this.flashSpot.shadow.map.dispose(); this.flashSpot.shadow.map = null; }
+      }
+    }
+    BR.log('shadow level', this._shadowN, on ? (this.flashSpot.shadow.mapSize.x + 'px') : 'off');
+  };
+
+  // 阴影投射/接收旗（幂等：userData._shf 标记已处理过的 root）
+  W._flagShadows = function (root) {
+    if (!root || root.userData._shf) return;
+    const noMats = this._noShadowMats;
+    const flagOne = (o) => {
+      if (!o || (o.userData && o.userData.noShadow)) return;
+      if (o.isMesh || o.isInstancedMesh) {
+        const ms = Array.isArray(o.material) ? o.material : [o.material];
+        if (noMats) for (const mt of ms) if (mt && noMats.has(mt)) return;
+        o.castShadow = true; o.receiveShadow = true;
+      }
+    };
+    if (root.traverse) root.traverse(flagOne); else flagOne(root);
+    root.userData._shf = 1;
+  };
+
+  // 镇流器垂死灯具登记（L0）：位置哈希 deterministic，~16% 进入 strike→unstable→dead 状态机
+  W._initBallast = function (f) {
+    if (!this._lp || !this._lp.ballast) return;
+    const h = Math.abs(Math.sin(f.x * 12.9898 + f.z * 78.233) * 43758.5453) % 1;
+    if (h < 0.16) {
+      f._blBad = true;
+      f._bl = { st: 'strike', t: -((h * 37) % 5), n: 3 + Math.floor((h * 91) % 3), buzzed: false };
+    }
+  };
+
+  /* ---- 手电光锥 + 锥内尘埃（GPU Gems 交叉面片手法，加法混合） ---- */
+  W._buildFlashFx = function () {
+    const lp = this._lp || {};
+    const coneLen = 15, ang = 0.42; // 视觉锥略短于光照距离（30m），避免穿墙穿雾
+    const farW = 2 * coneLen * Math.tan(ang);
+    const mat = new THREE.MeshBasicMaterial({
+      map: _beamTexture(), color: lp.coneColor || 0xfff2d8,
+      transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending,
+      depthWrite: false, side: THREE.DoubleSide, fog: false
+    });
+    this._levelMats.push(mat);
+    const grp = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const g = new THREE.PlaneGeometry(farW, coneLen, 1, 6);
+      const pos = g.attributes.position; // 收腰：近端窄
+      for (let vi = 0; vi < pos.count; vi++) {
+        const t = (pos.getY(vi) + coneLen / 2) / coneLen; // 0 近 → 1 远
+        pos.setX(vi, pos.getX(vi) * (0.12 + 0.88 * t));
+      }
+      g.rotateX(-Math.PI / 2); g.translate(0, -0.05, -coneLen / 2 - 0.4); // 近端在相机前方 0.4m
+      const m = new THREE.Mesh(g, mat);
+      m.rotation.z = i * Math.PI / 3;
+      m.userData.noShadow = true; m.frustumCulled = false;
+      grp.add(m);
+    }
+    grp.visible = false; grp.userData.noShadow = true;
+    this.scene.add(grp);
+    this.flashCone = grp;
+    // 尘埃：300 点，锥体内分布，随光锥走
+    const N = 300;
+    const base = new Float32Array(N * 3), ph = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const t = Math.random();
+      const r = (0.12 + 0.88 * t) * farW * 0.5 * Math.sqrt(Math.random());
+      const a = Math.random() * Math.PI * 2;
+      base[i * 3] = Math.cos(a) * r;
+      base[i * 3 + 1] = Math.sin(a) * r - 0.05;
+      base[i * 3 + 2] = -(0.6 + t * (coneLen - 2.5));
+      ph[i] = Math.random() * Math.PI * 2;
+    }
+    const dg = new THREE.BufferGeometry();
+    dg.setAttribute('position', new THREE.BufferAttribute(base.slice(), 3));
+    const dmat = new THREE.PointsMaterial({
+      size: 0.035, map: _dotTexture(), color: 0xfff4dc,
+      transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending,
+      depthWrite: false, sizeAttenuation: true, fog: false
+    });
+    this._levelMats.push(dmat);
+    const pts = new THREE.Points(dg, dmat);
+    pts.userData.noShadow = true; pts.frustumCulled = false; pts.visible = false;
+    this.scene.add(pts);
+    this.flashDust = pts; this._dustBase = base; this._dustPh = ph;
+    this._coneFade = 0;
+  };
+
+  /* ---- 关卡灯光气质：L37 焦散 / L7 光柱+冷蓝保底 ---- */
+  W._buildLevelFx = function () {
+    const lv = this.map && this.map.level, lp = this._lp || {};
+    if (lp.hemiBoost && this._hemi) { // L7 冷蓝保底
+      this._hemi.intensity += lp.hemiBoost;
+      this._hemi.color.lerp(new THREE.Color(0x86c5ee), 0.35);
+    }
+    if (lp.deepTint) { // L7 雾/背景微推蓝（雾色=背景色同步推，保持一致）
+      const c = new THREE.Color(lp.deepTint);
+      this.scene.fog.color.lerp(c, 0.35);
+      if (this.scene.background && this.scene.background.isColor) this.scene.background.lerp(c, 0.35);
+    }
+    if (lp.caustics) { // L37 水面焦散：加法双层错速滚动近似
+      let tex = null;
+      try { tex = BR.Textures.get('caustics'); } catch (e) { tex = null; }
+      if (tex) {
+        tex = tex.clone(); tex.needsUpdate = true;
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(7, 7);
+        const mat = new THREE.MeshBasicMaterial({
+          map: tex, color: 0xbfeaff, transparent: true, opacity: 0.2,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+        });
+        this._levelMats.push(mat);
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(42, 42), mat);
+        m.rotation.x = -Math.PI / 2;
+        m.userData.noShadow = true; m.visible = false; m.frustumCulled = false;
+        this.scene.add(m);
+        this._caustic = m; this._causticTex = tex;
+      } else { this._caustic = null; }
+    }
+    if (lp.shafts) { // L7 深海光柱：12 组交叉面片，玩家周围 wrap
+      const stex = _shaftTexture();
+      const SG = new THREE.Group();
+      this._shafts = [];
+      for (let i = 0; i < 12; i++) {
+        const g2 = new THREE.Group();
+        const sm = new THREE.MeshBasicMaterial({
+          map: stex, color: 0x9fd8ff, transparent: true, opacity: 0.10,
+          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false
+        });
+        this._levelMats.push(sm);
+        for (let k = 0; k < 2; k++) {
+          const p = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 14), sm);
+          p.rotation.y = k * Math.PI / 2;
+          p.userData.noShadow = true;
+          g2.add(p);
+        }
+        g2.position.set((Math.random() - 0.5) * 70, 4, (Math.random() - 0.5) * 70);
+        g2.userData.noShadow = true;
+        SG.add(g2); this._shafts.push(g2);
+      }
+      SG.userData.noShadow = true;
+      this.scene.add(SG);
+      this._shaftGroup = SG;
+    }
+  };
+
+  // 逐帧：光锥/尘埃跟随相机、焦散滚动、光柱 wrap、avatar 阴影旗懒挂载
+  W._updateFx = function (dt, px, pz) {
+    const P = BR.Player, cam = P && P.camera;
+    const on = !!(P && P.flashlightOn && P.hasFlashlight);
+    this._coneFade = BR.damp(this._coneFade || 0, on ? 1 : 0, 8, dt);
+    const cf = this._coneFade;
+    if (this.flashCone) {
+      this.flashCone.visible = cf > 0.01;
+      if (this.flashCone.visible && cam) {
+        this.flashCone.position.set(px, P.eyeY(), pz);
+        this.flashCone.quaternion.copy(cam.quaternion); // 严格绑定相机朝向
+        this.flashCone.children[0].material.opacity = 0.07 * cf;
+      }
+    }
+    if (this.flashDust) {
+      this.flashDust.visible = cf > 0.01;
+      if (this.flashDust.visible && cam) {
+        this.flashDust.position.set(px, P.eyeY(), pz);
+        this.flashDust.quaternion.copy(cam.quaternion);
+        const dp = this.flashDust.geometry.attributes.position;
+        const arr = dp.array, base = this._dustBase, ph = this._dustPh, t = this.time;
+        for (let i = 0; i < ph.length; i++) {
+          arr[i * 3] = base[i * 3] + Math.sin(t * 0.7 + ph[i]) * 0.08;
+          arr[i * 3 + 1] = base[i * 3 + 1] + Math.sin(t * 0.5 + ph[i] * 1.7) * 0.06;
+          arr[i * 3 + 2] = base[i * 3 + 2] + Math.cos(t * 0.6 + ph[i] * 0.6) * 0.08;
+        }
+        dp.needsUpdate = true;
+        this.flashDust.material.opacity = 0.45 * cf;
+      }
+    }
+    if (this._caustic) { // L37：玩家附近有水才显示，贴水面
+      let w = null;
+      try {
+        const L37 = BR.Levels.L37;
+        if (L37 && L37.waterAt) {
+          w = L37.waterAt(px, pz);
+          if (!w) {
+            const R = 10;
+            const ss = [[px + R, pz], [px - R, pz], [px, pz + R], [px, pz - R]];
+            for (const s of ss) { w = L37.waterAt(s[0], s[1]); if (w) break; }
+          }
+        }
+      } catch (e) { w = null; }
+      if (w) {
+        this._caustic.visible = true;
+        this._caustic.position.set(px, (w.surface != null ? w.surface : 1) + 0.06, pz);
+        this._causticTex.offset.x = (this.time * 0.014) % 1;
+        this._causticTex.offset.y = (this.time * 0.010) % 1;
+        this._caustic.material.opacity = 0.16 + 0.06 * Math.sin(this.time * 1.3);
+      } else this._caustic.visible = false;
+    }
+    if (this._shafts) { // L7：光柱 wrap + 缓慢旋转
+      for (const s of this._shafts) {
+        const dx = s.position.x - px, dz = s.position.z - pz;
+        if (dx * dx + dz * dz > 45 * 45) {
+          const a = Math.random() * Math.PI * 2, r = 28 + Math.random() * 14;
+          s.position.set(px + Math.cos(a) * r, 4, pz + Math.sin(a) * r);
+        }
+        s.rotation.y += dt * 0.02;
+      }
+    }
+    if (P && P.avatar && !P.avatar.userData._shf) this._flagShadows(P.avatar); // 玩家身体（第三人称）
   };
 
   /* ---------------- 碰撞 ---------------- */
@@ -1209,12 +1577,13 @@
     }
   };
   /* ---------------- H 路：光照管理（只追加新函数，不改现有函数） ----------------
-   * 设计取舍（用户第九节）：
+   * 设计取舍（用户第九节 + v2.4 W-shadowlight）：
    *  - 灯下亮、远处平滑变暗：靠 PointLight decay=2 的物理衰减（build 里已设），本函数只按画质档
-   *    收紧 distance（穿墙漏光主要来自"距离 26m 的灯隔墙照到玩家"——没有实时阴影时只能靠缩距离缓解）。
-   *  - 实时阴影灯数量：恒为 0。点光源阴影 = 每灯 6 面 cube map，移动端/核显不可承受；
-   *    转角/柱后/物体接触处的柔和变暗用 blob 接触阴影（textures.js）+ 灯光衰减 + 雾表现。
-   *    quality.shadow 字段保留（全档 0），将来真机允许时再开。
+   *    收紧 distance（穿墙漏光主要来自"距离 26m 的灯隔墙照到玩家"）。
+   *  - 实时阴影灯：v2.4 起为 1 盏 = 玩家手电 SpotLight（castShadow 按画质档开关；
+   *    移动端 512 / 桌面 1024(中)/2048(高)；见 W.setShadowLevel）。点光源阴影
+   *    （每灯 6 面 cube map）移动端不可承受，故灯具池保持无阴影；转角/柱后/接触处的
+   *    柔和变暗仍用 blob 接触阴影（textures.js）+ 灯光衰减 + 雾表现。
    *  - 环境补光：build 里的 Ambient+Hemisphere 保留（暗部不死黑），本函数不动。
    * 调用：main.js applyQuality（画质切换）与 loadLevel 的 build().then（灯池重建后）。
    */
@@ -1233,8 +1602,8 @@
     }
     BR.log('light tuning', 'dist=' + dist, 'particles=' + ps);
   };
-  // 实时阴影灯数量（见上：设计为 0）
-  W.shadowLightCount = function () { return 0; };
+  // 实时阴影灯数量（v2.4 W-shadowlight：手电 SpotLight，1 盏；画质低档时 0）
+  W.shadowLightCount = function () { return (this._shadowN > 0 && this.flashSpot && this.flashSpot.castShadow) ? 1 : 0; };
 
   /* ---------------- 统计 ---------------- */
   W.getStats = function () {
