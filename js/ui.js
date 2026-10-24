@@ -18,7 +18,7 @@
     },
     flashlight: {
       name: '手电筒',
-      desc: '照亮黑暗，但也更容易被看见。靠电池供电：开灯时持续耗电，没电会自动熄灭。',
+      desc: '照亮黑暗，但也更容易被看见。常亮设计：没有电量限制，随时开关。',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h6v5H9z"/><path d="M10 7.5 6.5 15a2.4 2.4 0 0 0 2.1 3.5h6.8a2.4 2.4 0 0 0 2.1-3.5L14 7.5"/></svg>'
     },
     // —— 迁跃浆果：稀有消耗品 ——
@@ -79,14 +79,9 @@
       desc: '看起来像杏仁水……颜色好像有点偏黄？应该是光线问题吧。',
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="#e3c878" stroke-width="1.8" stroke-linecap="round"><path d="M12 3c3.2 4.2 6 7.4 6 11a6 6 0 0 1-12 0c0-3.6 2.8-6.8 6-11z"/><path d="M9.6 14.4a2.8 2.8 0 0 0 1.9 2.7" opacity="0.7"/></svg>'
     },
-    // —— 电池：手电电量 +60 ——
-    battery: {
-      name: '电池',
-      desc: '标准电池：为手电恢复 60% 电量（上限 100%）。',
-      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="8" width="11" height="12" rx="2"/><path d="M10.5 8V5.5h3V8"/><path d="M12.8 10.5 10.8 14h3l-2 3.5"/></svg>'
-    }
   };
-  // W9：新道具注册表（js/items.js）的显示信息合并进来；老 13 种保持原样不动
+  // v2.4：电池物品已删除（手电无电量玩法）
+  // W9：新道具注册表（js/items.js）的显示信息合并进来；老 12 种保持原样不动
   if (BR.Items && BR.Items.DEFS) {
     for (const id in BR.Items.DEFS) {
       if (!ITEM_INFO[id]) {
@@ -178,6 +173,8 @@
     this.$seed_line.dataset.seed = s;
     this.$btn_continue.style.display = BR.Save.hasSave() ? 'block' : 'none';
     this.show('screen-title');
+    // v2.4 W-title：标题屏 3D 动态背景（L0 实景慢速环绕）；失败/低端设备内部回退纯 CSS
+    if (BR.TitleBg) BR.TitleBg.start(s);
   };
   U.refreshContinue = function () {
     if (this.$btn_continue) this.$btn_continue.style.display = BR.Save.hasSave() ? 'block' : 'none';
@@ -188,6 +185,121 @@
     return null;
   };
   U.newSeed = function () { return (Math.random() * 1e9) | 0; };
+
+  /* ---------- v2.4 W-title：标题屏 3D 动态背景 ---------- */
+  // state='title' 时复用现有 renderer/camera 跑 L0 实景慢速环绕。
+  // 约束：不碰 main.js 主循环——本模块自带 RAF，只在 title 态渲染；
+  // 离开 title（进游戏/加载）即停并恢复用户画质；WebGL 失败或手机小屏 → 静默回退纯 CSS。
+  (function () {
+    const TB = BR.TitleBg = {
+      ready: false, building: false, _rafOn: false,
+      _wasTitle: false, _overrodeQ: false,
+      scene: null, cam: null, cx: 0, cz: 0, t0: 0, seed: 0,
+      _lastW: 0, _lastH: 0
+    };
+
+    // 手机/平板性能兜底：WebGL 不可用或小屏触屏设备 → 纯 CSS（原有 .menu-atmo 氛围层继续工作）
+    TB.supported = function () {
+      const G = BR.Game;
+      if (!G || !G.renderer) return false;
+      try {
+        const small = Math.min(window.innerWidth, window.innerHeight) < 700;
+        const coarse = window.matchMedia && window.matchMedia('(pointer:coarse)').matches;
+        if (coarse && small) return false;
+      } catch (e) {}
+      return true;
+    };
+
+    TB.start = function (seed) {
+      if (!this._rafOn) { this._rafOn = true; requestAnimationFrame(() => this.frame()); }
+      if (!this.supported()) return;
+      if (this.building) return;
+      if (this.ready && this.scene && BR.World && BR.World.scene === this.scene) return;
+      this.seed = seed || 0;
+      this.ready = false; this.building = true; this.scene = null;
+      // 标题背景用低画质预设（pr 1；引擎实时阴影恒为 0，见 main.js applyQuality 注释）
+      BR.QUALITY = { fogScale: 0.8, maxLights: 3, pr: 1, grain: 0, particles: 0.4, lightDist: 16, blobShadow: 0, shadow: 0 };
+      try { BR.Game.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1)); } catch (e) {}
+      this._overrodeQ = true;
+      const self = this;
+      // 下一轮再做重活，菜单先亮出来
+      setTimeout(function () {
+        try {
+          const map = BR.Gen.generate('L0', self.seed);
+          // ws 形状与 loadLevel 的 FRESH_WS 一致（world.js/save.js 硬约定字段）
+          BR.World.build(map, { openedDoors: [], picked: [], openedCrates: [], events: [] }).then(function () {
+            try {
+              // 标题背景不需要实体：spawnForMap 的实体全部清掉（避免在标题态游荡/发声）
+              if (BR.Entities && BR.Entities.dispose) BR.Entities.dispose();
+              BR.World._rbT = Infinity; // 随机断电事件不许在标题背景里触发
+              self.pickCam(map);
+              self.scene = BR.World.scene;
+              self.ready = true;
+              BR.log('title bg ready, seed', self.seed);
+            } catch (e2) { BR.warn('title bg post failed', e2); }
+            self.building = false;
+          }, function (err) { self.building = false; BR.warn('title bg build failed', err); });
+        } catch (e) { self.building = false; BR.warn('title bg gen failed', e); }
+      }, 80);
+    };
+
+    // 机位：取最大房间中心（开阔、安全），高度 1.75m
+    TB.pickCam = function (map) {
+      let r = null;
+      const rooms = (map && map.rooms) || [];
+      for (const q of rooms) { if (!r || q.w * q.h > r.w * r.h) r = q; }
+      if (r) { this.cx = BR.tileCX(r.cx); this.cz = BR.tileCZ(r.cy); }
+      else { const sp = BR.World.spawnOf(map); this.cx = sp.x; this.cz = sp.z; }
+      const cam = new THREE.PerspectiveCamera(68,
+        window.innerWidth / Math.max(1, window.innerHeight), 0.1, 220);
+      cam.position.set(this.cx, 1.75, this.cz);
+      this.cam = cam;
+      this.t0 = performance.now();
+      this._lastW = window.innerWidth; this._lastH = window.innerHeight;
+    };
+
+    TB.frame = function () {
+      requestAnimationFrame(() => this.frame());
+      const G = BR.Game;
+      const inTitle = !!(G && G.state === 'title');
+      if (!inTitle) {
+        if (this._wasTitle) { this._wasTitle = false; this.leaveTitle(); }
+        return;
+      }
+      this._wasTitle = true;
+      if (!this.ready || !this.cam || !G.renderer) return;
+      // 世界被替换（loadLevel 建了正式关卡）→ 停渲，等 showTitle 触发重建
+      if (!BR.World || BR.World.scene !== this.scene) { this.ready = false; return; }
+      try {
+        const w = window.innerWidth, h = window.innerHeight;
+        if (w !== this._lastW || h !== this._lastH) {
+          this._lastW = w; this._lastH = h;
+          this.cam.aspect = w / Math.max(1, h); this.cam.updateProjectionMatrix();
+        }
+        const t = (performance.now() - this.t0) / 1000;
+        // 慢速环绕：半径 1.4m 小环给视差 + 约 75s 一周的缓慢偏航 + 呼吸浮动
+        const ang = t * (Math.PI * 2 / 75);
+        const x = this.cx + Math.cos(ang) * 1.4, z = this.cz + Math.sin(ang) * 1.4;
+        const y = 1.75 + Math.sin(t * 0.5) * 0.05;
+        this.cam.position.set(x, y, z);
+        const la = ang + 2.35; // 视线超前机位，形成环绕感
+        this.cam.lookAt(this.cx + Math.cos(la) * 9, 1.3, this.cz + Math.sin(la) * 9);
+        BR.World.update(0.016, x, z); // 推进灯具闪烁与区块（实体已 dispose，实体 tick 空转）
+        G.renderer.render(BR.World.scene, this.cam);
+      } catch (e) {
+        this.ready = false; // 渲染异常（context 丢失等）→ 回退纯 CSS
+        BR.warn('title bg render failed', e);
+      }
+    };
+
+    // 离开 title 态：把画质还给用户设置（loadLevel 的正式构建用回正常画质）
+    TB.leaveTitle = function () {
+      if (this._overrodeQ) {
+        this._overrodeQ = false;
+        try { if (BR.Game && BR.Game.applyQuality) BR.Game.applyQuality(); } catch (e) {}
+      }
+    };
+  })();
 
   /* ---------- HUD ---------- */
   U.setPrompt = function (text) {
@@ -277,7 +389,7 @@
     if (BR.Items && BR.Items.handle(id)) return;
     const inv = G.inv;
     if (id === 'flashlight') { P.toggleFlashlight(); this.updateInv(); return; }
-    if (!(inv[id] > 0)) { this.toast('没有' + ITEM_INFO[id].name); return; }
+    if (!(inv[id] > 0)) { this.toast('没有' + (ITEM_INFO[id] ? ITEM_INFO[id].name : id)); return; } // v2.4：防已删除物品（如电池）的幽灵引用崩溃
     if (id === 'almond') {
       if (P.hp >= 100 && P.sanity >= 100) { this.toast('状态已满，不需要喝'); return; }
       inv.almond--; P.heal(35); P.restoreSanity(30); BR.Audio.drink();
@@ -381,23 +493,6 @@
       BR.Audio.drink();
       this.toast('这水味道不对——又苦又涩！理智-25，生命-5，还发出了巨大的声响……', 3600);
       if (P.hp <= 0) { P.hp = 0; P.setState('disabled'); BR.bus.emit('died', { cause: 'cashew' }); }
-    } else if (id === 'battery') {
-      // 电池：手电电量 +60（上限 100）
-      // W9 扩展：手电已满、且持有未满电的水下照明灯时，给照明灯充电（同样 +60，上限 100）；
-      // 两者都满才拒绝（原"手电电池已满"语义保留）
-      const dl = P.diveLight;
-      const needFlash = P.flashBat < 100;
-      const needDive = !!(dl && dl.charge < 100);
-      if (!needFlash && !needDive) { this.toast('手电电池已满'); return; }
-      inv.battery--;
-      BR.Audio.uiClick();
-      if (needFlash) {
-        P.flashBat = Math.min(100, P.flashBat + 60);
-        this.toast('换上新电池，手电电量恢复到 ' + Math.round(P.flashBat) + '%');
-      } else {
-        dl.charge = Math.min(100, dl.charge + 60);
-        this.toast('给水下照明灯充电，电量恢复到 ' + Math.round(dl.charge) + '%');
-      }
     }
     // G（v1.4）：道具消耗/状态变化后立刻落盘——刷新页面不再恢复已消耗的道具。
     // 提前 return 的拒绝路径（生命已满/数量为 0 等）不走到这里，不会误存档。
@@ -572,7 +667,7 @@
       BR.Audio.setPaused(false);
     }
   };
-  // 背包面板：网格列出所有有数量的道具（手电筒按持有显示电量）。
+  // 背包面板：网格列出所有有数量的道具（手电筒按持有显示开关状态，无电量玩法）。
   // v1.5.1 简化：单击道具直接使用（按 kind 走 useItem 统一逻辑），取消"选中再点使用按钮"两步流程。
   // 空背包显示空白面板（无多余文案）。桌面/手机共用同一套 click 逻辑（touchstart 阻止合成 click 防双触发）。
   U.renderBackpack = function () {
@@ -590,9 +685,9 @@
     ids.forEach(id => {
       const info = ITEM_INFO[id];
       const ct = id === 'flashlight'
-        ? Math.round(P.flashBat != null ? P.flashBat : 100) + '%'
+        ? (P && P.flashlightOn ? '开' : '关') // v2.4：无电量，显示开关状态
         : id === 'dive_light'
-          ? Math.round(P.diveLight.charge) + '%'
+          ? (P && P.diveLight && P.diveLight.on ? '开' : '关') // v2.4：水下照明灯无耗电，与手电一致只显示开关
           : (inv[id] || 0);
       html += `<div class="bp-cell" data-id="${id}">` +
         `<span class="ic">${info.icon}</span><span class="nm">${info.name}</span>` +
@@ -616,12 +711,12 @@
 
   /* ---------- M.E.G. 前哨交易站（L1 POI 'meg_shop' 的商店交互打开） ----------
    * 货币：杏仁水。价格表（消耗品便宜、稀有道具贵）：
-   *   绷带 2 / 手电电池 2 / 皇家口粮 3 / 笑魇驱散剂 4 / 火盐 6 / 迁跃浆果 8
+   *   绷带 2 / 皇家口粮 3 / 笑魇驱散剂 4 / 火盐 6 / 迁跃浆果 8
+   *   （v2.4：手电电池已下架）
    * 只买不卖：买入扣杏仁水、道具进背包；不足时按钮灰显 + 点击提示。
    * 买入走 BR.Game.inv 与 autosave，正常进存档（存档字段本来就是 inv 全量）。 */
   U.SHOP_GOODS = [
     { id: 'bandage', price: 2 },      // 绷带：常用消耗品
-    { id: 'battery', price: 2 },      // 手电电池：常用消耗品
     { id: 'royal_ration', price: 3 }, // 皇家口粮：高级食物
     { id: 'repellent', price: 4 },    // 笑魇驱散剂：中端保命
     { id: 'firesalt', price: 6 },     // 火盐：稀有攻击道具

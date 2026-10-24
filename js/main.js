@@ -55,6 +55,10 @@
     // v1.2：ACES 色调映射压住过曝，保留荧光灯泛黄感
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.85;
+    // v2.4 W-shadowlight：实时阴影总开关（PCFSoft）；各画质档开/关见 applyQuality
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.applyQuality(); // renderer 就绪后重跑一次：阴影开关/尺寸落到真实 renderer 上
 
     addEventListener('resize', () => {
       this.renderer.setSize(innerWidth, innerHeight);
@@ -106,11 +110,12 @@
       q = (BR.Input.isTouch && small) ? 'medium' : 'high';
     }
     const cfgs = {
-      // H 路 v1.4：画质档扩展——分辨率(pr)/雾(fogScale)/灯光数(maxLights)/灯距(lightDist)/
-      // 粒子(particles)/胶片颗粒(grain)/接触阴影(blobShadow)。实时阴影灯恒为 0（见 world.js
-      // W.shadowLightCount 说明），shadow 字段保留供将来扩展。
-      high:   { fogScale: 1.15, maxLights: 7, pr: 2,   grain: 1, particles: 1.0, lightDist: 24, blobShadow: 1, shadow: 0 },
-      medium: { fogScale: 1.0,  maxLights: 5, pr: 1.5, grain: 1, particles: 0.7, lightDist: 20, blobShadow: 1, shadow: 0 },
+      // v2.4 W-shadowlight：画质档扩展——分辨率(pr)/雾(fogScale)/灯光数(maxLights)/灯距(lightDist)/
+      // 粒子(particles)/胶片颗粒(grain)/接触阴影(blobShadow)/实时阴影(shadow)。
+      // shadow：0=关；1=开（桌面 1024 / 移动 512）；2=开（桌面 2048 / 移动 512）。
+      // 阴影灯 = 玩家手电 SpotLight（每关唯一阴影灯，见 world.js W.setShadowLevel）。
+      high:   { fogScale: 1.15, maxLights: 7, pr: 2,   grain: 1, particles: 1.0, lightDist: 24, blobShadow: 1, shadow: 2 },
+      medium: { fogScale: 1.0,  maxLights: 5, pr: 1.5, grain: 1, particles: 0.7, lightDist: 20, blobShadow: 1, shadow: 1 },
       low:    { fogScale: 0.8,  maxLights: 3, pr: 1,   grain: 0, particles: 0.4, lightDist: 16, blobShadow: 1, shadow: 0 }
     };
     BR.QUALITY = cfgs[q] || cfgs.medium;
@@ -118,6 +123,19 @@
     // 低画质：关掉胶片颗粒 overlay
     document.body.classList.toggle('fx-low', !BR.QUALITY.grain);
     if (this.renderer) this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._pr));
+    // v2.4 W-shadowlight：阴影开关真实生效（运行时切换 shadowMap 需重编译材质）
+    const wantShadow = (BR.QUALITY.shadow | 0) > 0;
+    if (this.renderer && this.renderer.shadowMap.enabled !== wantShadow) {
+      this.renderer.shadowMap.enabled = wantShadow;
+      if (BR.World && BR.World.scene) {
+        BR.World.scene.traverse((o) => {
+          if (!o.material) return;
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          for (const mt of ms) mt.needsUpdate = true;
+        });
+      }
+    }
+    if (BR.World && BR.World.setShadowLevel) BR.World.setShadowLevel(BR.QUALITY.shadow | 0);
     // H 路：灯池已存在（换关/设置页切画质）则立即按档重调灯距与粒子
     if (BR.World && BR.World.scene && BR.World.applyLightTuning) BR.World.applyLightTuning();
     BR.log('quality', q);
@@ -248,6 +266,8 @@
           // flashBat/手电/diveLight/氧气派生值；跨关不再免费回满）。
           // P0-1：travel 模式的 reset 本来就不清 diveLight，keepDive hack 已删除。
           BR.Player.reset(px, pz, yaw, opts.saved ? 'saved' : (opts.fresh ? 'full' : 'travel'));
+          // v2.4 W-shadowlight：玩家自带手电筒，新开局默认开启（F 键/触屏手电按钮可开关）
+          if (opts.fresh && BR.Player) { BR.Player.hasFlashlight = true; BR.Player.flashlightOn = true; }
           // v1.5 W8：读档恢复坐骑（工厂未注册/存档无坐骑时静默跳过）
           // 世界实例（W5 鸭子）：buildContent 已按存档生成同 id 实例，直接骑它，不新建
           if (opts.saved && opts.saved.mount && opts.saved.mount.kind && BR.Mounts) {
