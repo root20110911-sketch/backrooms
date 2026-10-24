@@ -6,7 +6,7 @@
   const ITEM_NAME = {
     almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', berry: '迁跃浆果', food: '食物',
     cigarette: '香烟', gum: '口香糖', royal_ration: '皇家口粮', repellent: '笑魇驱散剂',
-    firesalt: '火盐', painliquid: '痛液', cashew: '腰果水', battery: '电池',
+    firesalt: '火盐', painliquid: '痛液', cashew: '腰果水',
     // W9 新增 9 种（显示名；数值与逻辑在 js/items.js 注册表）
     energy_bar: '能量棒', medkit: '急救包', glowstick: '荧光棒',
     chalk: '标记粉笔', oxygen_tank: '便携氧气瓶', dive_light: '水下照明灯',
@@ -32,10 +32,13 @@
     L0: {
       name: 'Level 0 ——「教学关卡」',
       theme: {
-        bg: 0x0a0906, fogNear: 6, fogFar: 40, ambient: 0xbfb49a, ambInt: 0.62,
-        sky: 0xfff2cc, ground: 0x3a3325, light: 0xffe9a8, lightInt: 0.95,
+        // v2.4 W-l0gen：经典后室黄调回调——ambient/sky/light 色相压向病态黄
+        // （强度不动，归 W-shadowlight）；灯具加密 4→3（阵列感），flickerRate 显式化
+        // 供 W-shadowlight 的坏灯状态机取用（world.js 按 fixture 记 phase/flicker/bright）。
+        bg: 0x0a0906, fogNear: 6, fogFar: 40, ambient: 0xc7b169, ambInt: 0.62,
+        sky: 0xffedb5, ground: 0x3a3325, light: 0xffdf9a, lightInt: 0.95,
         wallH: 2.7, wall: 'wallpaper', floor: 'carpet', ceil: 'ceiling',
-        surface: 'carpet', fixtureEvery: 4, hum: 0.5
+        surface: 'carpet', fixtureEvery: 3, flickerRate: 0.15, hum: 0.5
       }
     },
     L1: {
@@ -425,19 +428,6 @@
       h1.position.set(-0.05, 0.14, 0.067); g.add(h1);
       const h2 = new THREE.Mesh(boxGeo(0.014, 0.10, 0.004), hl);
       h2.position.set(0.055, 0.12, 0.067); g.add(h2); // 第二道高光：唯一的视觉区别
-    } else if (item === 'battery') {
-      // 5 号电池：黑身 + 铜顶 + 黄色闪电标志（小方块拼）
-      const bb = new THREE.Mesh(cylGeo(0.035, 0.035, 0.11, 10),
-        new THREE.MeshLambertMaterial({ color: 0x1a1a1c }));
-      bb.position.y = 0.055; g.add(bb);
-      const cu = new THREE.Mesh(cylGeo(0.035, 0.035, 0.03, 10),
-        new THREE.MeshLambertMaterial({ color: 0xb87333 }));
-      cu.position.y = 0.125; g.add(cu);
-      const boltM = new THREE.MeshBasicMaterial({ color: 0xffd820 });
-      const b1 = new THREE.Mesh(boxGeo(0.018, 0.05, 0.005), boltM);
-      b1.position.set(0.005, 0.06, 0.036); b1.rotation.z = 0.35; g.add(b1);
-      const b2 = new THREE.Mesh(boxGeo(0.018, 0.05, 0.005), boltM);
-      b2.position.set(-0.005, 0.03, 0.036); b2.rotation.z = 0.35; g.add(b2);
     } else if (item === 'energy_bar') {
       // 能量棒：棕色扁条 + 金色锯齿包装边
       const bar = new THREE.Mesh(boxGeo(0.22, 0.05, 0.1),
@@ -1602,8 +1592,11 @@
       for (var i = 0; i < pairs.length; i++) { acc += pairs[i][1]; if (r < acc) return pairs[i][0]; }
       return pairs[pairs.length - 1][0];
     };
+    // v2.4 W-l0gen：经典后室是"单调隔间"而非关卡式分区——权重向 part 倾斜，
+    // open/narrow 只保留少量（保底数不动：test-gen.js 断言 open≥2/part≥2/pilar≥1/narrow≥1），
+    // 让"到处都一样"的重复压抑感成为主调；柱密区保留（经典柱林）。
     for (zi = 0; zi < ZN * ZN; zi++)
-      zkind.push(zactive[zi] ? wpick([['open', 0.30], ['part', 0.30], ['pilar', 0.25], ['narrow', 0.15]]) : 'void');
+      zkind.push(zactive[zi] ? wpick([['open', 0.15], ['part', 0.50], ['pilar', 0.25], ['narrow', 0.10]]) : 'void');
     var zneed = { open: 2, part: 2, pilar: 1, narrow: 1 }, zg = 0, zkk;
     while (zg++ < 80) { // 保底循环：每次补一个缺额，必收敛（活跃区远多于需求 6）
       var zok = true;
@@ -1696,7 +1689,8 @@
       if (qk === 'void') continue; // 空洞分区不施工
       if (qk === 'open') {
         // 开阔区：偶发半隔断 + 偏心散柱，保持开阔
-        if (rng.chance(0.35)) {
+        // v2.4 W-l0gen：开阔区也不许完全空（0.35→0.5），否则大片白地像竞技场不像后室
+        if (rng.chance(0.50)) {
           hz = rng.chance(0.5); ln = rng.int(3, 6);
           wx = rng.int(qx0 + 2, Math.max(qx0 + 2, qx1 - (hz ? ln : 1) - 2));
           wy = rng.int(qy0 + 2, Math.max(qy0 + 2, qy1 - (hz ? 1 : ln) - 2));
@@ -1706,7 +1700,8 @@
       } else if (qk === 'part') {
         // 连续隔断区：1~2 组"双段同线"（两段之间留 2~4 格缺口，同线相邻段开口强制错位）
         // ＋偶发单段；全部半隔断（不贴区边）
-        var nd = 1 + rng.int(0, 1), di;
+        // v2.4 W-l0gen：隔断加密（经典后室=隔间重复）——双段组 2~3 组，单段概率 0.5→0.65
+        var nd = 2 + rng.int(0, 1), di;
         for (di = 0; di < nd; di++) {
           hz = rng.chance(0.5);
           var l1 = rng.int(3, 6), l2 = rng.int(3, 6), gb = rng.int(2, 4);
@@ -1716,7 +1711,7 @@
           var r1 = drawSeg(wx, wy, dx, dy, l1, null);
           drawSeg(wx + dx * (l1 + gb), wy + dy * (l1 + gb), dx, dy, l2, r1); // 错位开口
         }
-        if (rng.chance(0.5)) {
+        if (rng.chance(0.65)) {
           hz = rng.chance(0.5); ln = rng.int(4, 9);
           wx = rng.int(qx0 + 2, Math.max(qx0 + 2, qx1 - (hz ? ln : 1) - 2));
           wy = rng.int(qy0 + 2, Math.max(qy0 + 2, qy1 - (hz ? 1 : ln) - 2));
