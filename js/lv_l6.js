@@ -47,7 +47,7 @@
     }
     return { x: 0, z: 1 };
   }
-  var ITEM_NAME = { almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', battery: '电池', berry: '迁跃浆果' };
+  var ITEM_NAME = { almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', berry: '迁跃浆果' };
   function hashRng(str) { return new BR.RNG(BR.hashSeed(str)); }
   function kl() { return (BR.interactKeyLabel ? BR.interactKeyLabel() : '【E】'); }
 

@@ -393,7 +393,7 @@
     var glowPts = farthest(glowCands.length ? glowCands : spreadCands(3, 26, 3), 8, 4);
     glowPts.forEach(function (pt) { addPOI('l6_glow', pt[0], pt[1], {}); });
     // 补给箱 ×4
-    var crateItems = ['battery', 'almond', 'bandage', 'empty'];
+    var crateItems = ['bandage', 'almond', 'bandage', 'empty'];
     var cratePts = farthest(spreadCands(6, 60, 6), 4, 8);
     cratePts.forEach(function (pt, i) {
       addPOI('crate', pt[0], pt[1], { item: crateItems[i % crateItems.length] });

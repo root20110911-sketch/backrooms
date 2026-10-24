@@ -41,66 +41,233 @@
     return path;
   }
 
-  /* ---------- 程序化模型 ---------- */
+  /* ---------- v2.4 W-entityvisual：程序化建模重制 ----------
+   * 设计依据：docs/AAA_REF.md 第五章（Ito 法则：剪影签名 + 藏脸 + 不对称；
+   * 远剪影/近细节两档 LOD；Alan Wake 式逆光轮廓；眼发光）。
+   * 约束：只用 r128 基础几何体（Box/Sphere/Cylinder/Cone/Plane，
+   * 与 node 测试垫片对齐）；无骨骼管线——关节 = Group 嵌套，程序化旋转驱动。
+   * AI 行为数值与遭遇逻辑一律不动，只改视觉呈现。 */
   function lam(color) { return new THREE.MeshLambertMaterial({ color }); }
   function basic(color) { return new THREE.MeshBasicMaterial({ color }); }
 
-  function buildHound() {
-    const g = new THREE.Group();
-    const skin = lam(0x1a1512);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.62, 1.5), skin);
-    body.position.y = 0.85; g.add(body);
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.4, 0.55), skin);
-    head.position.set(0, 1.15, 0.95); g.add(head);
-    const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.12, 0.45), lam(0x0d0a08));
-    jaw.position.set(0, 0.92, 1.0); g.add(jaw);
-    //  teeth
-    for (let i = -1; i <= 1; i++) {
-      const tth = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 0.05), basic(0xd8d4c8));
-      tth.position.set(i * 0.11, 0.86, 1.12); g.add(tth);
+  /* 远剪影材质（共享）：纯黑无光照，雾中即"逆光剪影"本体。dispose 时跳过。 */
+  var _silMat = null;
+  function silhouetteMat() {
+    if (!_silMat) _silMat = new THREE.MeshBasicMaterial({ color: 0x030304 });
+    return _silMat;
+  }
+  /* 顶点色脏污（建模期静态）：逐顶点压暗 + 底部更脏（重力语法）。
+   * 用顶点位置哈希，保证静态不闪烁；node 垫片无 setAttribute 时静默跳过。 */
+  function grimeGeo(geo, amt, seed) {
+    if (!geo || !geo.setAttribute || !THREE.BufferAttribute) return geo;
+    try {
+      if (geo.userData && geo.userData._grimed) return geo;
+      var pos = geo.attributes.position, n = pos.count;
+      var col = new Float32Array(n * 3);
+      var s = seed || 0;
+      for (var i = 0; i < n; i++) {
+        var x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        var h = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + s * 19.19) * 43758.5453;
+        h -= Math.floor(h);
+        var v = 1 - amt * h * h;
+        v *= 1 - amt * 0.4 * Math.max(0, Math.min(1, -y * 2));
+        col[i * 3] = v;
+        col[i * 3 + 1] = v * (0.93 + h * 0.07);
+        col[i * 3 + 2] = v * (0.88 + h * 0.07);
+      }
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      if (geo.userData) geo.userData._grimed = true;
+    } catch (e) { /* 垫片环境：无脏污也无妨 */ }
+    return geo;
+  }
+  /* 脏污 Lambert：vertexColors 与材质色相乘，打破"均匀干净 CG 感" */
+  function dirtyMat(color, amt, seed) {
+    var m = new THREE.MeshLambertMaterial({ color: color, vertexColors: true });
+    try { m.userData.grime = { amt: (amt == null ? 0.5 : amt), seed: seed || 0 }; } catch (e) {}
+    return m;
+  }
+  /* 装配：建模期自动脏污；Lambert 部件登记剪影替换；detail=true 的只在近处显示 */
+  function mk(parent, geo, mat, u, o) {
+    o = o || {};
+    var gr = null;
+    try { gr = mat.userData.grime; } catch (e) {}
+    if (gr) grimeGeo(geo, gr.amt, gr.seed + (o.gs || 0));
+    var m = new THREE.Mesh(geo, mat);
+    if (o.p) m.position.set(o.p[0], o.p[1], o.p[2]);
+    if (o.r) { m.rotation.x = o.r[0]; m.rotation.y = o.r[1]; m.rotation.z = o.r[2]; }
+    if (o.s) m.scale.set(o.s[0], o.s[1], o.s[2]);
+    parent.add(m);
+    if (u) {
+      if (!o.keep && mat && mat.isMeshLambertMaterial) u.swap.push({ mesh: m, mat: mat });
+      if (o.detail) u.detail.push(m);
     }
-    const eyeG = new THREE.SphereGeometry(0.055, 8, 6);
-    const eyeM = basic(0xfffde8);
-    [-1, 1].forEach(s => {
-      const e = new THREE.Mesh(eyeG, eyeM);
-      e.position.set(s * 0.13, 1.22, 1.2); g.add(e);
+    return m;
+  }
+  /* 关节 pivot */
+  function J(parent, x, y, z) {
+    var p = new THREE.Group();
+    p.position.set(x, y, z);
+    parent.add(p);
+    return p;
+  }
+  /* 沿 -Y 生长的肢段（pivot 在关节处，动画转 pivot.rotation） */
+  function seg(piv, r1, r2, len, mat, u, detail) {
+    return mk(piv, new THREE.CylinderGeometry(r1, r2, len, 7), mat, u,
+      { p: [0, -len / 2, 0], detail: detail });
+  }
+  /* 眼发光：MeshBasicMaterial 不受光照，远处即"两点光"（AAA_REF 5.3） */
+  function eye(u, parent, dimHex, hotHex, r, x, y, z) {
+    if (!u.eyeMat) {
+      u.eyeMat = new THREE.MeshBasicMaterial({ color: dimHex });
+      u.eyeDimHex = dimHex; u.eyeHotHex = (hotHex == null ? dimHex : hotHex);
+    }
+    var e = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), u.eyeMat);
+    e.position.set(x, y, z);
+    parent.add(e);
+    u.eyes.push(e);
+    return e;
+  }
+  /* 抽搐脉冲：双正弦拍频过阈值 → 痉挛式 0/1 */
+  function twitch(t, f1, f2, th) {
+    return (Math.sin(t * f1) * Math.sin(t * f2) > th) ? 1 : 0;
+  }
+  /* 实体骨架容器：g=世界落位（update 驱动 position/rotation.y），
+   * rig=动画层（bob/呼吸/倾斜，不打架） */
+  function newFigure(height) {
+    var g = new THREE.Group();
+    var rig = new THREE.Group();
+    g.add(rig);
+    var u = g.userData;
+    u.rig = rig; u.j = {};
+    u.detail = [];   // 近处才显示的细节件
+    u.swap = [];     // {mesh, mat}：远处剪影替换登记
+    u.eyes = [];
+    u.eyeMat = null;
+    u.height = height;
+    return { g: g, rig: rig, u: u, j: u.j };
+  }
+  /* 手掌 + 三指（潜伏者）：手指登记为抽搐目标 */
+  function armHand(u, wristJ, y, mat) {
+    mk(wristJ, new THREE.BoxGeometry(0.1, 0.18, 0.06), mat, u, { p: [0, y - 0.06, 0] });
+    u.twFingers = u.twFingers || [];
+    for (var fi = -1; fi <= 1; fi++) {
+      var f = mk(wristJ, new THREE.BoxGeometry(0.022, 0.16, 0.022), mat, u,
+        { p: [fi * 0.035, y - 0.2, 0.01], r: [0.08, 0, fi * 0.12], detail: true });
+      u.twFingers.push(f);
+    }
+  }
+
+  /* 猎犬 —— 剪影签名：四足低伏 + 过长前肢 + 弓背驼峰 + 长吻 + 上扬细尾。
+   * Ito 不对称：左前肢比右前肢长约 9%。藏脸：头部深色、只有两点冷白眼。 */
+  function buildHound() {
+    var f = newFigure(1.35);
+    var g = f.g, rig = f.rig, u = f.u, j = u.j;
+    var skin = dirtyMat(0x1a1410, 0.55, 11);
+    var dark = dirtyMat(0x0e0b09, 0.4, 23);
+    var tooth = basic(0xcfc9b8);
+
+    // 躯干：低伏长条 + 肩部驼峰（弓背）+ 后臀
+    mk(rig, new THREE.SphereGeometry(0.5, 12, 10), skin, u,
+      { p: [0, 0.78, -0.05], s: [0.62, 0.58, 1.7] });
+    mk(rig, new THREE.SphereGeometry(0.34, 10, 8), skin, u,
+      { p: [0, 1.0, 0.42], s: [0.95, 0.85, 1.1] });
+    mk(rig, new THREE.SphereGeometry(0.3, 10, 8), skin, u,
+      { p: [0, 0.72, -0.72], s: [0.85, 0.8, 1.0] });
+
+    // 头颈关节 + 长吻
+    j.head = J(rig, 0, 1.02, 0.88);
+    mk(j.head, new THREE.BoxGeometry(0.4, 0.36, 0.5), skin, u, { p: [0, 0.04, 0.22] });
+    mk(j.head, new THREE.BoxGeometry(0.26, 0.2, 0.55), skin, u, { p: [0, -0.03, 0.68] });
+    // 耳（近细节，可抽搐）
+    u.twEar = [];
+    [-1, 1].forEach(function (s) {
+      u.twEar.push(mk(j.head, new THREE.ConeGeometry(0.07, 0.24, 6), dark, u,
+        { p: [s * 0.16, 0.28, 0.05], r: [0, 0, -s * 0.25], detail: true }));
     });
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.8), skin);
-    tail.position.set(0, 0.95, -1.0); tail.rotation.x = 0.5; g.add(tail);
-    const legs = [];
-    const legG = new THREE.CylinderGeometry(0.09, 0.07, 0.85, 6);
-    [[-0.2, 0.55], [0.2, 0.55], [-0.2, -0.55], [0.2, -0.55]].forEach(([x, z]) => {
-      const l = new THREE.Mesh(legG, skin);
-      l.position.set(x, 0.42, z); g.add(l); legs.push(l);
-    });
-    g.userData.legs = legs;
-    g.userData.height = 1.35;
+    // 眼：两点冷白（远处即剪影 + 眼发光）
+    eye(u, j.head, 0xfff2c8, 0xfff2c8, 0.05, -0.13, 0.12, 0.44);
+    eye(u, j.head, 0xfff2c8, 0xfff2c8, 0.05, 0.13, 0.12, 0.44);
+    // 颌关节 + 牙（近细节）
+    j.jaw = J(j.head, 0, -0.14, 0.42);
+    mk(j.jaw, new THREE.BoxGeometry(0.22, 0.07, 0.52), dark, u, { p: [0, -0.04, 0.24] });
+    for (var ti = -1; ti <= 1; ti++) {
+      mk(j.head, new THREE.ConeGeometry(0.025, 0.1, 5), tooth, u,
+        { p: [ti * 0.08, -0.12, 0.86], r: [Math.PI, 0, 0], detail: true });
+    }
+
+    // 腿：前肢过长（签名），左前肢再长约 9%（不对称）
+    function leg(x, py, z, len, r1, r2, name) {
+      var piv = J(rig, x, py, z);
+      seg(piv, r1, r2, len, skin, u);
+      mk(piv, new THREE.BoxGeometry(0.14, 0.09, 0.2), dark, u,
+        { p: [0, -len - 0.02, 0.04], detail: true });
+      j[name] = piv;
+    }
+    leg(-0.24, 1.0, 0.55, 1.0, 0.10, 0.055, 'legFL');
+    leg(0.24, 0.92, 0.55, 0.92, 0.10, 0.055, 'legFR');
+    leg(-0.24, 0.72, -0.55, 0.72, 0.115, 0.06, 'legBL');
+    leg(0.24, 0.72, -0.55, 0.72, 0.115, 0.06, 'legBR');
+
+    // 尾：上扬细尾，两节
+    j.tail = J(rig, 0, 0.92, -0.85);
+    mk(j.tail, new THREE.CylinderGeometry(0.045, 0.03, 0.55, 6), skin, u,
+      { p: [0, 0.2, -0.2], r: [1.1, 0, 0] });
+    mk(j.tail, new THREE.CylinderGeometry(0.03, 0.015, 0.45, 6), dark, u,
+      { p: [0, 0.52, -0.42], r: [1.35, 0, 0], detail: true });
+
     return g;
   }
 
+  /* 潜伏者 —— 剪影签名：2.6 米瘦高人形 + 双臂垂过膝 + 左臂长约 24% +
+   * 低头藏脸（无五官）+ 微驼背。眼平时暗红几不可见，警告以上才亮起。 */
   function buildLurker() {
-    const g = new THREE.Group();
-    const skin = lam(0x23282a);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 1.9), skin);
-    body.position.y = 0.45; g.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), skin);
-    head.position.set(0, 0.5, 1.05); head.scale.set(1, 0.8, 1.2); g.add(head);
-    const eyeG = new THREE.SphereGeometry(0.05, 8, 6);
-    const eyeM = basic(0xff3020);
-    [[-0.12, 0.12], [0.12, 0.12], [-0.12, -0.05], [0.12, -0.05]].forEach(([x, y]) => {
-      const e = new THREE.Mesh(eyeG, eyeM);
-      e.position.set(x, 0.55 + y, 1.28); g.add(e);
-    });
-    const legs = [];
-    const legG = new THREE.CylinderGeometry(0.06, 0.05, 0.5, 6);
-    for (let i = 0; i < 6; i++) {
-      const l = new THREE.Mesh(legG, skin);
-      l.position.set(i % 2 ? 0.35 : -0.35, 0.25, 0.7 - Math.floor(i / 2) * 0.7);
-      l.rotation.z = i % 2 ? -0.5 : 0.5;
-      g.add(l); legs.push(l);
+    var f = newFigure(2.6);
+    var g = f.g, rig = f.rig, u = f.u, j = f.j;
+    var skin = dirtyMat(0x39414a, 0.6, 31);
+    var bone = dirtyMat(0x4b545c, 0.5, 47);
+
+    // 骨盆 + 瘦长躯干（微驼）
+    mk(rig, new THREE.BoxGeometry(0.34, 0.24, 0.26), skin, u, { p: [0, 1.1, 0] });
+    mk(rig, new THREE.CylinderGeometry(0.21, 0.15, 1.0, 9), skin, u,
+      { p: [0, 1.68, 0.02], r: [0.1, 0, 0] });
+    // 脊背骨节（近细节）
+    for (var bi = 0; bi < 4; bi++) {
+      mk(rig, new THREE.SphereGeometry(0.05, 6, 5), bone, u,
+        { p: [0, 1.44 + bi * 0.22, -0.17 - bi * 0.018], detail: true });
     }
-    g.userData.legs = legs;
-    g.userData.height = 0.8;
+
+    // 颈 + 头：藏脸式低头，无五官
+    j.neck = J(rig, 0, 2.24, 0.06);
+    j.neck.rotation.x = 0.42;
+    mk(j.neck, new THREE.SphereGeometry(0.21, 12, 10), skin, u,
+      { p: [0, 0.16, 0.05], s: [0.92, 1.18, 1.0] });
+    eye(u, j.neck, 0x4a1008, 0xff2a18, 0.034, -0.075, 0.19, 0.26);
+    eye(u, j.neck, 0x4a1008, 0xff2a18, 0.034, 0.075, 0.19, 0.26);
+
+    // 手臂：过长垂过膝；左臂总长比右臂长约 24%（不对称）
+    j.shL = J(rig, -0.3, 2.12, 0);
+    j.shR = J(rig, 0.3, 2.06, 0);
+    seg(j.shL, 0.055, 0.045, 0.62, skin, u);
+    j.elL = J(j.shL, 0, -0.62, 0);
+    seg(j.elL, 0.045, 0.032, 0.85, skin, u);
+    armHand(u, j.elL, -0.85, bone);
+    seg(j.shR, 0.055, 0.045, 0.55, skin, u);
+    j.elR = J(j.shR, 0, -0.55, 0);
+    seg(j.elR, 0.045, 0.032, 0.6, skin, u);
+    armHand(u, j.elR, -0.6, bone);
+
+    // 腿：细长，微 X 形（膝内扣）
+    j.hipL = J(rig, -0.13, 1.04, 0); j.hipL.rotation.z = 0.05;
+    j.hipR = J(rig, 0.13, 1.04, 0); j.hipR.rotation.z = -0.05;
+    seg(j.hipL, 0.075, 0.058, 0.5, skin, u);
+    j.kneeL = J(j.hipL, 0, -0.5, 0);
+    seg(j.kneeL, 0.058, 0.04, 0.5, skin, u);
+    mk(j.kneeL, new THREE.BoxGeometry(0.11, 0.07, 0.27), bone, u, { p: [0, -0.53, 0.08] });
+    seg(j.hipR, 0.075, 0.058, 0.5, skin, u);
+    j.kneeR = J(j.hipR, 0, -0.5, 0);
+    seg(j.kneeR, 0.058, 0.04, 0.5, skin, u);
+    mk(j.kneeR, new THREE.BoxGeometry(0.11, 0.07, 0.27), bone, u, { p: [0, -0.53, 0.08] });
+
     return g;
   }
 
@@ -115,38 +282,142 @@
    * 的 POI 生成追逐实体；此处的旧 buildLeviathan / updateLeviathan（"保留未用"）
    * 已删除。L7 POI type 'leviathan' 仍保留为环境演出锚点（lv_l7.js initEntity 用）。
    */
+  /* 派对客 —— 剪影签名：3.5 米瘦高身形 + 大圆头 + 血红宽笑脸 + 歪派对帽 +
+   * 褶皱领 + 白手套长臂（左长 20%）。笑脸与帽是远剪影签名，远处保留。 */
   function buildPartygoer() {
-    const g = new THREE.Group();
-    const skin = lam(0xe8b820); // 金黄
-    const legG = new THREE.CylinderGeometry(0.11, 0.09, 1.25, 8);
-    [-1, 1].forEach(s => {
-      const l = new THREE.Mesh(legG, skin);
-      l.position.set(s * 0.18, 0.62, 0); g.add(l);
-    });
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.28, 1.05, 10), skin);
-    torso.position.y = 1.75; g.add(torso);
-    const armG = new THREE.CylinderGeometry(0.07, 0.05, 1.7, 8);
-    const arms = [];
-    [-1, 1].forEach(s => {
-      const a = new THREE.Mesh(armG, skin);
-      a.position.set(s * 0.48, 1.55, 0); a.rotation.z = s * 0.12;
-      g.add(a); arms.push(a);
-    });
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), skin);
-    head.position.y = 2.55; g.add(head);
-    // 血红笑脸
-    const smile = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.5, 0.32),
+    var f = newFigure(3.5);
+    var g = f.g, rig = f.rig, u = f.u, j = f.j;
+    var skin = dirtyMat(0xddb93e, 0.55, 61);
+    var red = dirtyMat(0xa02838, 0.4, 77);
+    var glove = dirtyMat(0xe6dcc4, 0.35, 83);
+
+    // 腿
+    j.hipL = J(rig, -0.17, 1.5, 0);
+    j.hipR = J(rig, 0.17, 1.5, 0);
+    seg(j.hipL, 0.095, 0.07, 0.72, skin, u);
+    j.kneeL = J(j.hipL, 0, -0.72, 0);
+    seg(j.kneeL, 0.07, 0.052, 0.7, skin, u);
+    mk(j.kneeL, new THREE.BoxGeometry(0.16, 0.1, 0.3), red, u, { p: [0, -0.74, 0.06] });
+    seg(j.hipR, 0.095, 0.07, 0.72, skin, u);
+    j.kneeR = J(j.hipR, 0, -0.72, 0);
+    seg(j.kneeR, 0.07, 0.052, 0.7, skin, u);
+    mk(j.kneeR, new THREE.BoxGeometry(0.16, 0.1, 0.3), red, u, { p: [0, -0.74, 0.06] });
+
+    // 躯干 + 纽扣（近细节）
+    mk(rig, new THREE.CylinderGeometry(0.3, 0.24, 1.15, 10), skin, u, { p: [0, 2.05, 0] });
+    for (var bi2 = 0; bi2 < 3; bi2++) {
+      mk(rig, new THREE.SphereGeometry(0.045, 8, 6), red, u,
+        { p: [0, 1.78 + bi2 * 0.24, 0.26], detail: true });
+    }
+    // 褶皱领
+    mk(rig, new THREE.CylinderGeometry(0.42, 0.5, 0.22, 10), red, u, { p: [0, 2.66, 0] });
+    mk(rig, new THREE.CylinderGeometry(0.3, 0.34, 0.12, 10), glove, u,
+      { p: [0, 2.56, 0], detail: true });
+
+    // 头：恒定歪斜（诡异）
+    j.head = J(rig, 0, 2.78, 0);
+    j.head.rotation.z = 0.14;
+    mk(j.head, new THREE.SphereGeometry(0.34, 14, 12), skin, u, { p: [0, 0.3, 0] });
+    // 血红笑脸（签名：远处保留，不进剪影替换）
+    var smile = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.58, 0.38),
       new THREE.MeshBasicMaterial({ map: BR.Textures.get('smiley'), transparent: true })
     );
-    smile.position.set(0, 2.55, 0.36); g.add(smile);
-    // 派对帽
-    const hat = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.4, 10), lam(0xd03050));
-    hat.position.y = 2.95; hat.rotation.z = 0.25; g.add(hat);
-    g.userData.arms = arms;
-    g.userData.height = 2.9;
+    smile.position.set(0, 0.28, 0.345);
+    j.head.add(smile);
+    // 派对帽（签名）：歪戴 + 绒球
+    mk(j.head, new THREE.ConeGeometry(0.2, 0.55, 10), red, u,
+      { p: [-0.1, 0.78, 0], r: [0, 0, 0.32] });
+    mk(j.head, new THREE.CylinderGeometry(0.24, 0.26, 0.06, 10), red, u,
+      { p: [-0.02, 0.55, 0], r: [0, 0, 0.32], detail: true });
+    mk(j.head, new THREE.SphereGeometry(0.07, 8, 6), glove, u,
+      { p: [-0.19, 1.02, 0], detail: true });
+
+    // 手臂：过长白手套，左臂长 20%
+    j.shL = J(rig, -0.44, 2.42, 0);
+    j.shR = J(rig, 0.44, 2.42, 0);
+    seg(j.shL, 0.062, 0.05, 0.62, skin, u);
+    j.elL = J(j.shL, 0, -0.62, 0);
+    seg(j.elL, 0.05, 0.038, 0.68, skin, u);
+    mk(j.elL, new THREE.SphereGeometry(0.095, 8, 6), glove, u, { p: [0, -0.74, 0] });
+    seg(j.shR, 0.062, 0.05, 0.55, skin, u);
+    j.elR = J(j.shR, 0, -0.55, 0);
+    seg(j.elR, 0.05, 0.038, 0.55, skin, u);
+    mk(j.elR, new THREE.SphereGeometry(0.095, 8, 6), glove, u, { p: [0, -0.61, 0] });
+
     return g;
   }
+
+  /* ---------- 七层之物：远影 / 局部躯体工厂（v2.4 W-entityvisual） ----------
+   * 设计（AAA_REF 5.x + 任务约束）：永不完整出镜，不做精细近模，保持"不可理解"感；
+   * 只给远处逆光巨型剪影 + 局部躯体。定位仍是"超大型环境威胁"，不是可击杀 Boss。
+   * 调用方：js/lv_l7.js（_spawnSilhouette / _spawnBreach 的升级替换，接口见下；
+   * lv_l7.js 为只读文件，接入由其所属工作流完成，此处只提供工厂）。
+   *   var sil = BR.Entities.LeviathanFX.buildSilhouette(seed); // {g, mat, segs}
+   *   sil.g.position.set(x, y, z); scene.add(sil.g);            // mat.opacity 做淡入
+   *   BR.Entities.LeviathanFX.updateSilhouette(sil, dt, t);     // 缓慢沉浮
+   *   var br = BR.Entities.LeviathanFX.buildBreach();           // {g, mat} 一段弧形脊背
+   */
+  E.LeviathanFX = {
+    // 远处逆光巨型剪影：6 节错开的巨型暗影 + 尾鳍 + 背鳍列（纯黑 Basic，雾中即剪影）
+    buildSilhouette: function (seed) {
+      var g = new THREE.Group();
+      var mat = new THREE.MeshBasicMaterial({ color: 0x05090c, transparent: true, opacity: 0 });
+      var s = (seed == null ? 7 : seed) >>> 0;
+      function rnd() { s = (s * 16807) % 2147483647; return s / 2147483647; }
+      var segs = [];
+      var lens = [22, 18, 14, 11, 8.5, 6];
+      var x = 0;
+      for (var i = 0; i < lens.length; i++) {
+        var L = lens[i];
+        var m = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
+        m.scale.set(L, L * 0.22, L * 0.3);
+        m.position.set(x + L * 0.42, Math.sin(i * 1.3) * 1.6, Math.cos(i * 0.9) * 3);
+        m.rotation.y = (rnd() - 0.5) * 0.5;
+        g.add(m); segs.push(m);
+        x += L * 0.8;
+      }
+      // 尾鳍剪影
+      var fin = new THREE.Mesh(new THREE.ConeGeometry(4, 12, 4), mat);
+      fin.scale.set(1, 1, 0.25);
+      fin.rotation.z = Math.PI / 2 + 0.3;
+      fin.position.set(x + 4, 1, 0);
+      g.add(fin);
+      // 背鳍列：只给剪影边缘的三片小三角
+      for (var fi = 0; fi < 3; fi++) {
+        var df = new THREE.Mesh(new THREE.ConeGeometry(1.6 - fi * 0.3, 4.5 - fi, 4), mat);
+        df.scale.z = 0.3;
+        df.position.set(6 + fi * 9, 6.4 - fi * 0.5, 0);
+        g.add(df);
+      }
+      return { g: g, mat: mat, segs: segs };
+    },
+    // 远影缓慢沉浮：段间错动，节奏不可理解地慢
+    updateSilhouette: function (sil, dt, t) {
+      if (!sil || !sil.segs) return;
+      for (var i = 0; i < sil.segs.length; i++) {
+        sil.segs[i].position.y += Math.sin(t * 0.4 + i * 1.1) * dt * 0.5;
+      }
+    },
+    // 局部出水躯体：只是一段弧形脊背 + 背鳍（6 球拼弧，无精细建模）
+    buildBreach: function () {
+      var g = new THREE.Group();
+      var mat = new THREE.MeshLambertMaterial({ color: 0x0a0e11 });
+      var R = 15, arc = 1.15, n = 6;
+      for (var i = 0; i < n; i++) {
+        var a = -arc / 2 + arc * (i / (n - 1));
+        var m = new THREE.Mesh(new THREE.SphereGeometry(2.8, 8, 6), mat);
+        m.position.set(Math.sin(a) * R, (1 - Math.cos(a)) * R * 0.4, 0);
+        m.scale.set(1.4, 1, 1);
+        g.add(m);
+      }
+      var fin = new THREE.Mesh(new THREE.ConeGeometry(1.8, 5, 4), mat);
+      fin.scale.z = 0.3;
+      fin.position.set(0, 6.4, 0);
+      g.add(fin);
+      return { g: g, mat: mat };
+    }
+  };
 
   /* ---------- 实体基类 ---------- */
   let eid = 0;
@@ -238,11 +509,15 @@
         e._traces = null;
       }
       if (e.group.parent) e.group.parent.remove(e.group);
+      var _sil = silhouetteMat(); // 共享剪影材质：永不释放
       e.group.traverse(function (o) {
         if (o.geometry) { try { o.geometry.dispose(); } catch (err) {} }
         if (o.material) {
           const ms = Array.isArray(o.material) ? o.material : [o.material];
-          for (const m of ms) { try { m.dispose(); } catch (err2) {} }
+          for (const m of ms) {
+            if (m === _sil) continue;
+            try { m.dispose(); } catch (err2) {}
+          }
         }
       });
     }
@@ -365,6 +640,16 @@
       const dist = Math.hypot(dx, dz);
       ent.near = dist < 48;
       ent.dist = dist;
+      // —— v2.4 W-entityvisual：速度估计（程序化行走动画驱动）+ 两档 LOD ——
+      // 不碰 AI：只观测位移，不改变任何行为数值。
+      var _ox = (ent._px === undefined) ? ent.x : ent._px;
+      var _oz = (ent._pz === undefined) ? ent.z : ent._pz;
+      var _iv = Math.hypot(ent.x - _ox, ent.z - _oz) / Math.max(dt, 0.001);
+      ent._spd = (ent._spd === undefined) ? _iv : BR.damp(ent._spd, _iv, 6, dt);
+      ent._px = ent.x; ent._pz = ent.z;
+      var _hunting = (ent.state === 'chase' || ent.state === 'stalk' || ent.state === 'attack');
+      ent._phase = (ent._phase || 0) + dt * (1.1 + ent._spd * 2.6) * (_hunting ? 1.3 : 1);
+      updateLOD(ent);
       ent.animT += dt * (ent.state === 'chase' || ent.state === 'stalk' ? 9 : 4);
       ent.atkCd = Math.max(0, ent.atkCd - dt);
       ent.sndCd = Math.max(0, ent.sndCd - dt);
@@ -413,7 +698,56 @@
       ent.group.rotation.y = ent.yaw;
       animateEnt(ent, dt);
     }
+    // —— v2.4 W-entityvisual：Alan Wake 式逆光轮廓（AAA_REF 1.2）——
+    // 同一时间只给威胁度最高的实体 1 盏极弱冷色 PointLight（手机规则），
+    // 放在实体背后（相对其朝向），玩家只看到剪影边缘被勾出来。
+    var _prim = null, _bs = 0, _ri, _re, _sc;
+    for (_ri = 0; _ri < this.list.length; _ri++) {
+      _re = this.list[_ri];
+      if (!_re.active || !_re.near) continue;
+      _sc = _re.state === 'chase' ? 4 : _re.state === 'attack' ? 4 :
+        _re.state === 'stalk' ? 3 : _re.alert >= 2 ? 2 : _re.alert >= 1 ? 1 : 0;
+      if (_sc > _bs) { _bs = _sc; _prim = _re; }
+    }
+    for (_ri = 0; _ri < this.list.length; _ri++) {
+      _re = this.list[_ri];
+      var _L = ensureRim(_re);
+      if (!_L) continue;
+      var _on = (_re === _prim && _bs >= 2);
+      _L.visible = _on; // 不可见的灯不进入 forward 光照收集，零成本
+      if (_on) _L.intensity = BR.damp(_L.intensity, _bs >= 4 ? 0.55 : 0.3, 5, dt);
+    }
   };
+
+  /* 两档 LOD（AAA_REF 5.2）：远处只渲染剪影 + 眼发光（Lambert→共享纯黑 Basic，
+   * 近细节件隐藏）；近处恢复材质与细节（顶点抽搐等只在近处跑）。 */
+  var LOD_FAR = 24;
+  function updateLOD(ent) {
+    var want = ent.dist > LOD_FAR ? 'far' : 'near';
+    if (ent._lod === want) return;
+    ent._lod = want;
+    var u = ent.group.userData;
+    if (u.swap) {
+      var sm = silhouetteMat();
+      for (var i = 0; i < u.swap.length; i++) {
+        u.swap[i].mesh.material = (want === 'far') ? sm : u.swap[i].mat;
+      }
+    }
+    if (u.detail) {
+      for (var k = 0; k < u.detail.length; k++) u.detail[k].visible = (want === 'near');
+    }
+  }
+  /* 逆光轮廓灯：实体背后（本地 -z，实体朝向 +z），威胁时才可见 */
+  function ensureRim(ent) {
+    if (!THREE.PointLight) return null; // node 垫片：无灯
+    if (!ent._rim) {
+      var L = new THREE.PointLight(0x8fc4ff, 0, 9, 2);
+      L.position.set(0, (ent.group.userData.height || 1.5) * 0.62, -1.5);
+      ent.group.add(L);
+      ent._rim = L;
+    }
+    return ent._rim;
+  }
 
   function entView(ent, ctx) {
     let v;
@@ -814,21 +1148,124 @@
     }
   }
 
-  /* ---------- 步行动画 ---------- */
+  /* ---------- 程序化行走动画（v2.4 W-entityvisual） ----------
+   * 全部按实测移动速度驱动：步频/摆幅/身体起伏/头部微动；
+   * 待机=呼吸，追击=摆幅与步频放大；顶点抽搐只在近处 + 警戒以上跑。 */
   function animateEnt(ent, dt) {
-    const u = ent.group.userData;
-    const t = ent.animT;
-    if (u.legs) {
-      u.legs.forEach((l, i) => { l.rotation.x = Math.sin(t + i * 1.7) * 0.55; });
+    var u = ent.group.userData;
+    if (!u.rig || !u.j) return;
+    var t = ent.animT;
+    var spd = ent._spd || 0;
+    var ph = ent._phase || 0;
+    var hunting = (ent.state === 'chase' || ent.state === 'stalk' || ent.state === 'attack');
+    var amp = Math.min(1, spd / 3);
+    var j = u.j, rig = u.rig;
+
+    // 眼发光强度：藏脸 → 警告时亮起（node 垫片无 Color 时跳过）
+    if (u.eyeMat && THREE.Color) {
+      if (!u._eyeDim) {
+        u._eyeDim = new THREE.Color(u.eyeDimHex);
+        u._eyeHot = new THREE.Color(u.eyeHotHex);
+        u._eyeTmp = new THREE.Color();
+      }
+      var hot = (ent.state === 'warn' || hunting) ? 1 : 0;
+      u._eyeK = BR.damp(u._eyeK || 0, hot, 4, dt);
+      u._eyeTmp.copy(u._eyeDim).lerp(u._eyeHot, u._eyeK);
+      if (u.eyeMat.color) u.eyeMat.color.copy(u._eyeTmp);
     }
-    if (u.arms) {
-      // 派对客：手臂诡异摆动 + 身体轻微摇晃
-      u.arms.forEach((a, i) => { a.rotation.x = Math.sin(t * 0.7 + i * 3.1) * 0.5; });
-      ent.group.rotation.z = Math.sin(t * 0.5) * 0.06;
-      // 靠近时头部转向玩家（tilt）
-      if (ent.dist < 10) {
-        ent.group.rotation.z = Math.sin(t * 1.3) * 0.14;
+
+    if (ent.type === 'hound') animHound(ent, u, j, rig, t, ph, amp, hunting, dt);
+    else if (ent.type === 'lurker') animLurker(ent, u, j, rig, t, ph, amp, hunting, dt);
+    else animPartygoer(ent, u, j, rig, t, ph, amp, hunting, dt);
+  }
+
+  /* 猎犬：对角步态（左前+右后 / 右前+左后），身体 2 倍频起伏 */
+  function animHound(ent, u, j, rig, t, ph, amp, hunting, dt) {
+    var sw = 0.10 + 0.55 * amp;
+    j.legFL.rotation.x = Math.sin(ph) * sw;
+    j.legBR.rotation.x = Math.sin(ph) * sw * 0.9;
+    j.legFR.rotation.x = Math.sin(ph + Math.PI) * sw;
+    j.legBL.rotation.x = Math.sin(ph + Math.PI) * sw * 0.9;
+    rig.position.y = Math.abs(Math.sin(ph)) * 0.08 * amp;
+    rig.rotation.x = Math.sin(ph * 2) * 0.018 * amp;
+    // 头：平时低头嗅探，追击抬头锁定
+    j.head.rotation.x = BR.damp(j.head.rotation.x,
+      (hunting ? -0.10 : 0.14) + Math.sin(t * 1.7) * 0.05, 5, dt);
+    j.head.rotation.y = Math.sin(t * 0.6) * (hunting ? 0.03 : 0.14);
+    // 尾：平时慢摆，追击急摆
+    j.tail.rotation.y = Math.sin(t * (hunting ? 7 : 2.2)) * (hunting ? 0.4 : 0.16);
+    j.tail.rotation.x = -0.55 + Math.sin(t * 1.3) * 0.08;
+    // 颌：追击/攻击张开
+    j.jaw.rotation.x = BR.damp(j.jaw.rotation.x,
+      (hunting ? 0.6 : 0.1 + Math.max(0, Math.sin(t * 0.8)) * 0.06), 6, dt);
+    // 待机呼吸 + 追击剪影放大（AAA_REF 5.4）
+    var br = amp < 0.08 ? 1 + Math.sin(t * 2.4) * 0.016 : 1;
+    var sc = hunting ? 1.06 : 1;
+    rig.scale.set(BR.damp(rig.scale.x, sc, 4, dt),
+      BR.damp(rig.scale.y, sc * br, 4, dt), BR.damp(rig.scale.z, sc, 4, dt));
+    // 近处细节：耳抖
+    if (ent._lod === 'near' && (hunting || ent.alert >= 2) && u.twEar) {
+      for (var i = 0; i < u.twEar.length; i++) {
+        u.twEar[i].rotation.z = (i ? -1 : 1) * (twitch(t + i * 2.1, 29, 17.3, 0.88) ? 0.18 : 0);
       }
     }
+  }
+
+  /* 潜伏者：瘦高人形的蹒跚步态；蜷伏（hide）时屈膝收臂；警告以上抬头 */
+  function animLurker(ent, u, j, rig, t, ph, amp, hunting, dt) {
+    var cq = BR.damp(u._crouch || 0, ent.state === 'hide' ? 1 : 0, 4, dt);
+    u._crouch = cq;
+    j.hipL.rotation.x = Math.sin(ph) * 0.5 * amp;
+    j.hipR.rotation.x = Math.sin(ph + Math.PI) * 0.5 * amp;
+    j.kneeL.rotation.x = Math.max(0, -Math.sin(ph)) * 0.9 * amp + 0.07 + cq * 0.35;
+    j.kneeR.rotation.x = Math.max(0, Math.sin(ph)) * 0.9 * amp + 0.07 + cq * 0.35;
+    j.shL.rotation.x = Math.sin(ph + Math.PI) * 0.38 * amp + cq * 0.5;
+    j.shR.rotation.x = Math.sin(ph) * 0.32 * amp + cq * 0.5;
+    j.elL.rotation.x = -0.12 - Math.max(0, Math.sin(ph + Math.PI)) * 0.35 * amp - cq * 0.6;
+    j.elR.rotation.x = -0.28 - Math.max(0, Math.sin(ph)) * 0.3 * amp - cq * 0.6;
+    rig.rotation.z = Math.sin(ph) * 0.05 * amp + Math.sin(t * 0.9) * 0.018;
+    rig.position.y = Math.abs(Math.cos(ph)) * 0.06 * amp - cq * 0.12;
+    // 头：藏脸低头；warn/追击抬头凝视
+    var headUp = (ent.state === 'warn' || hunting) ? 1 : 0;
+    u._headUp = BR.damp(u._headUp || 0, headUp, 3, dt);
+    j.neck.rotation.x = 0.42 - u._headUp * 0.5 + Math.sin(t * 0.8) * 0.045;
+    j.neck.rotation.y = Math.sin(t * 0.55) * (0.16 - u._headUp * 0.1);
+    var br = amp < 0.08 ? 1 + Math.sin(t * 1.9) * 0.014 : 1;
+    rig.scale.set(1, BR.damp(rig.scale.y, br, 4, dt), 1);
+    // 顶点抽搐：手指痉挛（近 + alert>=2）
+    if (ent._lod === 'near' && ent.alert >= 2 && u.twFingers) {
+      for (var i = 0; i < u.twFingers.length; i++) {
+        u.twFingers[i].rotation.x = twitch(t + i * 1.7, 31, 23.7, 0.9) ? 0.5 : 0.08;
+      }
+    }
+  }
+
+  /* 派对客：蹦跳步态 + 大起伏；追击时双臂上举（"要抱抱"） */
+  function animPartygoer(ent, u, j, rig, t, ph, amp, hunting, dt) {
+    j.hipL.rotation.x = Math.sin(ph) * 0.55 * amp;
+    j.hipR.rotation.x = Math.sin(ph + Math.PI) * 0.55 * amp;
+    j.kneeL.rotation.x = Math.max(0, -Math.sin(ph)) * 0.7 * amp + 0.05;
+    j.kneeR.rotation.x = Math.max(0, Math.sin(ph)) * 0.7 * amp + 0.05;
+    rig.position.y = Math.abs(Math.sin(ph)) * 0.13 * amp;
+    rig.rotation.z = Math.sin(ph) * 0.03 * amp;
+    var rs = BR.damp(u._raise || 0, hunting ? 1 : 0, 3, dt);
+    u._raise = rs;
+    j.shL.rotation.x = Math.sin(ph + Math.PI) * 0.6 * amp - rs * 1.15;
+    j.shR.rotation.x = Math.sin(ph) * 0.6 * amp - rs * 1.15;
+    j.shL.rotation.z = 0.16 + rs * 0.55;
+    j.shR.rotation.z = -0.16 - rs * 0.55;
+    j.elL.rotation.x = -0.2 - rs * 0.4;
+    j.elR.rotation.x = -0.2 - rs * 0.4;
+    // 头：恒定歪 + 摇晃；近处追击时痉挛抖动
+    j.head.rotation.z = 0.14 + Math.sin(t * 1.2) * 0.085;
+    if (ent._lod === 'near' && hunting) {
+      j.head.rotation.y = Math.sin(t * 0.8) * 0.13 + Math.sin(t * 23.7) * 0.1;
+      j.head.rotation.x = Math.sin(t * 31.7) * 0.06;
+    } else {
+      j.head.rotation.y = Math.sin(t * 0.8) * 0.13;
+      j.head.rotation.x = BR.damp(j.head.rotation.x, Math.sin(t * 0.7) * 0.05, 4, dt);
+    }
+    var br = amp < 0.08 ? 1 + Math.sin(t * 2.1) * 0.013 : 1;
+    rig.scale.set(1, BR.damp(rig.scale.y, br, 4, dt), 1);
   }
 })();
