@@ -1135,8 +1135,8 @@
               tx: dtx, ty: dty, group: group, visual: { bin: bin1 }, anim: drawerAnim(),
               meshes: bin1Meshes, pos: new THREE.Vector3(deskFx - 0.335, 0.6, deskFz + 0.45),
               innerBase: new THREE.Vector3(deskFx - 0.335, 0.42, deskFz + 0.45 + 0.02),
-              contents: [{ item: 'battery', dx: -0.15, dz: 0.08 }],
-              text: { open: '拉开抽屉', openedToast: '抽屉拉开了——有张发黄的纸，还有节电池' },
+              contents: [{ item: 'gum', dx: -0.15, dz: 0.08 }],
+              text: { open: '拉开抽屉', openedToast: '抽屉拉开了——有张发黄的纸，还有块口香糖' },
               autosave: true,
               onOpen: function () { setLogNote(true); },
               onClose: function () { setLogNote(false); }
@@ -1977,26 +1977,22 @@
     _spawnSilhouette: function (W, L) {
       var E = L.entity;
       this._despawnSilhouette(W, L);
-      var g = new THREE.Group();
-      var mat = new THREE.MeshBasicMaterial({ color: 0x0a1116, transparent: true, opacity: 0 });
-      trackMat(W, mat);
-      // 不完整轮廓：三段错开的巨大暗影（只在水下隐约可见）
-      var s1 = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
-      s1.scale.set(22, 5, 7); s1.position.set(0, 0, 0); g.add(s1);
-      var s2 = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
-      s2.scale.set(13, 3.4, 4.5); s2.position.set(20, 1.5, 6); s2.rotation.y = 0.5; g.add(s2);
-      var s3 = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
-      s3.scale.set(9, 2.6, 3.6); s3.position.set(-19, -1, -5); s3.rotation.y = -0.4; g.add(s3);
+      // v2.4 W-l7leviathan：远影视觉改走 entities.js 的 LeviathanFX 工厂
+      // （6 节错开的巨型纯黑暗影 + 尾鳍 + 背鳍列）；出现时机/位置/朝向/淡入淡出语义原样保留。
+      var sil = BR.Entities.LeviathanFX.buildSilhouette(Math.floor(E.crng.next() * 2147483646));
+      trackMat(W, sil.mat);
+      var g = sil.g;
       g.position.set(E.x, -4.5, E.z);
       g.rotation.y = E.crng.next() * 6.28;
       W.scene.add(g);
       trackScene(g);
-      E.sil = { g: g, mat: mat };
+      E.sil = sil; // {g, mat, segs}
     },
     _updateSilhouette: function (W, L, dt, targetOp) {
       var E = L.entity, P = BR.Player;
       if (!E.sil) return;
       var s = E.sil;
+      BR.Entities.LeviathanFX.updateSilhouette(s, dt, L.t); // 工厂段间错动（纯视觉，缓慢沉浮）
       // 跟随实体（滞后半拍）
       s.g.position.x += (E.x - s.g.position.x) * Math.min(1, dt * 1.2);
       s.g.position.z += (E.z - s.g.position.z) * Math.min(1, dt * 1.2);
@@ -2093,13 +2089,12 @@
     /* ---------- 七层之物：躯体局部出水（只是一段，永不完整） ---------- */
     _spawnBreach: function (W, L, x, z) {
       var E = L.entity;
-      var g = new THREE.Group();
-      var mat = new THREE.MeshLambertMaterial({ color: 0x0b1013 });
-      trackMat(W, mat);
-      var arc = new THREE.Mesh(new THREE.TorusGeometry(15, 2.8, 8, 20, 1.15), mat);
-      arc.rotation.z = Math.PI / 2 - 0.55;
-      arc.rotation.y = E.crng.next() * 6.28;
-      g.add(arc);
+      // v2.4 W-l7leviathan：出水躯体视觉改走 entities.js 的 LeviathanFX 工厂
+      // （一段弧形脊背 + 背鳍）；出现时机/位置/升降时间线/目击判定原样保留。
+      var br = BR.Entities.LeviathanFX.buildBreach();
+      trackMat(W, br.mat);
+      var g = br.g;
+      g.rotation.y = E.crng.next() * 6.28;
       g.position.set(x, -9, z);
       W.scene.add(g);
       trackScene(g);
