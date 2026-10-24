@@ -11,6 +11,16 @@
 * （Fandom 主站只有粉色开口光、无露天蓝天；liminality 同人版的天空无云无太阳。）
 * 游戏内字条（buildLoreNote）同样如实标注为改编。
 *
+* v2.4（W-d1 小修，不动空间结构）：
+*   镜面池：静水反射层改用高对比 sunlit_reflect_still（深天蓝渐变+地平线亮带+
+*     硬边云带倒影+太阳闪光带贴图）+ reflectStill 不透明度 0.72→0.92 +
+*     新增加法混合的太阳闪光带面片（buildMirrorGlint，沿太阳方位，tick 呼吸，
+*     v2.4-fix：改用羽化渐变贴图 sunlit_glint + 不透明度 0.13±0.05，防过曝）；
+*     通用水域（sunlit_reflect/波纹/caustics）不动，保持与 L37 的气质区分。
+*   裂纹区：sunlit_crack 重绘（略深冷底+裂纹四层描边：青光晕/深蓝晕/深色/近黑核+
+*     沿线水渍晕斑）+ 新增青色加法发光轮廓（buildCracks 内 4 边框，tick 微脉动）。
+*   性能：只加 2 张 canvas 贴图（生成期一次）+ 5 个透明面片，无后期、零新增灯光。
+*
 * v2.3（W-l372）：与 L37 的气质彻底区分 ——
 *   L37：封闭/池核/静谧（雾近、光弱 0.55、无天空）；
 *   L37.2：明亮/开阔/天空之境（光强 1.35、暖阳光色、雾远 120、露天庭院直见天）。
@@ -91,6 +101,7 @@ x.restore();
 return c;
 });
 // 水面天空反射层：浅天蓝底 + 淡云斑 + 太阳方向暖光斑
+// （v2.4 W-d1 保留：通用水域用；镜面池改用下方更高对比的 sunlit_reflect_still）
 BR.Textures.registerTex('sunlit_reflect', function (w, h) {
 var c = mkCanvas(w, h), x = c.getContext('2d');
 var g = x.createLinearGradient(0, 0, 0, h);
@@ -113,6 +124,80 @@ sg.addColorStop(0, 'rgba(255,246,220,0.85)');
 sg.addColorStop(1, 'rgba(255,246,220,0)');
 x.fillStyle = sg;
 x.beginPath(); x.arc(w * 0.72, h * 0.30, 60, 0, 6.2832); x.fill();
+return c;
+});
+// v2.4 W-d1 镜面池闪光带用的羽化贴图：中央亮、四边柔光（防加法平面硬边过曝）
+BR.Textures.registerTex('sunlit_glint', function (w, h) {
+var c = mkCanvas(w, h), x = c.getContext('2d');
+x.clearRect(0, 0, w, h);
+var g = x.createLinearGradient(0, 0, w, 0);
+g.addColorStop(0.00, 'rgba(255,244,214,0)');
+g.addColorStop(0.30, 'rgba(255,244,214,0.55)');
+g.addColorStop(0.50, 'rgba(255,250,230,0.95)');
+g.addColorStop(0.70, 'rgba(255,244,214,0.55)');
+g.addColorStop(1.00, 'rgba(255,244,214,0)');
+x.fillStyle = g; x.fillRect(0, 0, w, h);
+// 纵向（长轴）两端也羽化
+var v = x.createLinearGradient(0, 0, 0, h);
+v.addColorStop(0.00, 'rgba(0,0,0,1)');
+v.addColorStop(0.18, 'rgba(0,0,0,0)');
+v.addColorStop(0.82, 'rgba(0,0,0,0)');
+v.addColorStop(1.00, 'rgba(0,0,0,1)');
+x.globalCompositeOperation = 'destination-out';
+x.fillStyle = v; x.fillRect(0, 0, w, h);
+x.globalCompositeOperation = 'source-over';
+return c;
+});
+// v2.4 W-d1 镜面池专用天空反射层 —— 高对比"天空之境"：
+// 深天蓝渐变 + 明亮地平线带 + 边缘较硬的云带倒影 + 太阳闪光带（glitter path）。
+// 与通用 sunlit_reflect 的区别：对比度/清晰度拉高，专供静水镜面区使用。
+BR.Textures.registerTex('sunlit_reflect_still', function (w, h) {
+var c = mkCanvas(w, h), x = c.getContext('2d');
+var g = x.createLinearGradient(0, 0, 0, h);
+g.addColorStop(0.00, '#5f9bd8');
+g.addColorStop(0.34, '#a9d2f0');
+g.addColorStop(0.47, '#e8f5ff');
+g.addColorStop(0.52, '#ffffff'); // 地平线亮带：镜面读出"天"的关键
+g.addColorStop(0.58, '#dcedf9');
+g.addColorStop(1.00, '#9cc4e6');
+x.fillStyle = g; x.fillRect(0, 0, w, h);
+var rnd = lcg(0x57ab);
+var i;
+// 云带倒影：横向拉长、边缘较硬（两档渐变：亮核+软边）
+for (i = 0; i < 7; i++) {
+var cx = w * (0.08 + rnd() * 0.84), cy = h * (0.12 + rnd() * 0.76);
+var rx = 26 + rnd() * 52, ry = rx * (0.22 + rnd() * 0.18);
+var a = 0.62 + rnd() * 0.28;
+var cg = x.createRadialGradient(cx, cy, 1, cx, cy, rx);
+cg.addColorStop(0, 'rgba(255,255,255,' + a.toFixed(2) + ')');
+cg.addColorStop(0.55, 'rgba(255,255,255,' + (a * 0.75).toFixed(2) + ')');
+cg.addColorStop(1, 'rgba(255,255,255,0)');
+x.fillStyle = cg;
+x.save(); x.translate(cx, cy); x.scale(1, ry / rx); x.translate(-cx, -cy);
+x.beginPath(); x.arc(cx, cy, rx, 0, 6.2832); x.fill();
+x.restore();
+}
+// 太阳闪光带（glitter path）：竖向亮柱，亮核+宽晕
+var gx = w * 0.72;
+var halo = x.createLinearGradient(gx - 46, 0, gx + 46, 0);
+halo.addColorStop(0, 'rgba(255,250,225,0)');
+halo.addColorStop(0.5, 'rgba(255,250,225,0.42)');
+halo.addColorStop(1, 'rgba(255,250,225,0)');
+x.fillStyle = halo; x.fillRect(gx - 46, 0, 92, h);
+var core = x.createLinearGradient(gx - 13, 0, gx + 13, 0);
+core.addColorStop(0, 'rgba(255,255,250,0)');
+core.addColorStop(0.5, 'rgba(255,255,250,0.95)');
+core.addColorStop(1, 'rgba(255,255,250,0)');
+x.fillStyle = core; x.fillRect(gx - 13, 0, 26, h);
+// 闪光带上的碎光点
+for (i = 0; i < 26; i++) {
+var sx = gx + (rnd() - 0.5) * 44, sy = rnd() * h, sr = 1 + rnd() * 2.6;
+var sp = x.createRadialGradient(sx, sy, 0.2, sx, sy, sr);
+sp.addColorStop(0, 'rgba(255,255,252,0.95)');
+sp.addColorStop(1, 'rgba(255,255,252,0)');
+x.fillStyle = sp;
+x.beginPath(); x.arc(sx, sy, sr, 0, 6.2832); x.fill();
+}
 return c;
 });
 // 粉色开口辉光：中心亮粉 → 透明
@@ -150,27 +235,54 @@ x.fillStyle = g; x.fillRect(0, 0, w, h);
 return c;
 });
 // v2.3 裂纹瓷砖（原创异常：原著称瓷砖"永远保持崭新"，裂纹即异常；非原著）
+// v2.4 W-d1：辨识度加强 —— 底色略深冷、裂纹四层描边（青光晕+深蓝晕+深核），
+// 裂纹沿线加深色水渍晕斑，透过水面/水下能一眼认出"这里不一样"。
 BR.Textures.registerTex('sunlit_crack', function (w, h) {
 var c = mkCanvas(w, h), x = c.getContext('2d');
-x.fillStyle = '#f2f7f8'; x.fillRect(0, 0, w, h);
-x.strokeStyle = 'rgba(178,198,206,0.85)'; x.lineWidth = 2;
+x.fillStyle = '#d9e4e8'; x.fillRect(0, 0, w, h); // 略深冷底：与正常亮白瓷砖拉开色差
+x.strokeStyle = 'rgba(150,172,182,0.85)'; x.lineWidth = 2;
 var i;
 for (i = 0; i <= 2; i++) {
 x.beginPath(); x.moveTo(i * w / 2, 0); x.lineTo(i * w / 2, h); x.stroke();
 x.beginPath(); x.moveTo(0, i * h / 2); x.lineTo(w, i * h / 2); x.stroke();
 }
 var rnd = lcg(0xc4ac);
-x.strokeStyle = 'rgba(42,56,63,0.92)';
+var cracks = [];
 for (var k = 0; k < 5; k++) {
-x.lineWidth = 1 + rnd() * 1.6;
 var px = rnd() * w, py = rnd() * h;
-x.beginPath(); x.moveTo(px, py);
+var pts = [[px, py]];
 for (var s = 0; s < 6; s++) {
 px += (rnd() - 0.5) * w * 0.32; py += (rnd() - 0.5) * h * 0.32;
-x.lineTo(px, py);
+pts.push([px, py]);
 }
+cracks.push(pts);
+}
+// 裂纹沿线的水渍晕斑（先画，在裂纹之下）
+for (k = 0; k < cracks.length; k++) {
+var cp = cracks[k];
+for (s = 0; s < cp.length; s++) {
+var bx = cp[s][0], by = cp[s][1], br = 14 + rnd() * 22;
+var bg = x.createRadialGradient(bx, by, 1, bx, by, br);
+bg.addColorStop(0, 'rgba(26,60,82,0.22)');
+bg.addColorStop(1, 'rgba(26,60,82,0)');
+x.fillStyle = bg;
+x.beginPath(); x.arc(bx, by, br, 0, 6.2832); x.fill();
+}
+}
+// 裂纹四层描边：青光晕 → 深蓝晕 → 深色 → 近黑核
+function strokeCracks(lw, style) {
+x.strokeStyle = style; x.lineWidth = lw; x.lineCap = 'round'; x.lineJoin = 'round';
+for (var q = 0; q < cracks.length; q++) {
+x.beginPath();
+x.moveTo(cracks[q][0][0], cracks[q][0][1]);
+for (var t = 1; t < cracks[q].length; t++) x.lineTo(cracks[q][t][0], cracks[q][t][1]);
 x.stroke();
 }
+}
+strokeCracks(6, 'rgba(140,220,255,0.20)'); // 青光晕：水下辨识的"发光"来源
+strokeCracks(3.5, 'rgba(18,52,72,0.45)');
+strokeCracks(2.0, 'rgba(8,26,40,0.80)');
+strokeCracks(1.2, 'rgba(2,8,14,0.95)');
 return c;
 });
 BR.Textures.registerWallTex('L372', 'pool_tile');
@@ -210,6 +322,8 @@ pins: [], // pinnicorn 漂浮物 [{g, phase, baseY, yaw0}]
 pinkMat: null, // 粉色开口辉光材质（tick 微脉动）
 whiteMat: null, // v2.3：入口白光开口材质（tick 呼吸）
 phantom: null, // v2.3：镜面池无源涟漪 {mesh, t}
+mirrorGlint: null, // v2.4 W-d1：镜面池太阳闪光带 {mesh}
+crackGlowMat: null, // v2.4 W-d1：裂纹区发光轮廓材质（tick 脉动）
 ladders: [],
 laneGeo: null
 };
@@ -310,8 +424,20 @@ M.deepShadeDark = new THREE.MeshBasicMaterial({ // 异常厅深水：更暗（�
 color: 0x0e3a50, transparent: true, opacity: 0.45, depthWrite: false
 });
 M.reflectStill = new THREE.MeshBasicMaterial({ // 镜面池静水：只留天空反射
-map: reflTex, transparent: true, opacity: 0.72,
-color: 0xe4f3fe, depthWrite: false, side: THREE.DoubleSide
+// v2.4 W-d1：改用高对比 sunlit_reflect_still + 不透明度 0.92 + 白色，
+// "天空之境"一眼成立（原 0.72/0xe4f3fe 太灰，水面读成白板）。
+map: BR.Textures.get('sunlit_reflect_still') || reflTex, transparent: true, opacity: 0.92,
+color: 0xffffff, depthWrite: false, side: THREE.DoubleSide
+});
+M.mirrorGlint = new THREE.MeshBasicMaterial({ // v2.4 W-d1：镜面池太阳闪光带
+// v2.4-fix：用羽化渐变贴图（四边柔光）+ 低不透明度，避免加法平面过曝成白条
+map: BR.Textures.get('sunlit_glint') || null,
+color: 0xfff3d4, transparent: true, opacity: 0.16,
+blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+});
+M.crackGlow = new THREE.MeshBasicMaterial({ // v2.4 W-d1：裂纹区发光轮廓（tick 微脉动）
+color: 0x86d8ff, transparent: true, opacity: 0.20,
+blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
 M.phantom = new THREE.MeshBasicMaterial({ // 无源涟漪（原创异常；tick 动画）
 color: 0xffffff, transparent: true, opacity: 0,
@@ -326,7 +452,7 @@ FX.whiteMat = M.whiteGlow;
 W._levelMats = W._levelMats || [];
 [M.reflect, M.water, M.pitWall, M.deepShade, M.deckTop, M.pillar, M.trim,
 M.sunStreak, M.pink, M.pinkFloor, M.whiteGlow, M.darkPanel, M.darkEdge,
-M.crack, M.deepShadeDark, M.reflectStill, M.phantom, M.whiteSpill]
+M.crack, M.deepShadeDark, M.reflectStill, M.phantom, M.whiteSpill, M.mirrorGlint, M.crackGlow]
 .forEach(function (m) { W._levelMats.push(m);});
 if (M.caust) W._levelMats.push(M.caust);
 return M;
@@ -603,9 +729,33 @@ W.reg(group, g);
 });
 }
 
+/* ---------------- v2.4 W-d1 镜面池太阳闪光带 ----------------
+ * 镜面池中央沿太阳方位拉一条窄亮带（加法混合），与 reflect_still 贴图里的
+ * glitter path 同向 —— 水面"映着太阳"的读感主要来自这条高光带。
+ * 纯参数/面片，无后期。tick 里轻微呼吸（FX.mirrorGlint）。 */
+function buildMirrorGlint(W, L, M) {
+FX.mirrorGlint = null;
+var mr = L.mirrorRect;
+if (!mr || !M.mirrorGlint) return;
+var cx = (mr.tx0 + mr.tx1 + 1) / 2 * TILE, cz = (mr.ty0 + mr.ty1 + 1) / 2 * TILE;
+W.addChunkContent(mr.tx0, mr.ty0, function (group) {
+var len = (mr.ty1 - mr.ty0 + 1) * TILE * 1.02;
+var sm = new THREE.Mesh(new THREE.PlaneGeometry(0.85, len), M.mirrorGlint);
+sm.rotation.x = -Math.PI / 2;
+// 长轴沿太阳方位在 XZ 平面的投影（与庭院 sunStreak 同公式）
+sm.rotation.z = -Math.atan2(SUN_DIR.x, SUN_DIR.z);
+sm.position.set(cx, SURF + 0.005, cz);
+sm.renderOrder = 2;
+W.reg(group, sm);
+FX.mirrorGlint = { mesh: sm };
+});
+}
+
 /* ---------------- v2.3 裂纹区：异常厅水下瓷砖裂纹 ----------------
  * [原创异常，非原著] 原著（Fandom 主站）称本层瓷砖"永远保持崭新"，
- * 因此裂纹本身就是异常。字条（buildAbyssNote）记录目击。 */
+ * 因此裂纹本身就是异常。字条（buildAbyssNote）记录目击。
+ * v2.4 W-d1：加一圈加法混合的青色发光轮廓（tick 微脉动），潜水时
+ * 从水下看也能认出"这里不一样"。 */
 function buildCracks(W, L, M) {
 var cr = L.crackRect;
 if (!cr || !M.crack) return;
@@ -616,6 +766,22 @@ var m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), M.crack);
 m.rotation.x = -Math.PI / 2;
 m.position.set(cx, 0.015, cz);
 W.reg(group, m);
+// v2.4 W-d1：发光轮廓（4 条细边框，y=0.05，水面之下、裂纹之上）
+if (M.crackGlow) {
+var t = 0.24, ext = 0.35;
+function edge(lw, lh, px, pz) {
+var e = new THREE.Mesh(new THREE.PlaneGeometry(lw, lh), M.crackGlow);
+e.rotation.x = -Math.PI / 2;
+e.position.set(px, 0.05, pz);
+e.renderOrder = 2;
+W.reg(group, e);
+}
+edge(w + ext * 2, t, cx, cz - h / 2 - ext);
+edge(w + ext * 2, t, cx, cz + h / 2 + ext);
+edge(t, h + ext * 2, cx - w / 2 - ext, cz);
+edge(t, h + ext * 2, cx + w / 2 + ext, cz);
+FX.crackGlowMat = M.crackGlow;
+}
 });
 }
 
@@ -840,7 +1006,7 @@ BR.UI.toast('一只 Pinnicorn 慢悠悠地漂着 —— 充气浮具般的生物
 
 /* ---------------- 拾取（状态进 W.state.picked，随关分桶存档） ---------------- */
 var ITEM_NAME = {
-almond: '杏仁水', bandage: '绷带', battery: '电池',
+almond: '杏仁水', bandage: '绷带',
 glowstick: '荧光棒', cashew: '腰果水', medkit: '急救包'
 };
 function buildPickups(W, map) {
@@ -1076,6 +1242,8 @@ FX.t = 0;
 FX.ladders = [];
 FX.pins.length = 0;
 FX.phantom = null; // v2.3
+FX.mirrorGlint = null; // v2.4 W-d1
+FX.crackGlowMat = null; // v2.4 W-d1
 var L = map.meta && map.meta.l372;
 var M = makeMats(W);
 // 露天庭院：跳过天花板实例（直接见天）
@@ -1095,6 +1263,7 @@ buildPits(W, L, M, map);
 buildPillars(W, L, M);
 buildArches(W, L, M); // v2.3
 buildCracks(W, L, M); // v2.3
+buildMirrorGlint(W, L, M); // v2.4 W-d1：镜面池太阳闪光带
 buildPhantomRipple(W, L, M); // v2.3
 buildLadders(W, L, M, map);
 buildPinkOpenings(W, L, M);
@@ -1107,8 +1276,10 @@ registerSwimZones(L);
 buildPickups(W, map);
 buildCrates(W, map);
 buildLoreNote(W, map);
-// 测试钩子
-W._l372fx = {
+// 测试钩子（v2.4 W-d1：mirrorGlint/crackGlow 用 getter，实时反映区块构建后的状态，
+// 避免 buildContent 同步快照时区块回调尚未执行的误报）
+(function () {
+var hooks = {
 ladders: FX.ladders,
 cloudCount: FX.clouds.length,
 pinCount: FX.pins.length,
@@ -1119,6 +1290,10 @@ archCount: (L && L.arches ? L.arches.length : 0), // v2.3
 hasMirror: !!(L && L.mirrorRect), // v2.3
 hasCrack: !!(L && L.crackRect) // v2.3
 };
+Object.defineProperty(hooks, 'mirrorGlint', { get: function () { return !!FX.mirrorGlint; } }); // v2.4 W-d1
+Object.defineProperty(hooks, 'crackGlow', { get: function () { return !!FX.crackGlowMat; } }); // v2.4 W-d1
+W._l372fx = hooks;
+})();
 W.objective = '阳光泳池：穿过粉色开口的长廊，去大庭院看天，在镜面池边歇一会；墙上的黑暗开口可以回到 Level 37';
 },
 
@@ -1191,6 +1366,13 @@ var cyc = FX.phantom.t % 7, kk = cyc / 7;
 var psc = 0.6 + kk * 3.4;
 FX.phantom.mesh.scale.set(psc, psc, 1);
 FX.phantom.mesh.material.opacity = 0.30 * (1 - kk);
+}
+// v2.4 W-d1：镜面池闪光带呼吸 + 裂纹发光轮廓脉动（宁静感：幅度小）
+if (FX.mirrorGlint && FX.mirrorGlint.mesh) {
+FX.mirrorGlint.mesh.material.opacity = 0.13 + Math.sin(FX.t * 1.3) * 0.05;
+}
+if (FX.crackGlowMat) {
+FX.crackGlowMat.opacity = 0.16 + Math.sin(FX.t * 1.7) * 0.09;
 }
 // Pinnicorn 漂浮
 for (var j = 0; j < FX.pins.length; j++) {

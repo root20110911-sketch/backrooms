@@ -403,6 +403,15 @@
     // W-ui（v2.1）：触屏标识类，供 CSS 做触屏专属布局（桌面端无此类别无影响）
     try { document.body.classList.toggle('is-touch', !!this.isTouch); } catch (e) {}
     this.buildTouchUI();
+    // W-record（v2.4）：录制模式——中央提示节点 + 互斥包装 + 暂停菜单开关按钮
+    this.buildRecordUI();
+    this._wrapRecordMutex();
+    const rb = BR.$('btn-record');
+    if (rb) rb.addEventListener('click', () => {
+      const on = !this.recordMode;
+      this.setRecordMode(on);
+      if (on && BR.Game && BR.Game.state === 'paused') BR.UI.togglePause(false);
+    });
     // —— 键盘：走按键绑定分发 ——
     addEventListener('keydown', (e) => {
       // 改键捕获优先：暂停菜单点"更改"后，下一次按键写入绑定（Esc 取消）
@@ -413,6 +422,9 @@
         return;
       }
       if (e.repeat) return;
+      // W-record（v2.4）：H=录制模式开/关。固定键，不进可改键表；
+      // 全工程无 KeyH 占用（改键捕获中按 H 走捕获写入，不触发切换）。
+      if (e.code === 'KeyH') { this.toggleRecordMode(); return; }
       this.keys[e.code] = true;
       if (BR.Game.state !== 'playing' || this.locked) {
         // 非游玩 / 锁定状态只响应暂停键
@@ -814,5 +826,121 @@
     // F（v1.4）：触控 UI 只在触屏设备显示；桌面端进关时 main.js 也会调这里，
     // 之前会导致桌面凭空出现一排触控按钮。
     BR.$('touch-ui').style.display = (v && this.isTouch) ? 'block' : 'none';
+  };
+
+  /* ---------- W-record（v2.4）：录制模式 ----------
+   * H 键 toggle：一键隐藏全部 UI（#hud 含准星/目标/提示/键位/血条/toast/调试、
+   * #touch-ui 触屏按钮、#br-errbox 诊断红框），只留 3D 画面；再按 H 恢复。
+   * - 切换反馈走中央小字 #record-ind（toast 本体在录制时不可见，用它替代）；
+   * - 录制时 showBrErr 静默（只 push 到 __brErrs + console，不弹红框）；
+   * - 与暂停/死亡/转场/开局互斥：开暂停菜单（togglePause→paused）、死亡
+   *   （showDeath）、转场（Trans.play）、开局/读档（newGame/continueGame/
+   *   retryAfterDeath）时自动退出；ui.js/main.js/transitions.js 不改，
+   *   全部在 input.js 的 _wrapRecordMutex 里对目标函数包一层；
+   * - 状态纯内存，不写 br_settings、不进存档，每次进游戏默认关闭；
+   * - 触屏端：暂停菜单 #btn-record 开关（index.html 暂停面板 + 这里的逻辑，
+   *   不改 ui.js/style.css、不改触屏按钮区布局）。
+   * 玩法零改动：只做 DOM 显隐与函数包装。
+   */
+  I.recordMode = false;          // 纯内存，永不存档
+  I._recordSavedDisp = null;     // 进入录制前各元素的 inline display 存档
+  I._recordIndT = 0;
+  I.RECORD_HIDE_IDS = ['hud', 'touch-ui', 'br-errbox'];
+  I.buildRecordUI = function () {
+    if (BR.$('record-ind')) return;
+    const d = document.createElement('div');
+    d.id = 'record-ind';
+    d.style.cssText = 'position:fixed;left:50%;top:42%;transform:translate(-50%,-50%);z-index:99998;' +
+      'color:rgba(255,255,255,.93);font:15px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;' +
+      'background:rgba(0,0,0,.55);padding:6px 18px;border-radius:8px;letter-spacing:3px;' +
+      'pointer-events:none;display:none;white-space:nowrap;';
+    document.body.appendChild(d);
+  };
+  I._flashRecordInd = function (on) {
+    const d = BR.$('record-ind');
+    if (!d) return;
+    d.textContent = on ? '录制模式 开' : '录制模式 关';
+    d.style.display = 'block';
+    clearTimeout(this._recordIndT);
+    this._recordIndT = setTimeout(() => { d.style.display = 'none'; }, 1600);
+  };
+  I.setRecordMode = function (on) {
+    on = !!on;
+    if (on === this.recordMode) return;
+    this.recordMode = on;
+    if (on) {
+      this._recordSavedDisp = {};
+      for (const id of this.RECORD_HIDE_IDS) {
+        const el = BR.$(id);
+        if (el) { this._recordSavedDisp[id] = el.style.display; el.style.display = 'none'; }
+      }
+      document.body.classList.add('record-mode');
+    } else {
+      const saved = this._recordSavedDisp || {};
+      for (const id of this.RECORD_HIDE_IDS) {
+        const el = BR.$(id);
+        if (el && (id in saved)) el.style.display = saved[id];
+      }
+      this._recordSavedDisp = null;
+      document.body.classList.remove('record-mode');
+    }
+    const rb = BR.$('btn-record');
+    if (rb) rb.textContent = on ? '录制模式：开（点按关闭）' : '录制模式（开启并返回游戏）';
+    this._flashRecordInd(on);
+  };
+  I.toggleRecordMode = function () {
+    const G = BR.Game;
+    if (!G || G.state !== 'playing' || this.locked) return;
+    this.setRecordMode(!this.recordMode);
+  };
+  // 互斥包一层（ui.js/main.js/transitions.js/index.html 诊断区源码不改）。
+  // _recordWrapped 防重复包装（init 只调一次，防御性）。
+  I._wrapRecordMutex = function () {
+    try {
+      const U = BR.UI;
+      if (U && typeof U.togglePause === 'function' && !U.togglePause._recordWrapped) {
+        const _tp = U.togglePause;
+        const w = function (force) {
+          const G = BR.Game;
+          const toPause = force === true ? true : (G && G.state === 'playing');
+          if (toPause) I.setRecordMode(false); // 录制中开暂停菜单 → 自动退出录制
+          return _tp.call(this, force);
+        };
+        w._recordWrapped = true; U.togglePause = w;
+        if (typeof U.showDeath === 'function' && !U.showDeath._recordWrapped) {
+          const _sd = U.showDeath;
+          const w2 = function (c) { I.setRecordMode(false); return _sd.call(this, c); };
+          w2._recordWrapped = true; U.showDeath = w2;
+        }
+      }
+      const TR = BR.Trans;
+      if (TR && typeof TR.play === 'function' && !TR.play._recordWrapped) {
+        const _play = TR.play;
+        const w3 = function (n, o) { I.setRecordMode(false); return _play.call(this, n, o); };
+        w3._recordWrapped = true; TR.play = w3;
+      }
+      const G = BR.Game;
+      if (G) {
+        ['newGame', 'continueGame', 'retryAfterDeath'].forEach((fn) => {
+          if (typeof G[fn] === 'function' && !G[fn]._recordWrapped) {
+            const _f = G[fn];
+            const w4 = function () { I.setRecordMode(false); return _f.apply(this, arguments); };
+            w4._recordWrapped = true; G[fn] = w4;
+          }
+        });
+      }
+      // 诊断红框：录制时静默（记 __brErrs + console，不弹窗）
+      if (typeof window.showBrErr === 'function' && !window.showBrErr._recordWrapped) {
+        const _sbe = window.showBrErr;
+        const w5 = function (extra) {
+          if (I.recordMode) {
+            try { if (extra) window.__brErrs.push(extra); console.log('[record] suppressed errbox:', extra); } catch (e) {}
+            return;
+          }
+          return _sbe(extra);
+        };
+        w5._recordWrapped = true; window.showBrErr = w5;
+      }
+    } catch (e) { if (BR.log) BR.log('record wrap failed:', e); }
   };
 })();
