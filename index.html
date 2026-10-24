@@ -23,7 +23,7 @@ function showBrErr(extra) {
       (document.body || document.documentElement).appendChild(box);
     }
     box.textContent = '诊断(卡在步骤: ' + window.__brStep + '):\n' +
-      window.__brErrs.slice(-5).join('\n') + '\n请把这段文字拍照发我';
+      window.__brErrs.slice(-5).join('\n') + '\n游戏遇到问题，请截图反馈';
   } catch (e) {}
 }
 window.addEventListener('error', function (e) {
@@ -33,7 +33,7 @@ window.addEventListener('unhandledrejection', function (e) {
   var r = e.reason; showBrErr('REJ: ' + (r && (r.message || r) || '?'));
 });
 </script>
-<link rel="stylesheet" href="css/style.css?v=2.3.0">
+<link rel="stylesheet" href="css/style.css?v=2.4.0">
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
@@ -80,9 +80,10 @@ window.addEventListener('unhandledrejection', function (e) {
 <!-- 标题 -->
 <div id="screen-title" class="screen">
   <div class="menu-atmo"><div class="breath"></div><div class="scan"></div></div>
+  <div class="title-vignette"></div>
   <div class="panel">
-    <div id="title-logo">BACKROOMS</div>
-    <div class="subtitle">切 出</div>
+    <div id="title-logo"><span class="logo-en">BACKROOMS</span></div>
+    <div class="subtitle"><span class="seal">切出</span></div>
     <div id="seed-line">世界种子：-</div>
     <div class="seed-row">
       <input id="seed-input" type="number" placeholder="输入种子（可选）" inputmode="numeric">
@@ -93,6 +94,7 @@ window.addEventListener('unhandledrejection', function (e) {
     <button id="btn-how" class="ghost">玩法说明</button>
     <button id="btn-wipe" class="ghost">重置存档</button>
     <div class="foot">第一人称后室生存 · 建议横屏并佩戴耳机</div>
+    <div class="ver-watermark">v2.4.0</div>
   </div>
 </div>
 
@@ -141,6 +143,8 @@ window.addEventListener('unhandledrejection', function (e) {
     <h2>已暂停</h2>
     <button id="btn-resume" class="big">继续</button>
     <button id="btn-fullscreen" class="ghost wide">进入全屏</button>
+    <!-- W-record（v2.4）：录制模式开关（触屏端无键盘，用此按钮；桌面端按 H） -->
+    <button id="btn-record" class="ghost wide">录制模式（开启并返回游戏）</button>
     <button id="btn-quit-title" class="ghost wide">保存并回到标题</button>
     <h3>设置</h3>
     <label>视角灵敏度 <span class="val" id="sens-val"></span><input id="set-sens" type="range" min="0.3" max="2.5" step="0.1"></label>
@@ -209,44 +213,44 @@ window.addEventListener('unhandledrejection', function (e) {
 <script>window.THREE || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>')</script>
 <script>window.THREE || document.write('<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>')</script>
 <script>window.THREE || showBrErr('3D 引擎加载失败：请检查网络后刷新重试')</script>
-<script src="js/config.js?v=2.3.0"></script>
-<script src="js/utils.js?v=2.3.0"></script>
-  <script src="js/items.js?v=2.3.0"></script>
-<script src="js/textures.js?v=2.3.0"></script>
-<script src="js/audio.js?v=2.3.0"></script>
-<script src="js/gen.js?v=2.3.0"></script>
-<script src="js/gen_l4.js?v=2.3.0"></script>
-<script src="js/gen_l188.js?v=2.3.0"></script>
-<script src="js/gen_l37.js?v=2.3.0"></script>
-<script src="js/gen_l372.js?v=2.3.0"></script>
+<script src="js/config.js?v=2.4.0"></script>
+<script src="js/utils.js?v=2.4.0"></script>
+  <script src="js/items.js?v=2.4.0"></script>
+<script src="js/textures.js?v=2.4.0"></script>
+<script src="js/audio.js?v=2.4.0"></script>
+<script src="js/gen.js?v=2.4.0"></script>
+<script src="js/gen_l4.js?v=2.4.0"></script>
+<script src="js/gen_l188.js?v=2.4.0"></script>
+<script src="js/gen_l37.js?v=2.4.0"></script>
+<script src="js/gen_l372.js?v=2.4.0"></script>
 <!-- v1.5 W6：Level 94「动画」退役（被 Level ! 'bang' 替换），gen_l94.js 不再加载 -->
-<script src="js/gen_l7.js?v=2.3.0"></script>
-<script src="js/gen_l11.js?v=2.3.0"></script>
-<script src="js/gen_l25.js?v=2.3.0"></script>
-<script src="js/gen_bang.js?v=2.3.0"></script>
-<script src="js/gen_l6.js?v=2.3.0"></script>
-<script src="js/world.js?v=2.3.0"></script>
-<script src="js/player.js?v=2.3.0"></script>
-<script src="js/input.js?v=2.3.0"></script>
-<script src="js/entities.js?v=2.3.0"></script>
-<script src="js/transitions.js?v=2.3.0"></script>
-<script src="js/cutout.js?v=2.3.0"></script>
-<script src="js/levels.js?v=2.3.0"></script>
-<script src="js/levels2.js?v=2.3.0"></script>
-<script src="js/lv_l4.js?v=2.3.0"></script>
-<script src="js/lv_l188.js?v=2.3.0"></script>
-<script src="js/lv_l37.js?v=2.3.0"></script>
-<script src="js/lv_l372.js?v=2.3.0"></script>
+<script src="js/gen_l7.js?v=2.4.0"></script>
+<script src="js/gen_l11.js?v=2.4.0"></script>
+<script src="js/gen_l25.js?v=2.4.0"></script>
+<script src="js/gen_bang.js?v=2.4.0"></script>
+<script src="js/gen_l6.js?v=2.4.0"></script>
+<script src="js/world.js?v=2.4.0"></script>
+<script src="js/player.js?v=2.4.0"></script>
+<script src="js/input.js?v=2.4.0"></script>
+<script src="js/entities.js?v=2.4.0"></script>
+<script src="js/transitions.js?v=2.4.0"></script>
+<script src="js/cutout.js?v=2.4.0"></script>
+<script src="js/levels.js?v=2.4.0"></script>
+<script src="js/levels2.js?v=2.4.0"></script>
+<script src="js/lv_l4.js?v=2.4.0"></script>
+<script src="js/lv_l188.js?v=2.4.0"></script>
+<script src="js/lv_l37.js?v=2.4.0"></script>
+<script src="js/lv_l372.js?v=2.4.0"></script>
 <!-- v1.5 W6：Level 94「动画」退役（被 Level ! 'bang' 替换），lv_l94.js 不再加载 -->
-<script src="js/lv_l7.js?v=2.3.0"></script>
-<script src="js/lv_l11.js?v=2.3.0"></script>
-<script src="js/lv_l25.js?v=2.3.0"></script>
-<script src="js/lv_bang.js?v=2.3.0"></script>
-<script src="js/lv_l6.js?v=2.3.0"></script>
-<script src="js/sanityEvents.js?v=2.3.0"></script>
-<script src="js/ui.js?v=2.3.0"></script>
-<script src="js/dev.js?v=2.3.0"></script>
-<script src="js/save.js?v=2.3.0"></script>
-<script src="js/main.js?v=2.3.0"></script>
+<script src="js/lv_l7.js?v=2.4.0"></script>
+<script src="js/lv_l11.js?v=2.4.0"></script>
+<script src="js/lv_l25.js?v=2.4.0"></script>
+<script src="js/lv_bang.js?v=2.4.0"></script>
+<script src="js/lv_l6.js?v=2.4.0"></script>
+<script src="js/sanityEvents.js?v=2.4.0"></script>
+<script src="js/ui.js?v=2.4.0"></script>
+<script src="js/dev.js?v=2.4.0"></script>
+<script src="js/save.js?v=2.4.0"></script>
+<script src="js/main.js?v=2.4.0"></script>
 </body>
 </html>

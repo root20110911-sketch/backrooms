@@ -67,7 +67,7 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
 - `BR.Gen.hashMap(map)→string` 用于测试比较（房间图+POI 的哈希）。
 
 ## items.js —— 道具注册表与部署物
-- `BR.Items.CONFIG`：全部可调数值（策划调这里，不碰逻辑）；`BR.Items.DEFS`：9 种 v1.5 新增道具定义（能量棒/急救包/荧光棒/标记粉笔/便携氧气瓶/水下照明灯/救生衣/防水物资袋/肾上腺素）；13 种旧道具（杏仁水/绷带/手电/迁跃浆果/食物/香烟/口香糖/皇家口粮/笑魇驱散剂/火盐/痛液/腰果水/备用电池）在 ui.js 的 ITEM_INFO。
+- `BR.Items.CONFIG`：全部可调数值（策划调这里，不碰逻辑）；`BR.Items.DEFS`：9 种 v1.5 新增道具定义（能量棒/急救包/荧光棒/标记粉笔/便携氧气瓶/水下照明灯/救生衣/防水物资袋/肾上腺素）；12 种旧道具（杏仁水/绷带/手电/迁跃浆果/食物/香烟/口香糖/皇家口粮/笑魇驱散剂/火盐/痛液/腰果水）在 ui.js 的 ITEM_INFO。**备用电池已于 v2.4 删除**（电池道具及耗电逻辑全删除；`flashBat` 存档字段保留仅作老存档兼容）。
 - kind：`'use'`（消耗）/ `'equip'`（装备开关）/ `'deploy'`（部署到世界：荧光棒/粉笔/腰果水陷阱）/ `'device'`（设备开关）。
 - 跨关部署物恢复（P0-3）：`BR.Items.onTravel()`（跨关前：清运行时态，把 `_savedDeployed` 暂存；电量/装备/耐力保留）→ `BR.Items.onLevelBuilt()`（新关建完：消费 `_pendingDeployed` 恢复部署物）。读档路径：`loadState`（填）→ `onLevelBuilt`（消费）。调用顺序由 main.js 保证，顺序错则回滚保护。
 - `BR.Container`：通用两段式容器（开柜→看内部→逐件拾取），L4 文件柜 / L7 舱室储物柜 / 马尼拉桌下柜共用，`autosave:true` 跨读档持久。
@@ -102,7 +102,7 @@ Three.js r128（UMD，全局 `THREE`）。不要使用 r128 不存在的 API。
 
 ## input.js
 - `BR.Input.init(canvas)`；`BR.Input.update()`。
-- 默认键位：`fwd/back/left/right`=WASD+方向键，`run`=Shift，`dive`=C（蹲/下潜），`jump`=空格（跳/上浮），`interact`=E+鼠标左键，`backpack`=Tab/I，`flashlight`=F，`thirdperson`=V，`pause`=Esc。**快捷栏（数字键/Q）已于 v1.5.1 删除**，使用物品统一走背包。
+- 默认键位：`fwd/back/left/right`=WASD+方向键，`run`=Shift，`dive`=C（蹲/下潜），`jump`=空格（跳/上浮），`interact`=E+鼠标左键，`backpack`=Tab/I，`flashlight`=F，`thirdperson`=V，`pause`=Esc，`record`=H（录制模式开关，v2.4）。**快捷栏（数字键/Q）已于 v1.5.1 删除**，使用物品统一走背包。
 - 改键系统：全部动作可改键，冲突处理，`localStorage` 持久化，`sanitizeBindings` 自动丢弃已删除动作的老键位。
 - 触控：左摇杆（动态原点+死区0.15+滑出跟随）、右侧拖动视角；v2.1 分区：`#touch-sys`（右上 mini 横排常驻：暂停/背包/手电/疾跑开关/第三人称）+ `#touch-btns`（右下主操作区：交互大钮常驻但情境高亮，蹲下 land-only，下坐骑 mount-only）+ `#touch-jump-cluster`（跳跃/上浮 big，下潜 swim-only，坐骑时整簇隐藏）。v2.0 P1 情境化规则延续：用不到的按钮不长期占屏。**无"道具"按钮**（v1.5.1 起道具只走背包；`ui.js` 触屏键位文案已同步清理，不再提"道具"）。
 - `BR.Input.setLocked(b)` 转场/菜单时锁定；多点触控按手指 ID 分配。
@@ -219,7 +219,7 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 
 ## main.js
 - `BR.Game.init()`；`newGame(seed?)`；`continueGame()`；`switchLevel(to, opts)`；`gotoLevel(to, opts)` / `loadLevel`（P0：加载保护——失败/超时/重复切关有状态回滚与重试入口，不永久卡加载页）；`BR.Game.tick(t)` 主循环（dt clamp 0.05）。
-- 跨关语义（P0）：新游戏初始化 / 死亡重生 / 读档恢复 / 普通跨关四者区分；**普通跨关保持生命/理智/饥饿/手电电量/装备连续性，不重置为满**。
+- 跨关语义（P0）：新游戏初始化 / 死亡重生 / 读档恢复 / 普通跨关四者区分；**普通跨关保持生命/理智/饥饿/装备连续性，不重置为满**（v2.4 起手电只有开/关、无电量概念）。
 - 状态：`menu/loading/playing/transition/paused/fail/ending`。
 - `BR.Game.locked` 输入锁定；失焦自动暂停（visibilitychange）。
 - 画质应用：pixelRatio、雾距离、灯光数；`?quality=low|mid|high` 覆盖；平板默认 mid。
@@ -292,8 +292,58 @@ gen 在 `js/gen_l*.js`（纯逻辑，`node --check` + `tools/test-gen.js` 可验
 ### 存档（save.js）
 - 存档键 **`backrooms_save_v2` 不变**；v2.3 无新顶层字段、无 key 升级。
 
+## v2.4 机制（2026-10-24，独立游戏水准打磨）
+
+本轮审计（`tools/AUDIT_V24.md`）结论：达到独立游戏水平的差距不在系统缺失，而在**表现层打磨**（首印象/视觉统一性/投稿支持）+ 2 个 v2.3 未闭环 P0。不新增关卡/实体/玩法数值。
+
+### 实时阴影 + 灯光重设计（main.js / world.js）
+- `renderer.shadowMap.enabled=true` + `PCFSoftShadowMap`；每关唯一主阴影灯 = 玩家手电 SpotLight（`W.flashSpot.castShadow`，`W.setShadowLevel`）。
+- 灯光不穿墙：阴影相机 = 手电视锥（near 0.4 / far 32 / fov=2×angle）；墙体/地面同时 castShadow+receiveShadow。灯具点光源池仍无阴影，靠 decay=2 + 按档收紧 distance。
+- 阴影旗 `W._flagShadows(root)`：实体/家具/玩家身体/墙体地面投射+接收；透明加法假体（光锥/尘埃/焦散/水面/涂鸦/光柱）不投射（`userData.noShadow`）。
+- 每关灯光气质（`W.lightProfiles`，只改行为/色温不碰排布）：L0 冷白 + 镇流器垂死三件套（~16% 灯具位置哈希 deterministic：strike 打火→unstable 掉电+色温漂粉→dead 熄灭）；L1 暖黄钨丝；L37 青白 + 水面焦散跟随 plane；L7 HemisphereLight 冷蓝保底 + 12 组交叉面片光柱。
+- 手电筒：SpotLight 收窄（angle 0.42 / penumbra 0.5 / decay 2 / distance 30）；新开局默认自带且开启；可见光锥（3 交叉面片，锥长 20m，加法混合，随开关淡入淡出）+ 锥内 300 点尘埃；**无电量玩法**（只有开/关；`flashBat` 字段保留仅作老存档兼容）。
+
+### 实体视觉重制（entities.js）
+- 猎犬/潜伏者/派对客剪影重制 + 程序化行走动画 + 顶点色脏污 + 逆光轮廓 + 远近 LOD。**AI 行为（v2.3 遭遇光谱）零改动**。
+
+### 第三人称身体（player.js）
+- V 键第三人称下可见玩家身体（懒挂载 avatar），带走/跑/蹲/开门姿态。身体参与阴影系统。
+
+### 材质贴图根因修复（textures.js）
+- UV/过滤/各向异性/真实尺度统一 + 质感分级（墙纸霉斑沿墙根/天花板边缘聚集+水渍深色边缘环、地毯 micro 等）；`fluor()` 灯管两端 bake 阴极衰变黑环。
+
+### L0 经典感调优（levels.js L0 theme / gen.js）
+- theme 色相压向病态黄（ambient 0xc7b169 / sky 0xffedb5 / light 0xffdf9a；强度未动）；`fixtureEvery` 4→3（灯具 +33%，约 503~550 盏；实际点光源仍按 maxLights 池化）；新增 `flickerRate: 0.15`（坏灯候选比例）。
+- 分区权重 open 0.30→0.15 / part 0.30→0.50；part 隔断双段组 2+rng.int(0,1)、单段概率 0.65；open 半隔断 0.35→0.5；无限区广场概率 0.3→0.2。马尼拉/EXIT/通风管/门系统回归未动。
+
+### 标题屏 3D 化（main.js / css/style.css）
+- 标题状态下复用 renderer 跑 L0 实景慢速环绕 3D 背景；CSS 质感 logo；常驻 v2.4.0 版本水印（种子行保留）。
+
+### 录制模式（input.js）
+- H 键一键隐藏全部 UI/HUD/调试信息（投稿用）；暂停菜单内亦有入口；诊断报错文案（index.html `showBrErr`）改为中性口吻（`?debug` 下仍显示详细）。
+
+### UI 视觉统一（css/style.css 纯 CSS）
+- HUD/菜单统一等宽字体栈 + 后室黄配色 + transform/opacity 动效；死亡屏改为「信号丢失」氛围（glitch + `[ SIGNAL LOST ]` 字条 + 噪点/扫描线）；`ui.js` 未动。
+
+### L37.2 镜面池/裂纹（lv_l372.js）
+- 镜面池高对比反射、裂纹四层描边（透过水面辨识度修复，v2.3 D1 缺口关闭）。
+
+### 七层之物 LeviathanFX（lv_l7.js）
+- LeviathanFX 接入 lv_l7.js；stalk→strike 真实路径验证（伤害 -30hp / 理智 -8 / 击退上浮 / 4 扰动环）。
+
+### 电池删除（player.js / items.js / save.js / main.js）
+- 电池道具及 6 处残留清理全删除；水下照明灯（dive_light）改为无耗电；全工程 `battery` 零残留（`flashBat` 除外）。
+
+### 修复
+- **instanceColor 每帧报错**：根因——three r128 `setProgram` 不看 instancingColor；灯具 InstancedMesh 部分实例写了 `setColorAt` 后共享材质编译出 `USE_INSTANCING_COLOR` program，渲染无 instanceColor 的区块时 `bindingStates` 对 null 调 attributes.get → 每帧崩溃。修复：ballast 关卡给灯具 InstancedMesh **全实例**写色（正常灯具写纯白）。L0→L1 切关期间 0 报错。
+- **死亡原因文案**：根因——`TR.play('fail', {cause})` 把 opts 对象整个传给 `trFail(cause)`，再经 `showDeath` → `texts["[object Object]"]` → 永远回退默认文案；hound/partygoer/steam/lurker/fall/starve 专属文案永不可达。修复：`trFail` 内取 `opts.cause`（transitions.js:236）。7 死因全部验证。
+- v2.2 漏推 `js/levels2.js`：L1 出口走廊可发现性代码（灯牌加大双面/走廊口绿光/尽头冷光+门缝光带/管线渐密，v2.2 W-exits）当时未推上线，本次一并推送（纯上线，无本地改动）。
+
+### 存档（save.js）
+- 存档键 **`backrooms_save_v2` 不变**；v2.4 无新顶层字段、无 key 升级（`flashBat` 保留仅作老存档兼容）。
+
 ## 性能铁律
-- 每区块每材质 1 个 InstancedMesh；fixture 灯光用对象池（≤6 个 PointLight）；无实时阴影（low/mid），high 可选 1 个。
+- 每区块每材质 1 个 InstancedMesh；fixture 灯光用对象池（≤6 个 PointLight）；**实时阴影**：PCFSoft，每关唯一主阴影灯 = 玩家手电 SpotLight（`W.setShadowLevel`），画质分档控制阴影图分辨率（高 2048 / 中 1024 / 低 关闭；移动端 512/512/关）。关/开切换会重编译材质（一次性卡顿）。
 - 单帧区块构建预算 8ms；`world.update` 内计时，超时即停。
 - 卸载：`geometry.dispose()`（实例几何体共享的不删）、移除监听、停循环音、实体冻结。
 - 共享贴图/材质永不释放（Textures 缓存）。
