@@ -975,7 +975,8 @@
     _l0infMisses++;
     // —— 与旧实现逐字一致的超块推导（RNG 消费顺序不可变，否则逐 tile 结果漂移）——
     var rng = new BR.RNG(BR.hashSeed(seed + ':l0inf:' + bx + ',' + by));
-    var hasPlaza = rng.chance(0.3), px = 0, py = 0;
+    // v2.4 W-l0gen：广场概率 0.3→0.2（无限区少些"游戏化"大空地，与主区隔间密度对齐）
+    var hasPlaza = rng.chance(0.2), px = 0, py = 0;
     if (hasPlaza) { px = rng.int(0, 9); py = rng.int(0, 9); }
     var walls = {};
     var nSeg = 2 + rng.int(0, 2), s, horiz, sx, sy, len, k, wx, wy;

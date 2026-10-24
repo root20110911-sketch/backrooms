@@ -233,8 +233,9 @@
     await BR.Cutout.travel('L1', { kind: 'walk', dropText: '你回到了 Level 1。荧光灯依旧嗡鸣。' });
   }
 
-  async function trFail(cause) {
-    // 死亡：镜头倒地
+  async function trFail(opts) {
+    // 死亡：镜头倒地（v2.4 W-deathfix：TR.play 传入的是 opts 对象，死因在 opts.cause）
+    const cause = (opts && opts.cause) || 'default';
     const P = BR.Player;
     BR.Audio.stinger();
     await camAnim(1800, (t, cam) => {
