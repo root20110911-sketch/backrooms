@@ -2,7 +2,7 @@
 * W9（v1.5）：背包修复 + 10 种新道具 + 精确交互。
 * - BR.Items.CONFIG：全部可调数值（策划调这里，不碰逻辑）。
 * - BR.Items.DEFS：9 种全新道具定义（id/名称/说明/图标/类型/堆叠）。
-* 已有道具（绷带/电池/迁跃浆果等 13 种）不在此注册表，数值与行为保持原样。
+* 已有道具（绷带/迁跃浆果等 12 种）不在此注册表，数值与行为保持原样。
 * - 本文件顶层只做纯数据 + 函数定义，不碰 document/THREE（node 测试可直接加载）；
 * 所有 BR.* 引用都在调用时惰性读取。
 * 加载顺序：config.js → utils.js → items.js → … → ui.js（ui.js 把 DEFS 合并进 ITEM_INFO 显示）。
@@ -24,7 +24,7 @@ medkit: { heal: 85, channel: 2.5, maxStack: 3},// 急救包：回血 85，读条
 glowstick: { duration: 180, maxActive: 12, maxStack: 5}, // 荧光棒：微光 180s
 chalk: { maxStack: 5, maxMarks: 200}, // 标记粉笔：每根 1 次标记
 oxygen_tank: { oxygen: 100, seconds: 120, maxStack: 3}, // 便携氧气瓶：水下供氧约 120s/瓶
-dive_light: { drain: 1.5, range: 18}, // 水下照明灯：开灯 1.5/s 耗电
+dive_light: { range: 18}, // v2.4：水下照明灯无耗电（与手电一致，只可开关）
 life_vest: { buoyancy: 2.2}, // 救生衣：浮力系数（调 W8 的 buoyancyModifier 接口）
 diving_suit: { oxygenMax: 10000, drainMul: 0.05, buoyancy: 0.85}, // v2.0 P2 深海潜水服：近乎无限供氧（10000≈按 0.05 倍率极慢消耗）、浮力 0.85（轻微下沉、悬停更稳）、不消耗不掉耐久
 dry_bag: { wetIntervalMul: 5}, // 防水物资袋：浸水损坏间隔 ×5
@@ -34,8 +34,10 @@ wet: { vulnerable: ['cigarette', 'gum'], interval: 6} // 浸水：头部在水�
 
 /* ================= 10 种新道具定义 =================
 * kind: 'use'（消耗使用）/ 'equip'（装备开关）/ 'deploy'（部署到世界）/ 'device'（设备开关）
-* 备用电池（battery）已存在：走 ui.js 原分支（+60），W9 只扩展"手电满时可给水下照明灯充电"。
-* 跃迁浆果（berry）已存在：不计入新增。 */
+* v2.4：备用电池物品已删除，ui.js 的 useItem 电池分支
+* （手电 +60 / 手电满时给水下照明灯充电）已移除；dive_light 取消电量机制：
+* 无耗电、可随意开关（与手电一致，"不加电量负担玩法"）。charge 字段保留
+* 仅为存档形状兼容（老存档读档不丢），游戏逻辑不再读写它。 */
 DEFS: {
 energy_bar: {
 name: '能量棒', kind: 'use', stack: true,
@@ -64,7 +66,7 @@ icon: svg('<rect x="9" y="7" width="6" height="13" rx="3"/><path d="M10.5 7V4.5h
 },
 dive_light: {
 name: '水下照明灯', kind: 'device', stack: false,
-desc: '水下专用照明：开灯持续耗电（1.5/秒）。用"备用电池"充电。',
+desc: '水下专用照明：无耗电，随意开关（与手电一致）。',
 icon: svg('<circle cx="12" cy="12" r="4.6"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4"/><path d="M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7" opacity="0.6"/>')
 },
 life_vest: {
@@ -148,7 +150,7 @@ const G = BR.Game;
 if (!G) return false;
 if (id === 'dive_light') {
 if (BR.Player.diveLight) return false;
-BR.Player.diveLight = { charge: 100, on: false};
+BR.Player.diveLight = { charge: 100, on: false}; // v2.4：charge 遗留字段（存档形状兼容），逻辑不再使用
 if (G.autosave) G.autosave();
 return true;
 }
@@ -277,7 +279,7 @@ _toggleDevice: function (id) {
 const P = BR.Player, U = BR.UI, G = BR.Game;
 if (id === 'dive_light') {
 if (!P.diveLight) { U.toast('没有水下照明灯'); return;}
-if (!P.diveLight.on && P.diveLight.charge <= 0) { U.toast('照明灯没电了，找块备用电池'); return;}
+// v2.4：无耗电，直接开关（与手电一致）
 P.diveLight.on =!P.diveLight.on;
 BR.Audio.uiClick();
 U.toast(P.diveLight.on? '水下照明灯：开': '水下照明灯：关');
@@ -645,7 +647,7 @@ return this.charges[id];
 _syncDiveSpot: function () {
 const P = BR.Player, W = BR.World;
 if (!W ||!W.scene) return;
-const want =!!(P && P.diveLight && P.diveLight.on && P.diveLight.charge > 0);
+const want =!!(P && P.diveLight && P.diveLight.on);
 if (want &&!this._diveSpot) {
 this._diveSpot = new THREE.SpotLight(0x9fd8ff, 1.3, this.CONFIG.dive_light.range, 0.62, 0.5, 1.2);
 W.scene.add(this._diveSpot);
@@ -658,16 +660,9 @@ W.scene.add(this._diveSpot.target);
 if (this._diveSpot) this._diveSpot.visible = want;
 },
 _tickDiveLight: function (dt) {
+// v2.4：水下照明灯无耗电（与手电一致）——不再扣 charge、不再自动熄灭，只保持聚光跟随
 const P = BR.Player;
-if (!P ||!P.diveLight ||!P.diveLight.on) return;
-P.diveLight.charge = Math.max(0, P.diveLight.charge - this.CONFIG.dive_light.drain * dt);
-if (P.diveLight.charge <= 0) {
-P.diveLight.on = false;
-if (BR.UI) {
-BR.UI.toast('水下照明灯没电了！');
-BR.UI.updateInv();
-}
-}
+if (!P ||!P.diveLight ||!P.diveLight.on) { this._syncDiveSpot(); return; }
 this._syncDiveSpot();
 if (this._diveSpot && this._diveSpot.visible && P.camera) {
 this._diveSpot.position.set(P.pos.x, P.eyeY(), P.pos.z);
@@ -771,7 +766,7 @@ rows.push('状态：' + eq(this.equipped.drybag));
 } else if (id === 'dive_light') {
 const dl = P && P.diveLight;
 rows.push('开关：' + (dl && dl.on? '<span style="color:#9fe87a">● 开</span>': '<span style="color:#6a675c">○ 关</span>'));
-rows.push('电量：' + Math.round(dl? dl.charge: 0) + '%');
+rows.push('耗电：无（与手电一致）');
 } else if (id === 'energy_bar') {
 rows.push('耐力：' + Math.round(P? P.stamina: 0) + '/' + this.CONFIG.stamina.max);
 } else if (id === 'medkit') {

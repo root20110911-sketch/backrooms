@@ -15,7 +15,7 @@
     stamina: 100,
     _staminaOut: false,   // 耐力耗尽锁存
     adrenalineT: 0,       // 肾上腺素剩余秒数（>0 时加速+不耗耐力+无视虚弱）
-    diveLight: null,      // 水下照明灯 {charge:0..100, on:bool}（W9；无则 null）
+    diveLight: null,      // 水下照明灯 {on:bool}（W9；无则 null；v2.4 起无耗电，charge 字段仅存档兼容保留）
     // 注：buoyancyModifier / oxygenMax / oxygenDrainMul 由 W8 在下方定义（救生衣/氧气瓶钩子）
     // —— 饥饿惩罚档位（调数值只改这 5 个，注释即文档） ——
     // HUNGER_WEAK = 33：饥饿 ≤33 进入"虚弱"，移速 × HUNGER_WEAK_MUL（总降速 28%，取代旧的 <25 ×0.9）
@@ -25,7 +25,8 @@
     HUNGER_HEAL: 25,
     STARVE_TICK: 5, STARVE_DMG: 2,
     hasFlashlight: false, flashlightOn: false,
-    flashBat: 100,        // 手电电池 0..100：开灯时 1.2/s 耗电，归零自动关灯；电池道具 +60
+    flashBat: 100,        // 遗留字段：v2.4 W-shadowlight 起无电量玩法（手电只有开/关），不再耗电；
+                          // 字段保留仅为存档/读档兼容（save.js/main.js 仍读写它），游戏逻辑不再读取
     camera: null,
     bobPhase: 0, stepAcc: 0,
     trauma: 0,           // 镜头震动 0..1
@@ -238,7 +239,7 @@
       this.stamina = 100; this._staminaOut = false; this.adrenalineT = 0;
       this.diveLight = null;
       this._weakWarned = false; this._weakToastT = 40; this._starveT = 0; // 饥饿惩罚 E：虚弱字幕/归零掉血计时器
-      this.flashBat = 100; // 手电电池回满
+      this.flashBat = 100; // 遗留字段复位（无电量玩法，仅存档兼容）
       // P0-1：新游戏/读档基线显式清手电（回到标题→新游戏不刷新页面时的泄漏）
       this.hasFlashlight = false; this.flashlightOn = false;
     } else {
@@ -268,6 +269,8 @@
     // 第三人称默认关闭，avatar 若已构建则隐藏（不销毁，下次切换复用）
     this.thirdPerson = false;
     if (this.avatar) this.avatar.visible = false;
+    if (this._fpHands) this._fpHands.visible = false; // 第一人称手部同样隐藏复用
+    this._reachT = 0; this._fpOp = 0; this._crouchK = 0; this._swimK = 0; // 姿态状态复位
   };
 
   P.toggleCrouch = function () {
@@ -276,51 +279,103 @@
   };
   P.toggleFlashlight = function () {
     if (!this.hasFlashlight) { BR.UI.toast('你还没有手电筒'); return; }
-    if (!this.flashlightOn && this.flashBat <= 0) { BR.UI.toast('手电筒没电了，找块电池吧'); return; }
+    // v2.4 W-shadowlight：无电量玩法——手电只有开/关两种状态，不再因没电拒绝开启
     this.flashlightOn = !this.flashlightOn;
     BR.Audio.uiClick();
     BR.UI.toast(this.flashlightOn ? '手电筒：开' : '手电筒：关');
   };
 
-  /* ================= 第三人称：极简 3D 火柴人 =================
-   * 圆柱身体、四肢圆柱 + 末端圆球（r128 没有 CapsuleGeometry，用
-   * CylinderGeometry + SphereGeometry 拼）、头一个大圆球。
-   * 单色深灰哑光 MeshLambertMaterial，全身共 10 个 mesh，
-   * 四肢用 pivot Group 包裹以便摆动。
+  /* ================= 第三人称：程序化角色身体（W-playerbody v2.4） =================
+   * "误入后室的普通人"：连帽衫 + 长裤 + 运动鞋。嵌套 pivot 做关节：
+   *   腰(spine) → 颈(headG) / 肩(shL/shR) → 肘(elbL/elbR) → 手；
+   *   髋(hips) → 大腿(legL/legR) → 膝(kneeL/kneeR) → 踝(ankL/ankR) → 鞋。
+   * 程序化几何 + 共享 Lambert 材质；全身约 900 三角（build 时计数校验 <1500）。
+   * 第一人称下 avatar.visible=false（update 第一人称分支保证），相机里看不到自己的头。
    */
   P.buildAvatar = function () {
     if (this.avatar) return this.avatar;
-    const mat = new THREE.MeshLambertMaterial({ color: 0x3b4046 }); // 单色深灰哑光，材质复用
-    const mesh = (geo, x, y, z) => {
+    const M = {
+      hoodie: new THREE.MeshLambertMaterial({ color: 0x46525e }), // 暗蓝灰连帽衫
+      pants: new THREE.MeshLambertMaterial({ color: 0x2e3238 }),  // 炭灰长裤
+      skin: new THREE.MeshLambertMaterial({ color: 0xc99a72 }),   // 皮肤
+      hair: new THREE.MeshLambertMaterial({ color: 0x1f1c19 }),   // 黑发
+      shoe: new THREE.MeshLambertMaterial({ color: 0x23262c }),   // 鞋面
+      sole: new THREE.MeshLambertMaterial({ color: 0x777b82 })    // 鞋底
+    };
+    this._avMats = M;
+    const mesh = (geo, mat, x, y, z) => {
       const m = new THREE.Mesh(geo, mat);
       m.position.set(x, y, z);
       m.frustumCulled = false; // 小物件，避免裁剪抖动
       return m;
     };
-    const g = new THREE.Group();
-    // 躯干：圆柱 r0.11 h0.62，中心 y=1.05（6 段，性能审查：avatar 总三角 <500）
-    const torso = mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.62, 6), 0, 1.05, 0);
-    g.add(torso);
-    // 头：大圆球 r0.16，y=1.58
-    const head = mesh(new THREE.SphereGeometry(0.16, 10, 8), 0, 1.58, 0);
-    g.add(head);
-    // 四肢：pivot Group + 圆柱 + 末端圆球
-    const mkLimb = (r, len, jointR, px, py) => {
-      const piv = new THREE.Group();
-      piv.position.set(px, py, 0);
-      piv.add(mesh(new THREE.CylinderGeometry(r, r, len, 6), 0, -len / 2, 0));
-      piv.add(mesh(new THREE.SphereGeometry(jointR, 6, 4), 0, -len, 0));
-      g.add(piv);
-      return piv;
+    const piv = (x, y, z, parent) => {
+      const g = new THREE.Group();
+      g.position.set(x, y, z);
+      parent.add(g);
+      return g;
     };
-    const armL = mkLimb(0.05, 0.55, 0.065, -0.19, 1.30); // 手臂
-    const armR = mkLimb(0.05, 0.55, 0.065, 0.19, 1.30);
-    const legL = mkLimb(0.065, 0.62, 0.085, -0.10, 0.72); // 腿
-    const legR = mkLimb(0.065, 0.62, 0.085, 0.10, 0.72);
-    g.visible = false;
-    this.avatar = g;
-    this._av = { torso, head, armL, armR, legL, legR };
-    return g;
+    const root = new THREE.Group(); // 脚底，朝向=yaw，前方=-z
+    // —— 骨盆 + 腿 ——
+    const hips = piv(0, 0.96, 0, root);
+    hips.add(mesh(new THREE.BoxGeometry(0.30, 0.18, 0.20), M.pants, 0, 0.02, 0));
+    const mkLeg = (sx) => {
+      const leg = piv(sx * 0.10, -0.02, 0, hips);                       // 髋关节
+      leg.add(mesh(new THREE.CylinderGeometry(0.078, 0.066, 0.44, 8), M.pants, 0, -0.22, 0));
+      const knee = piv(0, -0.44, 0, leg);                               // 膝
+      knee.add(mesh(new THREE.CylinderGeometry(0.062, 0.054, 0.40, 8), M.pants, 0, -0.20, 0));
+      const ank = piv(0, -0.40, 0, knee);                               // 踝
+      ank.add(mesh(new THREE.BoxGeometry(0.105, 0.10, 0.27), M.shoe, 0, -0.045, -0.055));
+      ank.add(mesh(new THREE.BoxGeometry(0.112, 0.03, 0.285), M.sole, 0, -0.085, -0.055));
+      return { leg: leg, knee: knee, ank: ank };
+    };
+    const lL = mkLeg(-1), lR = mkLeg(1);
+    // —— 腰 + 躯干（连帽衫）：挂在 hips 下，蹲伏时髋部下沉会带着上身一起走 ——
+    const spine = piv(0, 0.06, 0, hips); // 相对髋 0.06（世界 1.02）
+    spine.add(mesh(new THREE.CylinderGeometry(0.155, 0.135, 0.50, 10), M.hoodie, 0, 0.25, 0));
+    spine.add(mesh(new THREE.BoxGeometry(0.22, 0.15, 0.05), M.hoodie, 0, 0.08, -0.145)); // 袋鼠兜
+    const hood = mesh(new THREE.SphereGeometry(0.11, 8, 6), M.hoodie, 0, 0.44, 0.125);
+    hood.scale.set(1.15, 0.72, 0.9);
+    spine.add(hood);                                                     // 脑后垂着的兜帽
+    // —— 头 ——
+    const headG = piv(0, 0.50, 0, spine);                                // 颈
+    headG.add(mesh(new THREE.SphereGeometry(0.115, 10, 8), M.skin, 0, 0.10, -0.01));
+    // 头心 1.62 = 站立眼高；无五官（藏脸），头发盖住头顶/脑后
+    const hair = mesh(new THREE.SphereGeometry(0.121, 10, 6, 0, Math.PI * 2, 0, 1.85),
+      M.hair, 0, 0.112, 0.012);
+    hair.scale.set(1.0, 1.0, 1.06);
+    headG.add(hair);
+    // —— 手臂 ——
+    const mkArm = (sx) => {
+      const sh = piv(sx * 0.215, 0.40, 0, spine);                      // 肩
+      sh.add(mesh(new THREE.CylinderGeometry(0.058, 0.052, 0.30, 8), M.hoodie, 0, -0.15, 0));
+      const elb = piv(0, -0.30, 0, sh);                                // 肘
+      elb.add(mesh(new THREE.CylinderGeometry(0.050, 0.044, 0.28, 8), M.hoodie, 0, -0.14, 0));
+      const hand = mesh(new THREE.SphereGeometry(0.052, 8, 6), M.skin, 0, -0.305, -0.01);
+      hand.scale.set(0.9, 1.3, 0.9);
+      elb.add(hand);
+      return { sh: sh, elb: elb };
+    };
+    const aL = mkArm(-1), aR = mkArm(1);
+    root.visible = false;
+    // 三角数自检（手机预算：全身 <1500）
+    let tris = 0;
+    root.traverse((o) => {
+      if (o.isMesh && o.geometry) {
+        const g = o.geometry;
+        tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+      }
+    });
+    this._avTris = Math.round(tris);
+    if (typeof console !== 'undefined') console.log('[playerbody] avatar tris=' + this._avTris);
+    this.avatar = root;
+    this._av = {
+      root: root, hips: hips, spine: spine, headG: headG,
+      legL: lL.leg, kneeL: lL.knee, ankL: lL.ank,
+      legR: lR.leg, kneeR: lR.knee, ankR: lR.ank,
+      shL: aL.sh, elbL: aL.elb, shR: aR.sh, elbR: aR.elb
+    };
+    return root;
   };
 
   // 切换第三人称（input.js 的按键绑定调用；判空由调用方负责）
@@ -344,64 +399,95 @@
     return (q && q.maxLights <= 3) ? 0.5 : 1;
   };
 
-  // avatar 跟随 P.pos/yaw + 四肢动画（仅第三人称调用）
+  // 前伸包络：交互触发后 0.25s 探出、0.3s 收回（开门/拾取的手部示意）
+  P._reachEnv = function () {
+    const rk = this._reachT || 0;
+    if (rk <= 0) return 0;
+    if (rk > 0.30) return Math.min(1, (0.55 - rk) / 0.25);
+    return rk / 0.30;
+  };
+
+  // avatar 姿态：走/跑步态（速度驱动）、蹲伏、交互前伸、待机呼吸、落地顿、游泳划水
+  // （仅第三人称调用；第一人称手部走 _updateFpHands）
   P._updateAvatar = function (dt, world, moving, wantRun) {
     const av = this.buildAvatar();
     const sc = (world && world.scene) || (BR.World && BR.World.scene) || null;
     if (sc && av.parent !== sc) sc.add(av);
     av.visible = true;
-    const A = this._av;
-    // 蹲伏下沉系数（平滑）
-    this._crouchK = BR.damp(this._crouchK || 0, this.crouching ? 1 : 0, 10, dt);
-    const ck = this._crouchK;
-    // —— F1 游泳姿态：眼睛低于所在水域水面 → 身体前倾 + 手脚划水 + 浮力起伏 ——
-    // （第一人称下 avatar 隐藏，姿态只影响第三人称显示；_swimK 供逻辑测试读取）
+    const A = this._av, cfg = C(), t = performance.now() * 0.001;
+    const ck = this._crouchK || 0, reach = this._reachEnv();
+    const landK = this.landDipT || 0; // 落地顿一下（与镜头 landDip 同源）
+    // —— 游泳姿态系数：眼低于水面 → 身体前倾 + 划水 ——
     let swimZn = null;
     if (BR.Swim && typeof BR.Swim.zoneAt === 'function' && this.pos)
       swimZn = BR.Swim.zoneAt(this.pos.x, this.pos.z);
     const swimTarget = (swimZn && this.eyeY() < swimZn.waterY - 0.05) ? 1 : 0;
     this._swimK = BR.damp(this._swimK || 0, swimTarget, 6, dt);
     const sk = this._swimK;
-    // 位置=脚底，朝向=yaw；蹲下时整体下沉；游泳时叠加浮力上下浮动
+    // 根：位置=脚底，朝向=yaw；游泳叠加浮力起伏 + 身体前倾
     av.position.set(this.pos.x,
-      this.pos.y - 0.38 * ck + Math.sin(performance.now() * 0.0018) * 0.12 * sk,
+      this.pos.y + Math.sin(t * 1.8) * 0.12 * sk,
       this.pos.z);
     av.rotation.set(0, this.yaw, 0);
-    if (sk > 0.001) av.rotateX(-0.55 * sk); // 绕本地 X 轴前倾（朝向无关）
-    // 四肢摆动：按 bobPhase 正弦，手臂与腿反相；幅度小；游泳时走划水
-    const swing = this._swingScale() * (wantRun ? 0.85 : 0.55) * (1 - 0.85 * sk);
-    if (moving) {
-      const s = Math.sin(this.bobPhase);
-      A.armL.rotation.x = s * swing;
-      A.armR.rotation.x = -s * swing;
-      A.legL.rotation.x = -s * swing;
-      A.legR.rotation.x = s * swing;
-    } else {
-      // 静止：四肢回正 + 轻微呼吸起伏
-      for (const p of [A.armL, A.armR, A.legL, A.legR])
-        p.rotation.x = BR.damp(p.rotation.x, 0, 8, dt);
-      const br = Math.sin(performance.now() * 0.002) * 0.012;
-      A.torso.position.y = 1.05 + br;
-      A.head.position.y = 1.58 + br;
-    }
-    if (moving) { A.torso.position.y = 1.05; A.head.position.y = 1.58; }
-    // 蹲下：手臂下摆、腿微屈
-    A.armL.rotation.x += ck * 0.35;
-    A.armR.rotation.x += ck * 0.35;
-    A.legL.rotation.x += ck * 0.5;
-    A.legR.rotation.x += ck * 0.5;
-    // F1 游泳划水：手臂交替大幅划动 + 向两侧张开，腿交替打水（rotation.z 取绝对值防累加）
+    if (sk > 0.001) av.rotateX(-0.55 * sk);
+    // —— 步态（速度驱动：幅度与频率都跟 hSpeed；bobPhase 频率已在 update 里按 hSpeed 推进） ——
+    const sScale = this._swingScale();
+    const hSpeed = Math.hypot(this.vel.x, this.vel.z);
+    const spdK = Math.min(1, hSpeed / (cfg.RUN || 5.6));
+    const amp = sScale * (moving ? (0.55 + 0.45 * spdK) * (wantRun ? 1.15 : 0.85) : 0);
+    const step = Math.sin(this.bobPhase);
+    // 腿：大腿摆动 + 膝盖在"前摆相位"弯曲 + 脚踝代偿（脚掌尽量贴地）
+    const thighL = step * 0.95 * amp, thighR = -step * 0.95 * amp;
+    const kneeL = -(0.10 + (moving ? 0.55 * Math.max(0, Math.sin(this.bobPhase - 1.1)) * amp : 0));
+    const kneeR = -(0.10 + (moving ? 0.55 * Math.max(0, Math.sin(this.bobPhase - 1.1 + Math.PI)) * amp : 0));
+    A.legL.rotation.x = thighL + ck * 0.70 + landK * 0.30;
+    A.legR.rotation.x = thighR + ck * 0.70 + landK * 0.30;
+    A.kneeL.rotation.x = kneeL - ck * 1.33 - landK * 0.45;
+    A.kneeR.rotation.x = kneeR - ck * 1.33 - landK * 0.45;
+    A.ankL.rotation.x = -kneeL * 0.55 + ck * 0.63 + landK * 0.22;
+    A.ankR.rotation.x = -kneeR * 0.55 + ck * 0.63 + landK * 0.22;
+    // 手臂：与同侧腿反相；肘常微屈，跑时更屈；交互时右手前伸
+    const armAmp = amp * 0.7;
+    const elbB = moving ? (wantRun ? 0.55 : 0.30) + 0.15 * Math.abs(step) : 0.22;
+    A.shL.rotation.x = -step * armAmp + ck * 0.18 - reach * 0.25;
+    A.shR.rotation.x = step * armAmp * (1 - reach) + ck * 0.18 + reach * 1.25;
+    A.shL.rotation.z = 0.07; A.shR.rotation.z = -0.07; // 手臂微张，不贴躯干
+    A.elbL.rotation.x = elbB - reach * 0.1;
+    A.elbR.rotation.x = elbB * (1 - reach) + reach * 0.25;
+    // 躯干：上身起伏（腿不动，脚不离地）+ 速度前倾 + 蹲伏前倾 + 落地顿
+    // spine 是 hips 的子节点（相对 y 基准 0.06），髋部下沉自动带下上身
+    const bobA = moving ? (wantRun ? 0.045 : 0.028) * sScale : 0;
+    A.spine.position.y = 0.06 + Math.abs(Math.sin(this.bobPhase)) * bobA;
+    A.hips.position.y = 0.96 - 0.30 * ck - landK * 0.07;
+    const lean = (moving ? (wantRun ? 0.16 : 0.07) * (0.4 + 0.6 * spdK) : 0)
+      + ck * 0.32 + landK * 0.22 + reach * 0.10;
+    A.spine.rotation.x = lean;
+    // 待机呼吸：胸廓微胀 + 头微动（走路时幅度压低，被步态掩盖）
+    const br = Math.sin(t * 2.1) * 0.5 + 0.5;
+    const brAmp = moving ? 0.35 : 1;
+    A.spine.scale.set(1 + br * 0.006 * brAmp, 1 + br * 0.010 * brAmp, 1 + br * 0.012 * brAmp);
+    A.headG.position.y = 0.50 + br * 0.008 * brAmp;
+    A.headG.rotation.x = -lean * 0.5 + ck * -0.18 - landK * 0.10 + reach * 0.08
+      + Math.sin(t * 0.9) * 0.02;
+    A.headG.rotation.y = Math.sin(t * 0.53) * 0.05 * (moving ? 0.3 : 1); // 待机微转头
+    // 游泳划水（与步态按 sk 混合）
     if (sk > 0.001) {
-      const st = performance.now() * 0.001;
-      A.armL.rotation.x += Math.sin(st * 4.2) * 0.9 * sk;
-      A.armR.rotation.x += Math.sin(st * 4.2 + Math.PI) * 0.9 * sk;
-      A.legL.rotation.x += Math.sin(st * 3.1) * 0.55 * sk;
-      A.legR.rotation.x += Math.sin(st * 3.1 + Math.PI) * 0.55 * sk;
-      A.armL.rotation.z = 0.4 * sk;
-      A.armR.rotation.z = -0.4 * sk;
-    } else {
-      A.armL.rotation.z = 0;
-      A.armR.rotation.z = 0;
+      const bl = (cur, tgt) => cur * (1 - sk) + tgt * sk;
+      const s4 = Math.sin(t * 4.2), s4b = Math.sin(t * 4.2 + Math.PI);
+      const s3 = Math.sin(t * 3.1), s3b = Math.sin(t * 3.1 + Math.PI);
+      A.shL.rotation.x = bl(A.shL.rotation.x, s4 * 0.95);
+      A.shR.rotation.x = bl(A.shR.rotation.x, s4b * 0.95);
+      A.shL.rotation.z = bl(A.shL.rotation.z, 0.45);
+      A.shR.rotation.z = bl(A.shR.rotation.z, -0.45);
+      A.elbL.rotation.x = bl(A.elbL.rotation.x, 0.5 + 0.3 * Math.max(0, s4));
+      A.elbR.rotation.x = bl(A.elbR.rotation.x, 0.5 + 0.3 * Math.max(0, s4b));
+      A.legL.rotation.x = bl(A.legL.rotation.x, s3 * 0.35);
+      A.legR.rotation.x = bl(A.legR.rotation.x, s3b * 0.35);
+      A.kneeL.rotation.x = bl(A.kneeL.rotation.x, -(0.3 + 0.4 * Math.max(0, -s3)));
+      A.kneeR.rotation.x = bl(A.kneeR.rotation.x, -(0.3 + 0.4 * Math.max(0, -s3b)));
+      A.spine.rotation.x = bl(A.spine.rotation.x, 0.15);
+      A.headG.rotation.x = bl(A.headG.rotation.x, -0.35);
+      A.hips.position.y = bl(A.hips.position.y, 0.96);
     }
   };
 
@@ -410,7 +496,7 @@
     const cfg = C();
     const cam = this.camera;
     const ck = this._crouchK || 0;
-    const headY = this.pos.y + (1.58 - 0.38 * ck);
+    const headY = this.pos.y + (1.62 - 0.30 * ck); // 头心 1.62；蹲伏髋降 0.30 同步
     const hx = this.pos.x, hz = this.pos.z;
     const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw); // 前
     const rx = Math.cos(this.yaw), rz = -Math.sin(this.yaw);  // 右
@@ -440,6 +526,62 @@
       cam.fov = BR.damp(cam.fov, fovT, 6, dt);
       cam.updateProjectionMatrix();
     }
+  };
+
+  /* ================= 第一人称手部（AAA_REF 6.2 蹲伏露手，低成本） =================
+   * 相机子节点：两只简化手臂（袖管 box + 手 sphere）。平时不可见；
+   * 蹲伏时右手前探淡入（Outlast 式"试探的手"），交互（开门/拾取）时双手前伸。
+   * 只在第一人称渲染；第三人称/坐骑态隐藏。透明材质独立实例，不污染身体材质。
+   */
+  P.buildFpHands = function () {
+    if (this._fpHands) return this._fpHands;
+    const sleeveM = new THREE.MeshLambertMaterial({ color: 0x3b4550, transparent: true, opacity: 0 });
+    const skinM = new THREE.MeshLambertMaterial({ color: 0xc99a72, transparent: true, opacity: 0 });
+    this._fpMats = [sleeveM, skinM];
+    const g = new THREE.Group();
+    const mkArm = (sx) => {
+      const a = new THREE.Group();
+      // 相机空间落位：右下区域，保证 pitch -0.15~-0.4 时手部在画面内（经 harness 实测帧定位）
+      a.position.set(sx * 0.26, -0.20, -0.30);
+      a.rotation.set(-0.15, sx * 0.30, sx * -0.08); // 向画面中央微收
+      const sl = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.34), sleeveM);
+      sl.position.set(0, 0, -0.15);
+      sl.frustumCulled = false;
+      const hd = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), skinM);
+      hd.scale.set(0.85, 0.7, 1.2);
+      hd.position.set(0, 0, -0.36); // 嵌进袖口，露在外面够大才看得见
+      hd.frustumCulled = false;
+      a.add(sl); a.add(hd); g.add(a);
+      return a;
+    };
+    this._fpArmL = mkArm(-1);
+    this._fpArmR = mkArm(1);
+    g.visible = false;
+    this._fpHands = g;
+    return g;
+  };
+
+  P._updateFpHands = function (dt, world) {
+    const g = this.buildFpHands();
+    const sc = (world && world.scene) || (BR.World && BR.World.scene) || null;
+    if (sc) {
+      if (g.parent !== this.camera) this.camera.add(g);
+      if (this.camera.parent !== sc) sc.add(this.camera); // 相机进场景，子节点才渲染
+    }
+    const ck = this._crouchK || 0, reach = this._reachEnv();
+    const target = Math.max(ck * 0.75, reach); // 蹲伏 0.75 / 交互全显
+    this._fpOp = BR.damp(this._fpOp || 0, target, 8, dt);
+    const op = this._fpOp;
+    g.visible = op > 0.01;
+    if (!g.visible) return;
+    for (const m of this._fpMats) m.opacity = op;
+    // 蹲伏：右手前探（试探的手）；交互：双手前伸（落位经 harness 实测，保证在视锥内）
+    this._fpArmR.position.z = -0.30 - ck * 0.08 - reach * 0.14;
+    this._fpArmR.position.y = -0.20 + ck * 0.02 + reach * 0.05;
+    this._fpArmR.rotation.x = -0.15 - ck * 0.12 - reach * 0.20;
+    this._fpArmL.position.z = -0.30 - reach * 0.12;
+    this._fpArmL.position.y = -0.20 + reach * 0.04;
+    this._fpArmL.rotation.x = -0.15 - reach * 0.18;
   };
 
   P.hurt = function (n, cause) {
@@ -928,15 +1070,8 @@
       BR.UI.toast('你饿得发慌，回血变慢了，找点吃的吧！', 3200);
     } else if (this.hunger >= 30) this._hungerWarned = false;
 
-    // —— 手电电池：开灯时 1.2/s 耗电，归零自动关灯 ——
-    if (this.flashlightOn && this.hasFlashlight) {
-      this.flashBat = Math.max(0, this.flashBat - dt * 1.2);
-      if (this.flashBat <= 0) {
-        this.flashlightOn = false;
-        BR.UI.toast('手电筒没电了！');
-        if (BR.UI.updateInv) BR.UI.updateInv();
-      }
-    }
+    // v2.4 W-shadowlight：删除手电耗电逻辑——无电量玩法，手电只有开/关两种状态，
+    // 不再因没电自动关闭（flashBat 字段保留，仅存档兼容）
 
     // —— 蹲伏眼高 ——
     const eyeT = this.crouching ? cfg.CROUCH_EYE : cfg.EYE;
@@ -965,7 +1100,11 @@
     const bobX = moving ? Math.sin(this.bobPhase) * 0.035 * hb * runK : 0;
     const bobRoll = moving ? Math.sin(this.bobPhase) * 0.014 * hb * runK : 0;
 
-    // —— 第三人称：火柴人跟随与动画 ——
+    // —— 姿态系数（第一/第三人称共用）：蹲伏平滑 + 交互前伸计时 ——
+    // W-playerbody：_crouchK/_reachT 供第三人称身体与第一人称手部共用；不碰移动数值
+    this._crouchK = BR.damp(this._crouchK || 0, this.crouching ? 1 : 0, 10, dt);
+    this._reachT = Math.max(0, (this._reachT || 0) - dt);
+    // —— 第三人称：身体跟随与动画 ——
     if (this.thirdPerson) this._updateAvatar(dt, world, moving, wantRun);
 
     // —— 镜头 ——
@@ -986,12 +1125,15 @@
     if (this.mountHandle) {
       this.trauma = Math.max(0, this.trauma - dt * 1.6);
       this.landDipT = Math.max(0, this.landDipT - dt * 3);
+      if (this._fpHands) this._fpHands.visible = false; // 坐骑态相机由 handle 驱动，手部不渲染
     } else
     if (this.thirdPerson) {
       // 肩视角（走独立逻辑，第一人称逻辑不动）
+      if (this._fpHands) this._fpHands.visible = false; // 第三人称只渲染身体，不渲染相机手
       this._updateThirdCamera(dt, world, wantRun, moving);
     } else {
-      if (this.avatar) this.avatar.visible = false; // 第一人称隐藏，避免看到头内部
+      if (this.avatar) this.avatar.visible = false; // 第一人称隐藏身体，避免看到头内部
+      this._updateFpHands(dt, world); // W-playerbody：蹲伏露手 / 交互前伸（其余时间不可见）
       // F1：水中浮力感 —— 第一人称镜头轻微上下浮动（第三人称走 avatar 浮动）
       const buoyY = (BR.Swim && BR.Swim.inWater) ? Math.sin(performance.now() * 0.0016) * 0.06 : 0;
       this.camera.position.set(
@@ -1034,6 +1176,7 @@
       } else if (cur) BR.UI.setPrompt(cur.prompt()); // 刷新动态文本
     }
     if (input.consumeInteract() && this._curIt) {
+      this._reachT = 0.55; // W-playerbody：交互前伸示意（开门/拾取，第三人称身体 + 第一人称手部共用）
       this._curIt.use();
     }
     // —— 开发者模式：作弊冻结（v2.2）——
