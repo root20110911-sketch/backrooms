@@ -51,24 +51,23 @@
   const _BALLAST_DIM = new THREE.Color(0x6a6a6a); // 垂死灯具面板 bake 微暗（instanceColor）
   const _WHITE = new THREE.Color(0xffffff);       // instanceColor 全实例写色用（r128 混用崩溃规避）
   let _beamTexCache = null, _dotTexCache = null, _shaftTexCache = null;
-  // 手电光锥渐变纹理：纵向近端弱→中段峰值→远端灭，横向边缘羽化（canvas 顶 = 光束远端）
+  // 手电光锥渐变纹理：alpha 只沿轴向变化——近端几乎不可见（避免糊脸）→0.55 处峰值→远端收到 0。
+  // v2.5 F6(A4-04)：锥面已改径向对称的开口锥面网格，横向（绕锥一周）必须均匀：
+  // 旧版给交叉面片侧边用的横向 sin 羽化绕锥一周会留下明暗带，故去掉横向项。
+  // 行序：canvas 顶行（j=0）经 flipY 对应 uv v=1 = 锥面远端，故 s = 1 - j/255（0=近端 → 1=远端）。
   function _beamTexture() {
     if (_beamTexCache) return _beamTexCache;
-    const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+    const c = document.createElement('canvas'); c.width = 4; c.height = 256;
     const x = c.getContext('2d');
-    const img = x.createImageData(64, 256);
+    const img = x.createImageData(4, 256);
     for (let j = 0; j < 256; j++) {
-      const v = j / 255; // 0=底（近相机端）→1=顶（远端）
-      // 纵向：近端几乎不可见（避免糊脸）→0.55 处峰值→远端灭
-      const axial0 = v < 0.55 ? (0.03 + 0.97 * (v / 0.55)) : (1 - (v - 0.55) / 0.45);
+      const s = 1 - j / 255; // 0=近相机端 → 1=远端
+      const axial0 = s < 0.55 ? (0.03 + 0.97 * (s / 0.55)) : (1 - (s - 0.55) / 0.45);
       const axial = Math.pow(Math.max(0, axial0), 1.4);
-      for (let i = 0; i < 64; i++) {
-        const u = i / 63;
-        const edge = Math.pow(Math.sin(Math.PI * u), 1.5);
-        const a = Math.max(0, Math.min(1, axial * edge));
-        const k = (j * 64 + i) * 4;
+      for (let i = 0; i < 4; i++) {
+        const k = (j * 4 + i) * 4;
         img.data[k] = 255; img.data[k + 1] = 244; img.data[k + 2] = 220;
-        img.data[k + 3] = Math.round(a * 255);
+        img.data[k + 3] = Math.round(axial * 255);
       }
     }
     x.putImageData(img, 0, 0);
@@ -261,7 +260,7 @@
       this.flashSpot.shadow.bias = -0.0025;
       this.scene.add(this.flashSpot); this.scene.add(this.flashSpot.target);
       this.setShadowLevel(BR.QUALITY ? (BR.QUALITY.shadow | 0) : 0);
-      this._buildFlashFx(); // 手电光锥 + 锥内尘埃（加法假体，GPU Gems 交叉面片手法）
+      this._buildFlashFx(); // 手电光锥 + 锥内尘埃（加法假体，开口锥面网格）
 
       // 关卡内容（门/道具/事件物）由 levels.js 注册
       if (BR.Levels[map.level] && BR.Levels[map.level].buildContent) {
@@ -299,6 +298,8 @@
     this.buildQueue = [];
     this.contentHooks.clear();
     this.interactables = []; this.interactMeshes = [];
+    this.propColliders = []; // v2.5 道具碰撞：跨关整表清空
+    this._vents = []; // v2.5 F6(A1-08)：通风管记录跨关清空——不调 buildVents 的关卡（如 L3）不继承上一关数据
     this.doors = {}; this.fixtures = []; this.lights = [];
     // v1.5 W1：跨关扫尾 —— 残留的蒸汽循环音源清掉（卸区块时已逐个停，这里防漏）
     if (BR.Audio && BR.Audio.removeLoop)
@@ -416,6 +417,32 @@
             dummy.position.set(wx, 0, wz); dummy.rotation.set(-Math.PI / 2, 0, 0);
             dummy.scale.set(1, 1, 1); dummy.updateMatrix();
             floorM.push(dummy.matrix.clone());
+            // W-fix（马尼拉安全屋天花板黑洞）：门 tile 是墙值（0），旧逻辑只补地板、
+            // 从不补天花板 → 门洞整列（3×3m）顶部敞向虚空，门外看门框上方是纯黑梯形，
+            // 而门内/走廊的地板 tile 天花板都完好。与补地板同理补天花板，但仅当任一
+            // 相邻地板 tile 本身有吊顶（非 openCeil）时才补——露天/自建吊顶关卡
+            // （L11/L94 全图 openCeil、L188 中庭）不会凭空多出引擎天花板。
+            if (!this.openCeilAt(tx, ty) &&
+                ((isGround(tx + 1, ty) && !this.openCeilAt(tx + 1, ty)) ||
+                 (isGround(tx - 1, ty) && !this.openCeilAt(tx - 1, ty)) ||
+                 (isGround(tx, ty + 1) && !this.openCeilAt(tx, ty + 1)) ||
+                 (isGround(tx, ty - 1) && !this.openCeilAt(tx, ty - 1)))) {
+              dummy.position.set(wx, wallH, wz); dummy.rotation.set(Math.PI / 2, 0, 0);
+              dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+              ceilM.push(dummy.matrix.clone());
+              // 门楣上方到天花板的竖向空档：门扇高 dh=min(2.6, wallH-0.4)（buildDoorMesh
+              // 同式），门框顶只到 dh+0.18，天花板补上后仍留一条横缝。补一段与相邻墙
+              // 同材质、同截面（整 tile）的过梁墙体封住；仅空档 <1m 的常规关卡补，
+              // wallH=12 的 L188 等自建吊顶关卡跳过（其门洞上方由自建结构处理）。
+              const dhF = Math.min(2.6, wallH - 0.4);
+              const gapBot = dhF + 0.18, gapH = wallH - gapBot;
+              if (gapH > 0.01 && gapH < 1.0) {
+                dummy.position.set(wx, gapBot + gapH / 2, wz); dummy.rotation.set(0, 0, 0);
+                dummy.scale.set(1, gapH, 1); dummy.updateMatrix();
+                wallM.push(dummy.matrix.clone());
+                dummy.scale.set(1, 1, 1);
+              }
+            }
           }
           if (!hasDoor && !noWall &&
               (isGround(tx + 1, ty) || isGround(tx - 1, ty) ||
@@ -506,6 +533,8 @@
     }
     // 移除该区块的交互物与灯具记录
     this.interactables = this.interactables.filter(it => it.chunkKey !== chunk.key);
+    // v2.5 道具碰撞：与 interactables 同款，按 chunkKey 清掉该区块的登记（钩子重跑会重新登记）
+    if (this.propColliders) this.propColliders = this.propColliders.filter(c => c.chunkKey !== chunk.key);
     this.interactMeshes = this.interactMeshes.filter(mm => {
       const it = mm.userData.it;
       return it && it.chunkKey !== chunk.key;
@@ -857,31 +886,67 @@
     }
   };
 
-  /* ---- 手电光锥 + 锥内尘埃（GPU Gems 交叉面片手法，加法混合） ---- */
+  /* ---- 手电光锥 + 锥内尘埃（开口锥面网格 + 轴向 alpha 羽化，加法混合） ---- */
   W._buildFlashFx = function () {
     const lp = this._lp || {};
     const coneLen = 15, ang = 0.42; // 视觉锥略短于光照距离（30m），避免穿墙穿雾
     const farW = 2 * coneLen * Math.tan(ang);
-    const mat = new THREE.MeshBasicMaterial({
-      map: _beamTexture(), color: lp.coneColor || 0xfff2d8,
-      transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending,
+    // v2.5 F6(A4-04)：fresnel 型 shader——alpha 再乘 |dot(法线,视线)|：锥面在
+    // 轮廓处（法线⊥视线）渐隐为 0，纯锥面网格在亮关留下的柔边"灯泡"轮廓也压掉；
+    // 轴向羽化仍由 _beamTexture 提供（uv.y=1 为远端）。uOpacity 由 _updateFx 按
+    // coneFade 逐帧写（0.26 为 fresnel 衰减后的观感标定：正对片段 |dot|≈0.41，
+    // 等效峰值 ≈0.11，与原面片版 0.07 同级略亮；轮廓处恒为 0）。
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(lp.coneColor || 0xfff2d8) },
+        uOpacity: { value: 0 },
+        uMap: { value: _beamTexture() }
+      },
+      vertexShader: [
+        'varying vec2 vUv;',
+        'varying vec3 vNormal;',
+        'varying vec3 vViewDir;',
+        'void main() {',
+        '  vUv = uv;',
+        '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+        '  vNormal = normalMatrix * normal;',
+        '  vViewDir = -mv.xyz;',
+        '  gl_Position = projectionMatrix * mv;',
+        '}'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform vec3 uColor;',
+        'uniform float uOpacity;',
+        'uniform sampler2D uMap;',
+        'varying vec2 vUv;',
+        'varying vec3 vNormal;',
+        'varying vec3 vViewDir;',
+        'void main() {',
+        '  float axial = texture2D(uMap, vUv).a;',
+        '  float fr = abs(dot(normalize(vNormal), normalize(vViewDir)));',
+        '  gl_FragColor = vec4(uColor, axial * fr * uOpacity);',
+        '  #include <tonemapping_fragment>',
+        '  #include <encodings_fragment>',
+        '}'
+      ].join('\n'),
+      transparent: true, blending: THREE.AdditiveBlending,
       depthWrite: false, side: THREE.DoubleSide, fog: false
     });
     this._levelMats.push(mat);
     const grp = new THREE.Group();
-    for (let i = 0; i < 3; i++) {
-      const g = new THREE.PlaneGeometry(farW, coneLen, 1, 6);
-      const pos = g.attributes.position; // 收腰：近端窄
-      for (let vi = 0; vi < pos.count; vi++) {
-        const t = (pos.getY(vi) + coneLen / 2) / coneLen; // 0 近 → 1 远
-        pos.setX(vi, pos.getX(vi) * (0.12 + 0.88 * t));
-      }
-      g.rotateX(-Math.PI / 2); g.translate(0, -0.05, -coneLen / 2 - 0.4); // 近端在相机前方 0.4m
-      const m = new THREE.Mesh(g, mat);
-      m.rotation.z = i * Math.PI / 3;
-      m.userData.noShadow = true; m.frustumCulled = false;
-      grp.add(m);
-    }
+    // v2.5 F6(A4-04)：原 GPU Gems 交叉面片（3 片 PlaneGeometry 绕轴相交）的边线/折线在
+    // 加色混合下显形——亮关呈以视线中心为汇聚点的放射 X 线、暗关呈带矩形远端边框的
+    // 玻璃梯形罩。改用径向对称的开口锥面网格（CylinderGeometry 开放端）：无交叉面、
+    // 无直线硬边；配合 _beamTexture 的纯轴向 alpha 羽化（近端≈0、远端=0），锥口不显
+    // 边框。锥长/张角/近端口径（0.12 收腰比）与旧面片一致；材质换 fresnel shader
+    // （见上方 mat 注释）并按观感标定等效亮度，coneFade 淡入淡出与逐帧跟随逻辑
+    // （_updateFx）不变；单网格 24×12 段 + 单个 shader，帧率成本同级。
+    const cg = new THREE.CylinderGeometry(farW / 2, 0.12 * farW / 2, coneLen, 24, 12, true);
+    cg.rotateX(-Math.PI / 2); // +Y 端（大口、半径 farW/2）转到 -Z（相机前方远端）
+    cg.translate(0, -0.05, -coneLen / 2 - 0.4); // 近端在相机前方 0.4m（与旧面片一致）
+    const cm = new THREE.Mesh(cg, mat);
+    cm.userData.noShadow = true; cm.frustumCulled = false;
+    grp.add(cm);
     grp.visible = false; grp.userData.noShadow = true;
     this.scene.add(grp);
     this.flashCone = grp;
@@ -980,7 +1045,9 @@
       if (this.flashCone.visible && cam) {
         this.flashCone.position.set(px, P.eyeY(), pz);
         this.flashCone.quaternion.copy(cam.quaternion); // 严格绑定相机朝向
-        this.flashCone.children[0].material.opacity = 0.07 * cf;
+        const cmat = this.flashCone.children[0].material;
+        cmat.opacity = 0.26 * cf; // F6：fresnel 衰减后的观感标定（原交叉面片版 0.07）
+        if (cmat.uniforms && cmat.uniforms.uOpacity) cmat.uniforms.uOpacity.value = cmat.opacity;
       }
     }
     if (this.flashDust) {
@@ -1058,12 +1125,75 @@
     }
     return true;
   };
-  // 轴分离移动（先 x 后 z，贴墙滑动）
-  W.moveCircle = function (pos, dx, dz, radius) {
+  /* ---- v2.5 道具碰撞（仅玩家：moveCircle 第 5 参 useProps 才启用；
+   * 实体/AI 不走这里，W.blocked / W.los 语义不变） ----
+   * 登记：视觉尺寸未缩，内部统一 ×0.88 存为碰撞体；
+   * chunkKey 由世界坐标推导（tile 坐标 → chunkOf），供 unloadChunkMeshes 按区块清除、
+   * dispose 整表清空；登记点都在区块钩子内，钩子重跑即重新登记，不重复堆积。
+   * opts: { rot（弧度，网格 rotation.y）, floor（L188 楼层号）, yBase（道具底面高度）, tag（可选字符串，供 W.removePropByTag 按标签移除） } */
+  const PROP_SHRINK = 0.88;
+  W.addPropBox = function (cx, cz, hw, hd, opts) {
+    opts = opts || {};
+    this.propColliders = this.propColliders || [];
+    const rot = opts.rot || 0;
+    this.propColliders.push({
+      kind: 'box', x: cx, z: cz,
+      hw: hw * PROP_SHRINK, hd: hd * PROP_SHRINK,
+      rot, cos: Math.cos(rot), sin: Math.sin(rot),
+      floor: opts.floor, yBase: opts.yBase, tag: opts.tag,
+      chunkKey: chunkOf(Math.floor(cx / T), Math.floor(cz / T))
+    });
+  };
+  W.addPropCircle = function (cx, cz, r, opts) {
+    opts = opts || {};
+    this.propColliders = this.propColliders || [];
+    this.propColliders.push({
+      kind: 'circle', x: cx, z: cz, r: r * PROP_SHRINK,
+      floor: opts.floor, yBase: opts.yBase, tag: opts.tag,
+      chunkKey: chunkOf(Math.floor(cx / T), Math.floor(cz / T))
+    });
+  };
+  // 按 tag 移除道具碰撞体（如浆果灌木采摘后立即清掉，不等区块卸载）；无匹配时静默
+  W.removePropByTag = function (tag) {
+    if (!this.propColliders || tag == null) return;
+    this.propColliders = this.propColliders.filter(c => c.tag !== tag);
+  };
+  W.circleFreeProps = function (nx, nz, radius) {
+    // 必须走 this.circleFree：L188/L11 的 wrap（楼层 AABB / 车辆有向矩形）叠加生效
+    if (!this.circleFree(nx, nz, radius)) return false;
+    const cs = this.propColliders;
+    if (!cs || !cs.length) return true;
+    for (let i = 0; i < cs.length; i++) {
+      const c = cs[i];
+      // 楼层过滤（floor/yBase 为 0 是有效值，用 != null 判“非空”，不能用真值判断）
+      if (c.floor != null && this._l188floor != null && c.floor !== this._l188floor) continue;
+      if (c.yBase != null && BR.Player && BR.Player.pos &&
+          Math.abs(BR.Player.pos.y - c.yBase) > 1.3) continue;
+      if (c.kind === 'circle') {
+        const dx = nx - c.x, dz = nz - c.z, rr = radius + c.r;
+        if (dx * dx + dz * dz < rr * rr) return false;
+      } else if (c.rot) {
+        // 有向矩形：局部坐标判定（与 lv_l11.js carObstacles 的 lx/lz 同约定）
+        const dx = nx - c.x, dz = nz - c.z;
+        const lx = dx * c.cos - dz * c.sin, lz = dx * c.sin + dz * c.cos;
+        if (Math.abs(lx) < c.hw + radius && Math.abs(lz) < c.hd + radius) return false;
+      } else {
+        // AABB：最近点距离判定（与 lv_l188.js wrap 同写法）
+        const qx = nx < c.x - c.hw ? c.x - c.hw : (nx > c.x + c.hw ? c.x + c.hw : nx);
+        const qz = nz < c.z - c.hd ? c.z - c.hd : (nz > c.z + c.hd ? c.z + c.hd : nz);
+        const dx = nx - qx, dz = nz - qz;
+        if (dx * dx + dz * dz < radius * radius) return false;
+      }
+    }
+    return true;
+  };
+  // 轴分离移动（先 x 后 z，贴墙滑动）；useProps 为真时两轴都查道具碰撞，
+  // 为假/缺省时行为与改动前逐字一致（仍走 this.circleFree，wrap 照常生效）
+  W.moveCircle = function (pos, dx, dz, radius, useProps) {
     let nx = pos.x + dx;
-    if (!this.circleFree(nx, pos.z, radius)) nx = pos.x;
+    if (!(useProps ? this.circleFreeProps(nx, pos.z, radius) : this.circleFree(nx, pos.z, radius))) nx = pos.x;
     let nz = pos.z + dz;
-    if (!this.circleFree(nx, nz, radius)) nz = pos.z;
+    if (!(useProps ? this.circleFreeProps(nx, nz, radius) : this.circleFree(nx, nz, radius))) nz = pos.z;
     pos.x = nx; pos.z = nz;
   };
 
