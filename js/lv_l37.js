@@ -674,7 +674,8 @@
     FX37.caustTex = caTex || null;
     M.caust = caTex ? new THREE.MeshBasicMaterial({
       // v2.0 P3：浅水区过曝微调 0.30→0.24（波光保留，死白减轻）
-      map: caTex, transparent: true, opacity: 0.24,
+      // v2.5 F1：0.24→0.18（审计 A4-01 水面加色烧白，sink 机位 Y>240 占 11.1%）
+      map: caTex, transparent: true, opacity: 0.18,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     }) : null;
     // v2.1 W-l37：水下仰视层 —— BackSide 加色焦散，只在水下看得见
@@ -717,14 +718,15 @@
     });
     M.streak = new THREE.MeshBasicMaterial({ // 水面灯带倒影（参考图1/2：顶部灯带明亮倒影）
       // v2.0 P3：浅水区过曝微调 0.20→0.14（水面更通透后加色层更显，压一点防死白）
-      color: 0xd8f2ff, transparent: true, opacity: 0.14,
+      // v2.5 F1：0.14→0.08（审计 A4-01）
+      color: 0xd8f2ff, transparent: true, opacity: 0.08,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     });
     M.streakCol = new THREE.MeshBasicMaterial({ // 柱倒影
       color: 0xbfe0f5, transparent: true, opacity: 0.10,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
     });
-    M.lightBar = new THREE.MeshBasicMaterial({ color: 0xf2fbff }); // 天花板灯带
+    M.lightBar = new THREE.MeshBasicMaterial({ color: 0xdfeef5 }); // 天花板灯带（v2.5 F1：纯白 0xf2fbff→0xdfeef5 压亮）
     M.rail = new THREE.MeshLambertMaterial({ color: 0x9fb6c0 }); // v2.3：大楼梯扶手
     // v2.1 W-l37：日光门材质（→L37.2 预留；跳转逻辑由总协调接线）
     var gateTex = BR.Textures.get('sunlit_gate');
@@ -1969,13 +1971,22 @@
   BR.Levels.L37 = {
     name: 'Level 37 ——「泳池房」',
     theme: {
-      bg: 0xd7e6ec, fogNear: 12, fogFar: 60, ambient: 0xf2f7f9, ambInt: 0.9,
-      sky: 0xeaf3f6, ground: 0xa9c6d2, light: 0xffffff, lightInt: 0.55,
+      // v2.5 F1 过曝修复（审计 A4-01）：雾色压深（雾=bg，近白雾洗远景是主因）、
+      // ambInt 0.9→0.58、本关单独 exposure 0.60（main.js 支持 theme.exposure）——目标 YAVG 140–160
+      bg: 0xa9c3cf, fogNear: 12, fogFar: 60, ambient: 0xf2f7f9, ambInt: 0.58, exposure: 0.60,
+      sky: 0xd6e6ec, ground: 0xa9c6d2, light: 0xffffff, lightInt: 0.55,
       wallH: 3.2, wall: 'pool_tile', floor: 'pool_floor', ceil: 'pool_ceil',
       surface: 'tile', fixtureEvery: 5, hum: 0
     },
 
     buildContent: function (map, W) {
+      // v2.5 道具碰撞 survey 结论：本关零登记（逐项核对过）——
+      //   瓷柱阵/拱门 mouth 柱：落在 tile=0 上，tile 碰撞已覆盖，且多在浅水里；
+      //   拱门 passage 柱/扶梯/深水浮标/小黄鸭/跳水台南腿：在水里或属水道构件；
+      //   跳水台面/池沿压边/坑内台阶/大楼梯扶手：可踏平台或通路构件；
+      //   浅水出口框/异常门/日光门：出口构件或墙面开口。干燥地面上无符合
+      //   「高 ≥1m、自由站立、非通路」条件的实心道具，故不硬凑登记，
+      //   池区通行与游泳/潜水路线零影响。
       BR.Swim.clearZones();
       W._l37fx = {}; // F1 测试钩子重置
       // F1：重置关卡特效状态（水花粒子/跳水/跳水台站立区）
