@@ -311,6 +311,8 @@
         win.position.set(wx, 1.25, 1.21); g.add(win);
       });
       W.reg(group, g);
+      // v2.5 道具碰撞：小屋屋体 2.6×2.4（实测，高 2.0；屋顶在 y≥2.0 不计）
+      W.addPropBox(cx, cz, 1.3, 1.2, { rot: rotY, yBase: 0 });
       var id = 'house_' + p.tx + '_' + p.ty;
       var lores = [
         '窗帘后好像有人影，但你敲门时，里面安静得过分。',
@@ -356,6 +358,8 @@
         trackMat(W, new THREE.MeshLambertMaterial({ color: 0x9aa0a8 })));
       bump.position.set(0, 0.45, 2.05); g.add(bump);
       W.reg(group, g);
+      // v2.5 道具碰撞：汽车车体宽 2.0、长至前保险杠 2.05+0.125（实测）
+      W.addPropBox(cx, cz, 1.0, 2.17, { rot: g.rotation.y, yBase: 0 });
       W.addInteractable({
         id: 'car_exit', kind: 'car_exit', chunkKey: W.chunkKeyOf(p.tx, p.ty),
         meshes: [body, cabin], pos: new THREE.Vector3(cx, 1.2, cz), radius: 3.2,
@@ -429,6 +433,8 @@
       var box = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.9), W.mat('crate'));
       box.position.set(0.2, 0.35, 0); box.rotation.y = 0.4; g.add(box);
       W.reg(group, g);
+      // v2.5 道具碰撞：藏匿点木箱 0.9×0.9（实测，局部 x+0.2、自转 0.4）；土丘本体低矮可踏，不登记
+      W.addPropBox(cx + 0.2, cz, 0.45, 0.45, { rot: 0.4, yBase: 0 });
       var id = 'cache_' + p.tx + '_' + p.ty;
       W.addInteractable({
         id: id, kind: 'cache', chunkKey: W.chunkKeyOf(p.tx, p.ty),
@@ -477,6 +483,11 @@
         g.add(b);
       }
       W.reg(group, g);
+      // v2.5 道具碰撞：藏身小屋只登记四根角柱 (半径 0.09~0.11) ——屋体三面敞开、内部是躲藏
+      // 空间，整盒登记会把玩家封在外面；柱间净距约 2.2m 不挡进出。屋顶/灌木球不登记。
+      [[-1.1, -1.1], [1.1, -1.1], [-1.1, 1.1], [1.1, 1.1]].forEach(function (cp2) {
+        W.addPropCircle(cx + cp2[0], cz + cp2[1], 0.11, { yBase: 0 });
+      });
       W.addInteractable({
         id: 'hideout_' + p.tx + '_' + p.ty, kind: 'hideout', chunkKey: W.chunkKeyOf(p.tx, p.ty),
         meshes: [roof], pos: new THREE.Vector3(cx, 1.2, cz), radius: 3.2,
@@ -650,6 +661,8 @@
       var cm = BR.buildCrateMesh(W);
       cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
       W.reg(group, cm.group);
+      // v2.5 道具碰撞：板条箱 buildCrateMesh wd=1.05 → 半宽/半深 0.525
+      W.addPropBox(BR.tileCX(tx), BR.tileCZ(ty), 0.525, 0.525, { yBase: 0 });
       BR.wireCrateTwoStage(W, group, cm, { id: id, tx: tx, ty: ty, item: p.data.item || 'almond' });
     });
   }

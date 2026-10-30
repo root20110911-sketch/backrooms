@@ -26,6 +26,30 @@
   var DEST_TEXT = { L37: 'Level 37 ——「泳池房」', L11: 'Level 11 ——「无垠城市」', L188: 'Level 188 ——「百窗庭」' };
 
   function poiList(map, type) { return (map.pois || []).filter(function (p) { return p.type === type; }); }
+  // 贴墙锚点（与 levels.js 涂鸦、lv_l11.js findWallAnchor 同口径）：
+  // wallNormalOrNull 返回「墙→房间」法线，无相邻墙时返回 null（不给缺省法线冒充）。
+  function wallNormalOrNull(W, tx, ty) {
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var i = 0; i < 4; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      if (W.isWall(tx + dx, ty + dy)) return { x: -dx, z: -dy };
+    }
+    return null;
+  }
+  // 在 (tx,ty) 周边 maxR 格内找最近的「地板 tile + 相邻墙」，返回 {fx, fy, nx, nz}；
+  // 锚点位置 = 地板 tile 中心 - n*(T/2-0.05)，距墙面 back≈0.05；找不到返回 null。
+  function findWallAnchor(W, tx, ty, maxR) {
+    for (var r = 0; r <= maxR; r++) {
+      for (var dx = -r; dx <= r; dx++) for (var dy = -r; dy <= r; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        var fx = tx + dx, fy = ty + dy;
+        if (W.tile(fx, fy) !== 1) continue;
+        var n = wallNormalOrNull(W, fx, fy);
+        if (n) return { fx: fx, fy: fy, nx: n.x, nz: n.z };
+      }
+    }
+    return null;
+  }
   function travelL25(dest, dropText) {
     if (!BR.Levels[dest]) {
       BR.UI.toast('……机器那头一片黑暗（该楼层尚未开放）。');
@@ -76,12 +100,28 @@
       if (W.state.picked.indexOf(id) >= 0) return;
       var m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
         new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-      m.position.set(BR.tileCX(p.tx), 1.5, BR.tileCZ(p.ty));
-      m.rotation.y = Math.PI / 4;
+      // 贴墙锚定（A2-W08）：旧式直接把纸钉在 POI tile 中心 + rotation.y=π/4，
+      // 零贴墙逻辑，两张字条都悬在厅/房中央（离墙 4.5m+）。改用 findWallAnchor
+      // 找最近贴墙地板 tile，锚点 = 锚点 tile 中心 - 法线*(T/2-0.05)，back≈0.05。
+      var anchor = findWallAnchor(W, p.tx, p.ty, 3);
+      var noteMeshes = [m];
+      if (anchor) {
+        m.position.set(BR.tileCX(anchor.fx) - anchor.nx * (T / 2 - 0.05), 1.5, BR.tileCZ(anchor.fy) - anchor.nz * (T / 2 - 0.05));
+        m.rotation.y = Math.atan2(anchor.nx, anchor.nz);
+      } else {
+        // 周边 3 格内无墙可贴（理论兜底）：改立式告示牌（木桩落地+纸面架桩），不悬空贴墙纸
+        var post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.5, 0.09),
+          new THREE.MeshLambertMaterial({ color: 0x4a4035 }));
+        post.position.set(BR.tileCX(p.tx), 0.75, BR.tileCZ(p.ty));
+        W.reg(group, post);
+        noteMeshes.push(post);
+        m.position.set(BR.tileCX(p.tx), 1.32, BR.tileCZ(p.ty) + 0.06);
+        m.rotation.y = 0;
+      }
       W.reg(group, m);
       W.addInteractable({
         id: id, kind: 'note', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-        meshes: [m], pos: m.position.clone(), radius: 2.4,
+        meshes: noteMeshes, pos: m.position.clone(), radius: 2.4,
         prompt: function () { return '阅读字条'; },
         canUse: function () { return true; },
         use: function () {
@@ -166,6 +206,15 @@
             dummy.rotation.set(0, yaw, cb.tipped ? 1.35 : 0);
             dummy.updateMatrix();
             bodies.setMatrixAt(i, dummy.matrix);
+            // v2.5 道具碰撞：按机身实际占地登记（bodyGeo 0.95×0.8，rot=朝向 yaw）。
+            // 推倒机：机身绕局部 z 倒下 1.35rad，1.9 长边横置，地面投影长约
+            // 0.95·cos(1.35)+1.9·sin(1.35)≈2.06，故半宽 1.03、半深仍 0.4。
+            // 注：gen 侧 cab tile 本为 0（墙，tile 碰撞已覆盖整格），此登记范围
+            // 小于一格 tile，不额外封路，仅按实测占地补一道道具碰撞。
+            if (W.addPropBox) {
+              if (cb.tipped) W.addPropBox(cx, cz, 1.03, 0.4, { rot: yaw });
+              else W.addPropBox(cx, cz, 0.475, 0.4, { rot: yaw });
+            }
             try {
               tmpColor.setHex(CAB_COLORS[cb.color] || 0x888888);
               if (cb.state === 'broken' || cb.state === 'off') tmpColor.multiplyScalar(0.45);
@@ -199,7 +248,9 @@
         });
       });
 
-      /* ---------- 货架挡墙渲染 ---------- */
+      /* ---------- 货架挡墙渲染 ----------
+       * v2.5 不登记道具碰撞：货架 rect 在 gen 侧由 wallRect 置为 tile=0 墙 tile
+       * （下方 skipWall 仅跳默认墙渲染），碰撞已由 tile 提供，登记纯属重复。 */
       (meta.shelves || []).forEach(function (s, si) {
         for (var yy = s[1]; yy <= s[3]; yy++)
           for (var xx = s[0]; xx <= s[2]; xx++) W.skipWall(xx, yy);
@@ -223,10 +274,37 @@
 
       /* ---------- 入口霓虹招牌 ---------- */
       W.addChunkContent(27, 47, function (group) {
-        var sign = new THREE.Mesh(new THREE.PlaneGeometry(6, 3),
+        // A2-W09（双错）：① 旧锚点假定 (27,46) 有墙，把牌挂在 C1 走廊口正中半空
+        // （实测离墙 4.5m、四周无墙）；② rotation.y=π 使法线朝 -z（背对入口），
+        // 与原注释「面向入口（+z）」矛盾，进门玩家只看到背面（FrontSide 剔除）。
+        // 改挂入口厅北墙实段：扫 (·,46) 行找「墙下是入口厅地板」的实墙段（走廊口
+        // 两侧），取离厅心最近的一段，牌贴其南面（距面 0.06）、rotation.y=0 法线
+        // 朝 +z 正对入口/出生点；牌高 3→2.4 收进墙高 3.0 内（旧牌顶部超墙高）。
+        var seg = null;
+        (function () {
+          var runs = [], cur = null;
+          for (var tx = 16; tx <= 40; tx++) {
+            var ok = W.isWall(tx, 46) && W.tile(tx, 47) === 1;
+            if (ok) { if (cur) cur.c1 = tx; else cur = { c0: tx, c1: tx }; }
+            else if (cur) { runs.push(cur); cur = null; }
+          }
+          if (cur) runs.push(cur);
+          var bd = Infinity;
+          runs.forEach(function (r) {
+            var c = (r.c0 + r.c1 + 1) * 1.5;
+            var d = Math.abs(c - BR.tileCX(27));
+            if (d < bd) { bd = d; seg = { c0: r.c0, c1: r.c1, cx: c }; }
+          });
+        })();
+        var sw = 5.6, sx = BR.tileCX(27), sz = BR.tileCZ(52) + 1.44, sry = Math.PI; // 兜底：入口厅南墙内面，法线 -z 朝厅内
+        if (seg) {
+          sw = Math.min(5.6, (seg.c1 - seg.c0 + 1) * 3 - 0.4);
+          sx = seg.cx; sz = 46 * 3 + 3 + 0.06; sry = 0; // 北墙段南面（面在 z=141，厅在面南侧）外 0.06，法线 +z 朝入口
+        }
+        var sign = new THREE.Mesh(new THREE.PlaneGeometry(sw, 2.4),
           new THREE.MeshBasicMaterial({ map: BR.Textures.get('neon_sign') }));
-        sign.position.set(BR.tileCX(27), 2.0, BR.tileCZ(47) - 1.44);
-        sign.rotation.y = Math.PI; // 面向入口（+z）
+        sign.position.set(sx, 1.75, sz);
+        sign.rotation.y = sry;
         W.reg(group, sign);
       });
 
