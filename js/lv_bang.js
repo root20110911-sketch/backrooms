@@ -296,17 +296,44 @@
     { title: '警告字条', body: '警告：中途的「安全出口」是假的！\n\n我亲眼看见有人推开那扇门——\n里面只有一间储藏室，和一具骷髅。\n\n真正的出口在走廊尽头。一直跑。\n\n——M.' },
     { title: '血字', body: '它没有影子。\n警报声就是它的心跳。\n\n杏仁水能让你多跑一会儿。\n\n跑！！' }
   ];
+  /* v2.5 F5 贴墙锚点（levels.js:159 涂鸦口径）：沿四向射线找最近的墙 tile，
+   * 锚点 = 墙面 + 沿内法线 back 米（0.05），法线朝房间/走廊。
+   * 返回 {x, z, nx, nz, floorTx, floorTy}，无墙返回 null。 */
+  function wallAnchorBang(W, tx, ty, maxSteps, back) {
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]], best = null;
+    for (var i = 0; i < 4; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      for (var s = 1; s <= maxSteps; s++) {
+        if (W.isWall(tx + dx * s, ty + dy * s)) {
+          if (!best || s < best.s) best = { dx: dx, dy: dy, s: s };
+          break;
+        }
+      }
+    }
+    if (!best) return null;
+    var wx = tx + best.dx * best.s, wy = ty + best.dy * best.s, bk = (back == null ? 0.05 : back);
+    return {
+      x: BR.tileCX(wx) - best.dx * (T / 2 + bk),
+      z: BR.tileCZ(wy) - best.dy * (T / 2 + bk),
+      nx: -best.dx, nz: -best.dy,
+      floorTx: wx - best.dx, floorTy: wy - best.dy
+    };
+  }
   function addNoteBang(W, p, note) {
     var id = 'bangnote_' + p.tx + '_' + p.ty;
-    W.addChunkContent(p.tx, p.ty, function (group) {
+    // v2.5 F5（A2-W10）：旧写法 tile 中心 + π/4 斜向，字条悬在走廊中线（离北墙面 1.5m）。
+    // 字条 POI 位于走廊顶行、北邻墙：改按 wallAnchorBang 贴北墙锚定（back=0.05，面朝走廊）。
+    var anch = wallAnchorBang(W, p.tx, p.ty, 4, 0.05);
+    if (!anch) return;
+    W.addChunkContent(anch.floorTx, anch.floorTy, function (group) {
       if (W.state.picked.includes(id)) return;
       var m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
         new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-      m.position.set(BR.tileCX(p.tx), 1.5, BR.tileCZ(p.ty));
-      m.rotation.y = Math.PI / 4;
+      m.position.set(anch.x, 1.5, anch.z);
+      m.rotation.y = Math.atan2(anch.nx, anch.nz);
       W.reg(group, m);
       W.addInteractable({
-        id: id, kind: 'note', chunkKey: W.chunkKeyOf(p.tx, p.ty),
+        id: id, kind: 'note', chunkKey: W.chunkKeyOf(anch.floorTx, anch.floorTy),
         meshes: [m], pos: m.position.clone(), radius: 2.4,
         prompt: function () { return '阅读字条'; },
         canUse: function () { return true; },
@@ -581,6 +608,11 @@
           var g = buildObstacleMesh(d.kind, d, rng);
           g.position.set(d.x, 0, d.z);
           W.reg(group, g);
+          // v2.5 道具碰撞：只登记「高，需绕行」的病床/椅子（尺寸按 buildObstacleMesh 实测）。
+          // 半开门（door）属门系统、低杂物堆（low, h=0.8）是「必须跳」的设计，均不登记
+          //（low 仍由下方 S.lows 的既有跳跃碰撞处理，本处不重复）。
+          if (d.kind === 'bed') W.addPropBox(d.x, d.z, 0.55, 1.05, { rot: d.rot || 0, yBase: 0 }); // 床架 1.1×2.1
+          else if (d.kind === 'chair') W.addPropBox(d.x, d.z, 0.275, 0.275, { yBase: 0 });        // 座面 0.55×0.55
         });
         if (d.kind === 'low') S.lows.push({ x: d.x, z: d.z, hw: 0.45, h: d.h }); // v1.5 W6：hw 0.7→0.45，跳跃时机窗口 47ms→176ms
         else S.solids.push({ x: d.x, z: d.z, r: d.r, h: d.h });
@@ -624,7 +656,10 @@
         // EXIT 灯牌（假门上方，红色）
         var sign = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.28),
           new THREE.MeshBasicMaterial({ map: textPlate('EXIT', '#a02020', '#ffffff') }));
-        sign.position.set(BR.tileCX(30), 2.62, BR.tileCZ(30) - 1.42);
+        // v2.5 F5（A2-W11）：旧锚点用走廊 tile 30 中心再北偏，牌悬在走廊中央（离墙 2.92m）。
+        // 归位到假门 tile 31 的北墙面：z = 31*T - 0.06（back=0.06）；rotation.y=π 使正面
+        // 法线朝北（-z）对着第 5 走廊来向的玩家（台账「改 0」与该几何朝向矛盾，以朝走廊为准）。
+        sign.position.set(BR.tileCX(30), 2.62, 31 * T - 0.06);
         sign.rotation.y = Math.PI;
         W.reg(group, sign);
       });
@@ -643,7 +678,9 @@
         });
         var gr = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.7),
           new THREE.MeshBasicMaterial({ map: graffitiTexture() }));
-        gr.position.set(BR.tileCX(30) + 0.5, 1.5, (33 + 1) * T - 0.06); // 储藏室南墙内面
+        // v2.5 F5（A2-W12/A2-03）：gen_bang 已在 row 33 补上储藏室南墙，储藏室为 rows 32 一行，
+        // 南墙内面（北面）z = 33*T - 0.06（back=0.06），面朝北（储藏室内）。
+        gr.position.set(BR.tileCX(30) + 0.5, 1.5, 33 * T - 0.06); // 储藏室南墙内面
         gr.rotation.y = Math.PI;
         g.add(gr);
         W.reg(group, g);

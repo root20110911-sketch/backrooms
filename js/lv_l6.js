@@ -47,22 +47,77 @@
     }
     return { x: 0, z: 1 };
   }
+  // 相邻墙法线（无相邻墙返回 null，不用缺省值冒充）
+  function adjWallNormal(W, tx, ty) {
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var i = 0; i < 4; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      if (W.isWall(tx + dx, ty + dy)) return { x: -dx, z: -dy };
+    }
+    return null;
+  }
+  /* v2.5 F5 贴墙锚点（levels.js:159 涂鸦口径）：沿四向射线找最近的墙 tile，
+   * 锚点 = 墙面 + 沿内法线（朝房间）back 米（back≤0.05）；法线朝房间。
+   * 返回 {x, z, nx, nz, floorTx, floorTy}（floor 为墙内侧相邻地板 tile），无墙返回 null。 */
+  function wallAnchor(W, tx, ty, maxSteps, back) {
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]], best = null;
+    for (var i = 0; i < 4; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      for (var s = 1; s <= maxSteps; s++) {
+        if (W.isWall(tx + dx * s, ty + dy * s)) {
+          if (!best || s < best.s) best = { dx: dx, dy: dy, s: s };
+          break;
+        }
+      }
+    }
+    if (!best) return null;
+    var wx = tx + best.dx * best.s, wy = ty + best.dy * best.s, bk = (back == null ? 0.05 : back);
+    return {
+      x: BR.tileCX(wx) - best.dx * (T / 2 + bk),
+      z: BR.tileCZ(wy) - best.dy * (T / 2 + bk),
+      nx: -best.dx, nz: -best.dy,
+      floorTx: wx - best.dx, floorTy: wy - best.dy
+    };
+  }
+  /* v2.5 F5：BFS 找最近的「有相邻墙」地板 tile（应急灯选点约束用）。
+   * 返回 {tx, ty, n}，maxR 内找不到返回 null。 */
+  function nearestWallTile(W, tx, ty, maxR) {
+    if (W.isWall(tx, ty)) return null;
+    var seen = {}, q = [[tx, ty, 0]];
+    seen[tx + ',' + ty] = 1;
+    while (q.length) {
+      var cur = q.shift(), cx = cur[0], cy = cur[1], d = cur[2];
+      var n = adjWallNormal(W, cx, cy);
+      if (n) return { tx: cx, ty: cy, n: n };
+      if (d >= maxR) continue;
+      var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (var i = 0; i < 4; i++) {
+        var nx = cx + dirs[i][0], ny = cy + dirs[i][1], k = nx + ',' + ny;
+        if (seen[k] || W.isWall(nx, ny)) continue;
+        seen[k] = 1; q.push([nx, ny, d + 1]);
+      }
+    }
+    return null;
+  }
   var ITEM_NAME = { almond: '杏仁水', bandage: '绷带', flashlight: '手电筒', berry: '迁跃浆果' };
   function hashRng(str) { return new BR.RNG(BR.hashSeed(str)); }
   function kl() { return (BR.interactKeyLabel ? BR.interactKeyLabel() : '【E】'); }
 
   function addNote(W, tx, ty, title, body, idSuffix) {
     var id = 'note_l6_' + tx + '_' + ty + '_' + (idSuffix || '0');
-    W.addChunkContent(tx, ty, function (group) {
+    // v2.5 F5（A2-W05）：旧锚点沿朝向向量 +1.1 把字条推离锚点墙 2.6m、无相邻墙时更远。
+    // 改按 wallAnchor 射线找最近墙贴墙锚定（back=0.05，法线朝房间）；找不到墙就不建（不悬空）。
+    var anch = wallAnchor(W, tx, ty, 8, 0.05);
+    if (!anch) return;
+    W.addChunkContent(anch.floorTx, anch.floorTy, function (group) {
       if (W.state.picked.indexOf(id) >= 0) return;
-      var n = wallNormal(W, tx, ty);
       var m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
         new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-      m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-      m.rotation.y = Math.atan2(n.x, n.z);
+      m.position.set(anch.x, 1.5, anch.z);
+      m.rotation.y = Math.atan2(anch.nx, anch.nz);
       W.reg(group, m);
       W.addInteractable({
-        id: id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
+        id: id, kind: 'note', chunkKey: W.chunkKeyOf(anch.floorTx, anch.floorTy),
         meshes: [m], pos: m.position.clone(), radius: 2.4,
         prompt: function () { return kl() + '阅读字条'; },
         canUse: function () { return true; },
@@ -84,6 +139,7 @@
       var cm = BR.buildCrateMesh(W);
       cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
       W.reg(group, cm.group);
+      W.addPropBox(cm.group.position.x, cm.group.position.z, 0.525, 0.525); // v2.5 道具碰撞：板条箱占地 1.05×1.05（buildCrateMesh wd=1.05）
       BR.wireCrateTwoStage(W, group, cm, { id: id, tx: tx, ty: ty, item: item || 'empty' });
     });
   }
@@ -188,10 +244,15 @@
             new THREE.MeshBasicMaterial({ color: 0xff7a4a }));
           dome.position.set(dcx, 2.75, dcz); W.reg(group, dome);
           chunk.fixtures.push({ x: dcx, y: 2.6, z: dcz, phase: 0, flicker: false, bright: 1.2 });
+        });
+        // v2.5 F5（A2-W06）：旧公式假定出生 tile 紧贴北墙，牌悬在房间中央（离墙 6.06m）。
+        // 改按 duty 房间北墙内面锚定：z = duty.y0*T + 0.06（back=0.06，面朝南/房间），
+        // 内容登记在北墙内侧 tile 的区块，避免跨区块卸载。
+        W.addChunkContent(duty.tx, duty.y0, function (group) {
           var plate = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.7),
             new THREE.MeshBasicMaterial({ map: signTexture(['值班室', 'DUTY'], 'rgba(255,120,60,0.9)') }));
           plate._ownMat = true;
-          plate.position.set(dcx, 2.1, dcz - T / 2 + 0.06);
+          plate.position.set(dcx, 2.1, duty.y0 * T + 0.06);
           W.reg(group, plate);
         });
       }
@@ -215,7 +276,21 @@
           var led = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6),
             new THREE.MeshBasicMaterial({ color: 0x30ff60 }));
           led.material = led.material.clone(); led._ownMat = true;
-          led.position.set(cx + T - 0.4, 1.9, cz);
+          // v2.5 F5（A2-01）：旧偏移 T-0.4 时 LED 埋在盒内永不可见。注意机房块 2×2 tile
+          // 的可见面是世界墙体渲染的 tile 边界（块中心 ±T），金属盒（半宽 T-0.15）在墙体
+          // 内部看不见——LED 必须越过 tile 面：中心放面外 0.03（球 r=0.07，外凸成灯珠、
+          // 内嵌 0.04 不悬空）。朝向所在机房 zone 中心的一面（玩家活动侧）。
+          var lz2 = null;
+          for (var zi2 = 0; zi2 < L.zones.length; zi2++) {
+            var zz = L.zones[zi2];
+            if (zz.kind === 'machine' && b.x0 >= zz.x0 && b.x0 <= zz.x1 && b.y0 >= zz.y0 && b.y0 <= zz.y1) { lz2 = zz; break; }
+          }
+          var zdx = lz2 ? ((lz2.x0 + lz2.x1 + 1) / 2 * T - cx) : 0;
+          var zdz = lz2 ? ((lz2.y0 + lz2.y1 + 1) / 2 * T - cz) : 1;
+          if (Math.abs(zdx) >= Math.abs(zdz))
+            led.position.set(cx + (zdx >= 0 ? 1 : -1) * (T + 0.03), 1.9, cz);
+          else
+            led.position.set(cx, 1.9, cz + (zdz >= 0 ? 1 : -1) * (T + 0.03));
           W.reg(group, led);
           L.leds.push({ mesh: led, phase: prng.next() * 6.28, on: true });
           var sh = BR.Textures.makeBlobShadow(3.4);
@@ -240,26 +315,37 @@
 
       /* ---------- 应急灯（微光导航锚点） ---------- */
       poiList(map, 'l6_emlight').forEach(function (p, i) {
-        var ex = BR.tileCX(p.tx), ez = BR.tileCZ(p.ty);
-        W.addChunkContent(p.tx, p.ty, function (group, chunk) {
-          var n = wallNormal(W, p.tx, p.ty);
+        // v2.5 F5（A2-02）：旧锚点 tileC + n*1.2 沿朝向推离墙、POI 无相邻墙时缺省法线必悬空
+        //（实测 3/4 POI 四邻无墙）。修法是选点约束：落点先 BFS 移位到最近的「有相邻墙」
+        // 地板 tile，再沿 -n 贴墙（灯心离墙面 0.15m，球半径 0.13，净间隙 0.02m 不悬空）；
+        // 8 格内无 such tile 则不建（不硬贴远墙、不留无源光）。fixture 光源同点跟随。
+        var spot = nearestWallTile(W, p.tx, p.ty, 8);
+        if (!spot) return;
+        var ex = BR.tileCX(spot.tx), ez = BR.tileCZ(spot.ty);
+        var n = spot.n;
+        var lx = ex - n.x * (T / 2 - 0.15), lz = ez - n.z * (T / 2 - 0.15);
+        W.addChunkContent(spot.tx, spot.ty, function (group, chunk) {
           var dome = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8),
             new THREE.MeshBasicMaterial({ color: 0xff3a2a }));
-          dome.position.set(ex + n.x * 1.2, 2.6, ez + n.z * 1.2);
+          dome.position.set(lx, 2.6, lz);
           W.reg(group, dome);
           var base = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.3),
             new THREE.MeshLambertMaterial({ color: 0x1c1e22 }));
-          base.position.set(ex + n.x * 1.2, 2.78, ez + n.z * 1.2);
+          base.position.set(lx, 2.78, lz);
           W.reg(group, base);
-          chunk.fixtures.push({ x: ex + n.x * 1.2, y: 2.5, z: ez + n.z * 1.2, phase: i * 2.3, flicker: true, bright: 0.8 });
+          chunk.fixtures.push({ x: lx, y: 2.5, z: lz, phase: i * 2.3, flicker: true, bright: 0.8 });
           if (i % 2 === 0) BR.Audio.addLoop('l6f_' + p.tx + '_' + p.ty, 'flicker', ex, ez, 0.35);
         });
       });
 
       /* ---------- 荧光标记（弱引导，不指向出口） ---------- */
       poiList(map, 'l6_glow').forEach(function (p) {
-        W.addChunkContent(p.tx, p.ty, function (group) {
-          var n = wallNormal(W, p.tx, p.ty);
+        // v2.5 F5（A2-W07）：旧锚点沿 +n 推到对面墙且法线朝墙内（FrontSide 剔除，玩家看不见），
+        // 对面开敞时悬空。改按 wallAnchor 射线找最近墙贴墙（back=0.03），朝向保持朝房间；
+        // 找不到墙就不建。
+        var anch = wallAnchor(W, p.tx, p.ty, 8, 0.03);
+        if (!anch) return;
+        W.addChunkContent(anch.floorTx, anch.floorTy, function (group) {
           var strip = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.09),
             new THREE.MeshBasicMaterial({
               color: 0x86ffb0, transparent: true, opacity: 0.5,
@@ -267,11 +353,8 @@
             }));
           strip._ownMat = true;
           var r = hashRng('l6glow:' + map.seed + ':' + p.tx + '_' + p.ty);
-          strip.position.set(
-            BR.tileCX(p.tx) + n.x * (T / 2 - 0.03),
-            1.55 + (r.next() - 0.5) * 0.3,
-            BR.tileCZ(p.ty) + n.z * (T / 2 - 0.03));
-          strip.rotation.y = Math.atan2(n.x, n.z);
+          strip.position.set(anch.x, 1.55 + (r.next() - 0.5) * 0.3, anch.z);
+          strip.rotation.y = Math.atan2(anch.nx, anch.nz);
           W.reg(group, strip);
         });
       });
@@ -298,26 +381,59 @@
         var doorZ = sz + wd.z * (wd.s * T - T / 2 - 0.12);
         var doorRotY = Math.atan2(-wd.x, -wd.z);
         W.addChunkContent(p.tx, p.ty, function (group) {
-          // 向下的台阶（视觉）+ 黑洞
+          // —— 楼梯 flight（v2.5 重建）——
+          // 旧实现根因（原代码即此处）：踏板组硬编码在 POI 中心 (sx,sz)、沿 +Z 轴
+          // 逐级下降，与贴最近墙的钢门（门面方向由 wd 决定）完全脱钩——轴线与
+          // 门洞中心线垂直且错位约 4.4m；只有 5 级薄踏面（厚 0.18、无立板/弦/基座），
+          // 首级底面悬空 0.66m；末级起沉到地板平面以下被地板遮挡，只剩半截浮板；
+          // 配套的坑面/微光面也在地板以下（y=-0.62/-0.55），同样不可见，一并移除。
+          // 新实现：参照 lv_l7.js buildStairsDeck 的正确写法——锚点用同块算好的
+          // 钢门门位（原点 = doorX/doorZ，rotation.y = doorRotY，局部 +Z 朝房间内
+          // 即 -wd），梯跑轴线即门洞中心线；两侧全高侧板落地作支撑（同 L7 侧板），
+          // 平台按 L7 两件式（顶板 + 下方实心基座）。门前留 1.15m 落地站立区
+          // （深色门槛面收边），其后 7 级踏步逐级朝钢门下降（下行终点即钢门，
+          // 与门上「下行」路牌语义一致）：踏步用实心盒，盒高 = 该级顶面高
+          // （≥ 级高 0.18，即级高 ≤ 盒厚）、盒深 = 级距 0.5 相邻相接无空气缝、
+          // 盒底落在地板上，无悬空。材质沿用楼梯间深色踏面 0x2c2e33、侧板/基座
+          // 深钢 0x232529（同 L7 steelD 的深色侧板口径）。
+          // 注意：楼梯本体不登记道具碰撞——它在钢门接近路径上且切出靠门口交互，
+          // 登记会挡住交互；门前 1.15m 站立区保持可站立。
+          var flight = new THREE.Group();
+          flight.position.set(doorX, 0, doorZ);
+          flight.rotation.y = doorRotY;
           var stepM = new THREE.MeshLambertMaterial({ color: 0x2c2e33 });
-          for (var i = 0; i < 5; i++) {
-            var stp = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.18, 0.55), stepM);
-            stp.position.set(sx, 0.75 - i * 0.28, sz - 0.4 + i * 0.5);
-            W.reg(group, stp);
+          var boardM = new THREE.MeshLambertMaterial({ color: 0x232529 });
+          var SW = 2.2;               // 梯宽（与旧踏板、L7 楼梯同宽）
+          var RISE = 0.18, TREAD = 0.5, NST = 7;   // 7 级 × 0.18 = 1.26 走完总高差
+          var Z0 = 1.21;              // 首级前面距门中心：0.06 门厚半 + 1.15 站立区
+          for (var i = 0; i < NST; i++) {
+            var topY = (i + 1) * RISE; // i=0 为靠门最低级（顶面 0.18），向房间内逐级升高
+            var stp = new THREE.Mesh(new THREE.BoxGeometry(SW, topY, TREAD), stepM);
+            stp.position.set(0, topY / 2, Z0 + TREAD * (i + 0.5));
+            flight.add(stp);
           }
-          var pit = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.6),
-            new THREE.MeshBasicMaterial({ color: 0x010203 }));
-          pit.rotation.x = -Math.PI / 2; pit.position.set(sx, -0.62, sz + 1.2);
-          W.reg(group, pit);
-          // 冷色微光（假发光面，不占灯池）
-          var glow = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 1.4),
-            new THREE.MeshBasicMaterial({
-              color: 0x4a6aff, transparent: true, opacity: 0.16,
-              blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
-            }));
-          glow._ownMat = true;
-          glow.rotation.x = -Math.PI / 2; glow.position.set(sx, -0.55, sz + 1.2);
-          W.reg(group, glow);
+          var runEnd = Z0 + TREAD * NST;   // 4.71：踏步区远端
+          var platTop = NST * RISE;        // 1.26：平台顶面 = 最高级顶面
+          // 平台（L7 两件式：顶板 + 下方实心基座落地）
+          var platBase = new THREE.Mesh(new THREE.BoxGeometry(SW, platTop - 0.1, 0.9), boardM);
+          platBase.position.set(0, (platTop - 0.1) / 2, runEnd + 0.45);
+          flight.add(platBase);
+          var platSlab = new THREE.Mesh(new THREE.BoxGeometry(SW, 0.1, 0.9), stepM);
+          platSlab.position.set(0, platTop - 0.05, runEnd + 0.45);
+          flight.add(platSlab);
+          // 两侧全高侧板（同 L7 侧板：0.08 厚、高 = 总高差、长 = 梯跑长，底落地板作支撑）
+          [-1, 1].forEach(function (sd) {
+            var board = new THREE.Mesh(new THREE.BoxGeometry(0.08, platTop, TREAD * NST), boardM);
+            board.position.set(sd * 1.15, platTop / 2, Z0 + TREAD * NST / 2);
+            flight.add(board);
+          });
+          // 门前深色门槛面（站立区收边，与楼梯间深色金属风格一致）
+          var sill = new THREE.Mesh(new THREE.PlaneGeometry(SW, 1.15),
+            new THREE.MeshBasicMaterial({ color: 0x0a0b0d }));
+          sill.rotation.x = -Math.PI / 2;
+          sill.position.set(0, 0.02, 0.06 + 0.575);
+          flight.add(sill);
+          W.reg(group, flight);
           // 钢门框 + 标识（贴最近的墙，朝向房间；门用薄盒体而非平面，避免共面射线 miss）
           var door = new THREE.Mesh(new THREE.BoxGeometry(1.3, 2.4, 0.12),
             new THREE.MeshLambertMaterial({ map: BR.Textures.get('l6_door_steel') }));
