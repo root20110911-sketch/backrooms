@@ -4,8 +4,9 @@
  *   opts: { kind: 'walk'|'rift'|'hole'|'berry'|'slide'|'drop'|'water',
  *           pre: 保留字段(暂未用), dropText: 抵达后提示文字 }
  *   流程：kind 专属前段 → BR.Game.gotoLevel(to) → 抵达演出(空中→失衡→落地→撑地→爬起)
- *         → 交还控制。全程 Input 锁定，30s 看门狗兜底（触发即视为加载失败，
- *         无条件解锁输入 + 弹失败界面，不许只清 busy）。
+ *         → 交还控制。全程 Input 锁定，进度感知看门狗兜底（连续 30s 无加载进度
+ *         或总时长超 120s 才视为加载失败；触发即无条件解锁输入 + 弹失败界面，
+ *         不许只清 busy）。
  *   镜头强度：BR.Input.settings.dropcam ∈ 'full'|'soft'|'off'（默认 'full'）。
  *
  * BR.Rifts：随机裂隙（运行时选点，可复现）。
@@ -94,7 +95,7 @@
     const finish = () => {
       if (finished) return;
       finished = true;
-      clearTimeout(watchdog);
+      watchdog.clear();
       const p = P();
       if (p) { p.extDipY = 0; p.extRoll = 0; p.extPitch = 0; p.extFov = 0; }
       document.body.classList.remove('dropping');
@@ -106,7 +107,7 @@
     const failLoad = (err) => {
       if (finished) return;
       finished = true;
-      clearTimeout(watchdog);
+      watchdog.clear();
       const p = P();
       if (p) { p.extDipY = 0; p.extRoll = 0; p.extPitch = 0; p.extFov = 0; }
       document.body.classList.remove('dropping');
@@ -135,11 +136,57 @@
         BR.Input.setLocked(false);
       }
     };
-    // P0-4：30 秒看门狗——触发 = 视为加载失败，走同一失败处理（不许只清 busy）
-    const watchdog = setTimeout(() => {
-      BR.warn('Cutout watchdog fired:', from, '->', to, kind);
-      failLoad(new Error('切出超时（30s 看门狗）: ' + from + ' -> ' + to));
-    }, 30000);
+    // v2.5 F6(A2-04)：进度感知看门狗（原 P0-4 固定 30s 墙钟版会误杀慢设备上的
+    // 重关卡切关——L4→L3、L6→L7 实测目标关其实已生成、只是慢于 30s）。
+    // 规则：每 1s 采样一次进度签名，有推进即刷新存活时间戳；连续 30s 零进度才判
+    // 失败（走同一 failLoad，不许只清 busy）；另设 120s 绝对上限兜底，防"有假
+    // 进度但永不完成"的活锁。进度信号只读加载流程的现成状态（不改 main/world）：
+    //  · BR.Game.state / BR.Game._loading —— 加载阶段推进（loading→playing）
+    //  · BR.World.map.level —— 目标关地图已生成
+    //  · BR.World.chunks.size —— 区块建成数（生成后随 World.update 持续增长）
+    //  · BR.World._loadHeartbeat —— 预留心跳槽：加载步骤若有更细粒度进度，可写
+    //    入新时间戳推进存活；当前流程未写入，该项不贡献进度（签名恒定）。
+    const WD_NO_PROGRESS_MS = 30000, WD_ABS_MS = 120000;
+    const wdT0 = performance.now();
+    let wdLastProgress = wdT0;
+    const wdSig = () => {
+      const G = BR.Game, W = BR.World;
+      return [
+        G ? G.state : '', (G && G._loading) ? 1 : 0,
+        (W && W.map) ? W.map.level : '',
+        (W && W.chunks) ? W.chunks.size : 0,
+        (W && W._loadHeartbeat) || 0
+      ].join('|');
+    };
+    let wdLastSig = wdSig();
+    const watchdog = {
+      _t: null, _iv: null,
+      clear() {
+        if (this._t) { clearTimeout(this._t); this._t = null; }
+        if (this._iv) { clearInterval(this._iv); this._iv = null; }
+      }
+    };
+    watchdog._iv = setInterval(() => {
+      if (finished) { watchdog.clear(); return; }
+      const sig = wdSig();
+      if (sig !== wdLastSig) { wdLastSig = sig; wdLastProgress = performance.now(); }
+    }, 1000);
+    const wdArm = () => {
+      if (finished) return;
+      const now = performance.now();
+      const noProgFor = now - wdLastProgress, totalFor = now - wdT0;
+      const remain = Math.min(WD_NO_PROGRESS_MS - noProgFor, WD_ABS_MS - totalFor);
+      if (remain <= 0) {
+        const noProg = noProgFor >= WD_NO_PROGRESS_MS;
+        BR.warn('Cutout watchdog fired:', from, '->', to, kind, noProg ? 'no-progress-30s' : 'absolute-120s');
+        failLoad(new Error(noProg
+          ? '切出超时（看门狗：连续 30s 无加载进度）: ' + from + ' -> ' + to
+          : '切出超时（看门狗：总时长超过 120s 上限）: ' + from + ' -> ' + to));
+        return;
+      }
+      watchdog._t = setTimeout(wdArm, remain + 50);
+    };
+    wdArm();
 
     try {
       if (kind !== 'none') await this._pre(kind, opts); // ① kind 专属前段（none 跳过）

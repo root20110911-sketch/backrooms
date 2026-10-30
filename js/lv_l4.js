@@ -39,6 +39,30 @@
 
   /* ================= 小工具 ================= */
   function poiList(map, type) { return (map.pois || []).filter(function (p) { return p.type === type; }); }
+  // 贴墙锚点（与 levels.js 涂鸦、lv_l11.js findWallAnchor 同口径）：
+  // wallNormalOrNull 返回「墙→房间」法线，无相邻墙时返回 null（不给缺省法线冒充）。
+  function wallNormalOrNull(W, tx, ty) {
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var i = 0; i < 4; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      if (W.isWall(tx + dx, ty + dy)) return { x: -dx, z: -dy };
+    }
+    return null;
+  }
+  // 在 (tx,ty) 周边 maxR 格内找最近的「地板 tile + 相邻墙」，返回 {fx, fy, nx, nz}；
+  // 锚点位置 = 地板 tile 中心 - n*(T/2-0.05)，距墙面 back≈0.05；找不到返回 null。
+  function findWallAnchor(W, tx, ty, maxR) {
+    for (var r = 0; r <= maxR; r++) {
+      for (var dx = -r; dx <= r; dx++) for (var dy = -r; dy <= r; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        var fx = tx + dx, fy = ty + dy;
+        if (W.tile(fx, fy) !== 1) continue;
+        var n = wallNormalOrNull(W, fx, fy);
+        if (n) return { fx: fx, fy: fy, nx: n.x, nz: n.z };
+      }
+    }
+    return null;
+  }
   function hashRng(s) { return new BR.RNG(BR.hashSeed(s)); }
   function keyLabel() { return (BR.interactKeyLabel ? BR.interactKeyLabel() : ''); }
   function doTravel(level) {
@@ -112,6 +136,7 @@
     var stem = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.42, 8), dark); stem.position.y = 0.22; c.add(stem);
     var base = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.04, 10), dark); base.position.y = 0.03; c.add(base);
     g.add(c);
+    BR.World.addPropCircle(x, z, 0.30); // v2.5 道具碰撞：椅子底盘 Ø0.6（全部椅子调用点共用此登记）
     return c;
   }
   function buildDesk(g, x, z, ry, rng, opts) {
@@ -141,6 +166,7 @@
       paper.position.set(0.35 + (rng.next() - 0.5) * 0.2, 0.768, 0.05); d.add(paper);
     }
     g.add(d);
+    BR.World.addPropBox(x, z, 0.70, 0.35, { rot: ry || 0 }); // v2.5 道具碰撞：办公桌桌面 1.4×0.7
     return d;
   }
   function buildCubicle(g, cx, cz, ry, rng) {
@@ -155,6 +181,17 @@
       mc('scr_on2', function () { return new THREE.MeshBasicMaterial({ color: 0x8aa4bd }); }) : lam(0x0b0d11));
     mon.position.set(0, 1.0, -0.6); cu.add(mon);
     g.add(cu);
+    // v2.5 道具碰撞：隔断三片薄板 + 内置桌，按 cu 朝向 ry 把局部偏移变换到世界坐标逐片登记（正面开口不封）
+    (function () {
+      var cs = Math.cos(ry), sn = Math.sin(ry);
+      function regPanel(lx, lz, hw, hd) {
+        BR.World.addPropBox(cx + lx * cs + lz * sn, cz - lx * sn + lz * cs, hw, hd, { rot: ry });
+      }
+      regPanel(0, -0.87, 0.90, 0.03);  // 背板 1.8×0.06
+      regPanel(-0.87, 0, 0.03, 0.90);  // 左侧板 0.06×1.8
+      regPanel(0.87, 0, 0.03, 0.90);   // 右侧板 0.06×1.8
+      regPanel(0, -0.55, 0.85, 0.30);  // 内置桌 1.7×0.6
+    })();
     buildChair(g, cx + Math.sin(ry) * 0.1, cz + Math.cos(ry) * 0.75, ry + Math.PI + (rng.next() - 0.5) * 0.8);
     return cu;
   }
@@ -164,6 +201,7 @@
     [[-1.4, -0.5], [1.4, -0.5], [-1.4, 0.5], [1.4, 0.5]].forEach(function (p) {
       var leg = new THREE.Mesh(bx(0.08, 0.72, 0.08), legM); leg.position.set(cx + p[0], 0.36, cz + p[1]); g.add(leg);
     });
+    BR.World.addPropBox(cx, cz, 1.50, 0.60); // v2.5 道具碰撞：会议桌 3.0×1.2（四周椅子由 buildChair 各自登记）
     for (var k = 0; k < 6; k++) {
       var side = k < 3 ? -1 : 1, px = cx - 1 + (k % 3) * 1.0;
       buildChair(g, px, cz + side * 1.0, side < 0 ? 0 : Math.PI);
@@ -206,6 +244,32 @@
       var poiTiles = {};
       (map.pois || []).forEach(function (p) { poiTiles[p.tx + ',' + p.ty] = 1; });
 
+      // 窗墙 tile 集合（贴墙物选址要避开：窗玻璃就在墙内面，牌/板压上去会盖窗）
+      var winTiles = {};
+      poiList(map, 'window').forEach(function (p) {
+        if (p.data && p.data.wtx != null) winTiles[p.data.wtx + ',' + p.data.wty] = 1;
+      });
+      // 街区环墙实墙段扫描：返回指定侧的实墙连续段（沿轴 tile 区间 {c0,c1}）。
+      // 门洞（环上的地板 tile）与窗墙 tile 都是断点——贴墙物只能挂实段上。
+      function ringSegs(b, side) {
+        var tiles = [], i2;
+        if (side === 'n' || side === 's') {
+          var ty = side === 'n' ? b.y0 : b.y1;
+          for (i2 = b.x0; i2 <= b.x1; i2++) tiles.push({ a: i2, tx: i2, ty: ty });
+        } else {
+          var tx = side === 'w' ? b.x0 : b.x1;
+          for (i2 = b.y0; i2 <= b.y1; i2++) tiles.push({ a: i2, tx: tx, ty: i2 });
+        }
+        var segs = [], cur = null;
+        tiles.forEach(function (tl) {
+          var ok = W.isWall(tl.tx, tl.ty) && !winTiles[tl.tx + ',' + tl.ty];
+          if (ok) { if (cur) cur.c1 = tl.a; else cur = { c0: tl.a, c1: tl.a }; }
+          else if (cur) { segs.push(cur); cur = null; }
+        });
+        if (cur) segs.push(cur);
+        return segs;
+      }
+
       /* ---------- 街区家具 ---------- */
       meta.blocks.forEach(function (b) {
         var ccx = (b.x0 + b.x1) >> 1, ccy = (b.y0 + b.y1) >> 1;
@@ -234,8 +298,27 @@
           } else if (b.zone === 'meeting_room') {
             cx = BR.tileCX((b.ix0 + b.ix1) >> 1); cz = BR.tileCZ((b.iy0 + b.iy1) >> 1);
             buildMeetingTable(group, cx, cz, rng);
+            // 白板选址（A2-W02）：旧式无条件贴北墙正中，但 meeting_room 每面临走廊侧
+            // 都在正中开 2 tile 门洞（gen openSides），by≥1 的会议室北墙正中恰是门洞
+            // → 白板整块悬在门洞口挡门。改为按 n/s/e/w 顺序找第一面带 ≥1 tile 实墙段
+            // （避门洞/窗，ringSegs）的墙，板心取该面最长实段中心，同墙面内平移避门；
+            // 无门洞时（如 by=0 北墙）实段中心即原正中位置，行为不变。
+            var wbPos = null;
+            ['n', 's', 'e', 'w'].some(function (side) {
+              var segs = ringSegs(b, side).filter(function (sg) { return (sg.c1 - sg.c0 + 1) * 3 >= 3.0; });
+              if (!segs.length) return false;
+              segs.sort(function (a2, b2) { return (b2.c1 - b2.c0) - (a2.c1 - a2.c0); });
+              var mid = (segs[0].c0 + segs[0].c1 + 1) * 1.5;
+              if (side === 'n') wbPos = { x: mid, z: BR.tileCZ(b.iy0) - 1.44, ry: 0 };
+              else if (side === 's') wbPos = { x: mid, z: BR.tileCZ(b.iy1) + 1.44, ry: Math.PI };
+              else if (side === 'w') wbPos = { x: BR.tileCX(b.ix0) - 1.44, z: mid, ry: Math.PI / 2 };
+              else wbPos = { x: BR.tileCX(b.ix1) + 1.44, z: mid, ry: -Math.PI / 2 };
+              return true;
+            });
+            if (!wbPos) wbPos = { x: cx, z: BR.tileCZ(b.iy0) - 1.44, ry: 0 }; // 理论兜底：四面无实段时维持旧位
             var wb = new THREE.Mesh(pl(2.4, 1.2), texMat('l4_whiteboard'));
-            wb.position.set(cx, 1.7, BR.tileCZ(b.iy0) - 1.44);
+            wb.position.set(wbPos.x, 1.7, wbPos.z);
+            wb.rotation.y = wbPos.ry;
             group.add(wb); W.reg(group, wb);
           } else if (b.zone === 'break_room') {
             for (k = 0; k < 2; k++) {
@@ -243,6 +326,7 @@
               var tb = new THREE.Mesh(bx(0.9, 0.06, 0.9), texMat('l4_desk')); tb.position.set(cx, 0.73, cz); group.add(tb);
               var tl = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.72, 8), lam(0x555a61));
               tl.position.set(cx, 0.36, cz); group.add(tl);
+              BR.World.addPropBox(cx, cz, 0.45, 0.45); // v2.5 道具碰撞：茶水间小桌 0.9×0.9
               buildChair(group, cx + 0.8, cz, -Math.PI / 2);
               buildChair(group, cx - 0.8, cz, Math.PI / 2);
             }
@@ -265,15 +349,34 @@
             buildChair(group, cx - 0.6, cz + 0.4, -Math.PI / 2 + 0.4);
             buildDesk(group, cx + 1.5, cz, -Math.PI / 2, rng);
             buildChair(group, cx + 0.6, cz - 0.4, Math.PI / 2 - 0.3);
-            // 视错觉墙：西墙整面“递归办公室”
-            var loopW = (b.iy1 - b.iy0 + 1) * 3 - 0.6;
-            var lw = new THREE.Mesh(pl(loopW, 2.6), texMat('l4_loop'));
-            lw.position.set(BR.tileCX(b.ix0) - 1.42, 1.45, cz);
-            lw.rotation.y = Math.PI / 2;
+            // 视错觉墙：“递归办公室”整面贴画（A2-W03）：旧式固定贴西墙整面，但
+            // loop_office 唯一门洞恒开在 corrSides 首侧正中（bx>0 时即西墙）→ 画整面
+            // 盖住唯一入口，玩家进出要穿画。改挂全环最长实墙段所在墙面（实段=无门洞、
+            // 无窗的连续环墙，ringSegs），画宽随实段收（段长*3-0.6）、距墙面 0.06，
+            // 入口所在墙面不再被盖，门洞一眼可辨。
+            var bestSeg = null, bestSide = null;
+            ['n', 's', 'e', 'w'].forEach(function (side) {
+              ringSegs(b, side).forEach(function (sg) {
+                if (!bestSeg || (sg.c1 - sg.c0) > (bestSeg.c1 - bestSeg.c0)) { bestSeg = sg; bestSide = side; }
+              });
+            });
+            var lp = null;
+            if (bestSeg) {
+              var lmid = (bestSeg.c0 + bestSeg.c1 + 1) * 1.5;
+              var lwW = (bestSeg.c1 - bestSeg.c0 + 1) * 3 - 0.6;
+              if (bestSide === 'n') lp = { x: lmid, z: b.y0 * 3 + 3.06, ry: 0, nx: 0, nz: 1, w: lwW };
+              else if (bestSide === 's') lp = { x: lmid, z: b.y1 * 3 - 0.06, ry: Math.PI, nx: 0, nz: -1, w: lwW };
+              else if (bestSide === 'w') lp = { x: b.x0 * 3 + 3.06, z: lmid, ry: Math.PI / 2, nx: 1, nz: 0, w: lwW };
+              else lp = { x: b.x1 * 3 - 0.06, z: lmid, ry: -Math.PI / 2, nx: -1, nz: 0, w: lwW };
+            }
+            if (!lp) lp = { x: BR.tileCX(b.ix0) - 1.42, z: cz, ry: Math.PI / 2, nx: 1, nz: 0, w: (b.iy1 - b.iy0 + 1) * 3 - 0.6 }; // 理论兜底：四面无实段时维持旧位
+            var lw = new THREE.Mesh(pl(lp.w, 2.6), texMat('l4_loop'));
+            lw.position.set(lp.x, 1.45, lp.z);
+            lw.rotation.y = lp.ry;
             group.add(lw); W.reg(group, lw);
             W.addInteractable({
               id: 'l4_loopwall_' + b.id, kind: 'inspect', chunkKey: W.chunkKeyOf(ccx, ccy),
-              meshes: [lw], pos: new THREE.Vector3(BR.tileCX(b.ix0) - 0.9, 1.4, cz), radius: 2.6,
+              meshes: [lw], pos: new THREE.Vector3(lp.x + lp.nx * 0.55, 1.4, lp.z + lp.nz * 0.55), radius: 2.6,
               prompt: function () { return keyLabel() + '端详这面墙'; },
               canUse: function () { return true; },
               use: function () {
@@ -292,6 +395,8 @@
             plant.position.set(BR.tileCX(b.ix1 - 1), 0.75, BR.tileCZ(b.iy1 - 1)); group.add(plant);
             var pot = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.18, 0.4, 10), lam(0x8a4a3a));
             pot.position.set(BR.tileCX(b.ix1 - 1), 0.2, BR.tileCZ(b.iy1 - 1)); group.add(pot);
+            BR.World.addPropBox(bx0, bz0, 0.90, 0.25); // v2.5 道具碰撞：休息长椅 1.8×0.5
+            BR.World.addPropCircle(BR.tileCX(b.ix1 - 1), BR.tileCZ(b.iy1 - 1), 0.24); // v2.5 道具碰撞：绿植花盆 Ø0.44
           }
         });
       });
@@ -314,6 +419,7 @@
           else if (W.isWall(p.tx + 1, p.ty)) ry = -Math.PI / 2;
           furn.position.set(fx, 0, fz); furn.rotation.y = ry;
           W.reg(group, furn);
+          W.addPropBox(fx, fz, 0.53, 0.28, { rot: ry }); // v2.5 道具碰撞：文件柜 1.05×0.55（走 BR.Container 而非 addFurniturePickup，自行登记）
           furn.updateMatrixWorld(true);
           var flat = [];
           furn.traverse(function (o) { if (o.isMesh) flat.push(o); });
@@ -346,18 +452,30 @@
         var nn = NOTES[ni % NOTES.length];
         var id = 'note_l4_' + p.tx + '_' + p.ty;
         W.addChunkContent(p.tx, p.ty, function (group) {
-          var nrm = { x: 0, z: 1 };
-          var ds = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-          for (var di = 0; di < 4; di++) {
-            if (W.isWall(p.tx + ds[di][0], p.ty + ds[di][1])) { nrm = { x: -ds[di][0], z: -ds[di][1] }; break; }
-          }
+          // 贴墙锚定（A2-W01，家族通病两连）：① 字条 POI 在街区内 (ix0+1, iy0+2)、离环墙
+          // 2 tile，旧式只查紧邻 4 格，找不到墙就用缺省法线 (0,1) 把纸贴在房间中央；
+          // ② 找到墙时偏移沿「背离墙」法线施加（tileC + n*1.1），把纸推离墙面 2.6m。
+          // 改用 findWallAnchor 向外找最近贴墙地板 tile，锚点 = 锚点 tile 中心
+          // - 法线*(T/2-0.05)（涂鸦/L11 同口径），back≈0.05；朝向仍用法线朝房间。
+          var anchor = findWallAnchor(W, p.tx, p.ty, 3);
           var m = new THREE.Mesh(pl(0.55, 0.75), new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-          m.position.set(BR.tileCX(p.tx) + nrm.x * 1.1, 1.5, BR.tileCZ(p.ty) + nrm.z * 1.1);
-          m.rotation.y = Math.atan2(nrm.x, nrm.z);
+          var noteMeshes = [m];
+          if (anchor) {
+            m.position.set(BR.tileCX(anchor.fx) - anchor.nx * (BR.TILE / 2 - 0.05), 1.5, BR.tileCZ(anchor.fy) - anchor.nz * (BR.TILE / 2 - 0.05));
+            m.rotation.y = Math.atan2(anchor.nx, anchor.nz);
+          } else {
+            // 周边 3 格内无墙可贴（理论兜底）：改立式告示牌（木桩落地+纸面架桩），不悬空贴墙纸
+            var post = new THREE.Mesh(bx(0.09, 1.5, 0.09), lam(0x4a4035));
+            post.position.set(BR.tileCX(p.tx), 0.75, BR.tileCZ(p.ty));
+            group.add(post); W.reg(group, post);
+            noteMeshes.push(post);
+            m.position.set(BR.tileCX(p.tx), 1.32, BR.tileCZ(p.ty) + 0.06);
+            m.rotation.y = 0;
+          }
           W.reg(group, m);
           W.addInteractable({
             id: id, kind: 'note', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-            meshes: [m], pos: m.position.clone(), radius: 2.4,
+            meshes: noteMeshes, pos: m.position.clone(), radius: 2.4,
             prompt: function () { return keyLabel() + '阅读字条'; },
             canUse: function () { return true; },
             use: function () {
@@ -391,6 +509,7 @@
           front.position.set(0, 0.98, 0.41); g.add(front);
           if (broken) { g.rotation.z = 0.06; }
           W.reg(group, g);
+          W.addPropBox(fx, fz, 0.50, 0.40, { rot: ry }); // v2.5 道具碰撞：贩卖机 1.0×0.8（正面可站，交互半径 2.4 内可达）
           var flat = []; g.traverse(function (o) { if (o.isMesh) flat.push(o); });
           W.addInteractable({
             id: id, kind: 'shop', chunkKey: W.chunkKeyOf(p.tx, p.ty),
@@ -423,6 +542,7 @@
             }));
           bottle.position.y = 1.22; g.add(bottle);
           W.reg(group, g);
+          W.addPropBox(fx, fz, 0.18, 0.18); // v2.5 道具碰撞：饮水机 0.36×0.36（交互半径 2.2 内可达）
           var flat = []; g.traverse(function (o) { if (o.isMesh) flat.push(o); });
           W.addInteractable({
             id: id, kind: 'inspect', chunkKey: W.chunkKeyOf(p.tx, p.ty),
@@ -599,11 +719,48 @@
             var edge = new THREE.Mesh(bx(0.12, 0.06, 4.2), edgeM);
             edge.position.set(pp[0], 0.03, -1.2); edge.rotation.x = 0.18; g.add(edge);
           });
+          // EXIT/B1 牌（A2-W04）：旧式挂在 POI tile 中心上方 (0, y, 1.2)，是「假定身后
+          // 有墙」的锚点——POI 在车库角落开敞处，身后 3.3m 才碰墙，两牌悬空 3.09m。
+          // 改为自 POI 逐向（优先南墙）探实际墙面：命中墙行后沿墙找离 POI 最近的实墙段
+          // （避窗/门洞，winTiles+isWall），牌心沿墙钳进实段内、距墙面 0.06 贴墙。
+          var spot = null;
+          var probeDirs = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+          for (var pdi = 0; pdi < 4 && !spot; pdi++) {
+            var pdx = probeDirs[pdi][0], pdy = probeDirs[pdi][1], pk = 0;
+            for (var kk = 1; kk <= 3; kk++) {
+              if (W.isWall(p.tx + pdx * kk, p.ty + pdy * kk)) { pk = kk; break; }
+              if (W.tile(p.tx + pdx * kk, p.ty + pdy * kk) !== 1) break;
+            }
+            if (!pk) continue;
+            var hwtx = p.tx + pdx * pk, hwty = p.ty + pdy * pk;
+            var horiz = (pdy !== 0), cA = horiz ? hwtx : hwty;
+            var segs2 = [], cur2 = null;
+            for (var a2 = cA - 6; a2 <= cA + 6; a2++) {
+              var sx2 = horiz ? a2 : hwtx, sy2 = horiz ? hwty : a2;
+              var ok2 = W.isWall(sx2, sy2) && !winTiles[sx2 + ',' + sy2];
+              if (ok2) { if (cur2) cur2.c1 = a2; else cur2 = { c0: a2, c1: a2 }; }
+              else if (cur2) { segs2.push(cur2); cur2 = null; }
+            }
+            if (cur2) segs2.push(cur2);
+            var poiA = horiz ? fx : fz, bestClamp = null, bestDd = Infinity;
+            segs2.forEach(function (sg) {
+              var cl = Math.max(sg.c0 * 3 + 0.48, Math.min((sg.c1 + 1) * 3 - 0.48, poiA));
+              var dd = Math.abs(cl - poiA);
+              if (dd < bestDd) { bestDd = dd; bestClamp = cl; }
+            });
+            if (bestClamp == null) continue;
+            var faceOff = pk * 3 - 1.56; // POI 中心 → 墙面内侧 0.06 处的沿向偏移
+            if (pdy === 1) spot = { lx: bestClamp - fx, lz: faceOff, ry: Math.PI, wx: 0, wz: 1 };
+            else if (pdy === -1) spot = { lx: bestClamp - fx, lz: -faceOff, ry: 0, wx: 0, wz: -1 };
+            else if (pdx === 1) spot = { lx: faceOff, lz: bestClamp - fz, ry: -Math.PI / 2, wx: 1, wz: 0 };
+            else spot = { lx: -faceOff, lz: bestClamp - fz, ry: Math.PI / 2, wx: -1, wz: 0 };
+          }
+          if (!spot) spot = { lx: 0, lz: 1.2, ry: Math.PI, wx: 0, wz: 1 }; // 理论兜底：四向 3 格无墙时维持旧位
           var sign = new THREE.Mesh(pl(0.9, 0.3), new THREE.MeshBasicMaterial({ map: BR.Textures.get('l4_exitsign') }));
-          sign.position.set(0, 2.5, 1.2); sign.rotation.y = Math.PI;
+          sign.position.set(spot.lx, 2.5, spot.lz); sign.rotation.y = spot.ry;
           g.add(sign);
           var b1 = new THREE.Mesh(pl(0.8, 0.5), new THREE.MeshBasicMaterial({ color: 0xc8a020 }));
-          b1.position.set(0, 1.9, 1.21); b1.rotation.y = Math.PI; g.add(b1);
+          b1.position.set(spot.lx + spot.wx * 0.01, 1.9, spot.lz + spot.wz * 0.01); b1.rotation.y = spot.ry; g.add(b1);
           W.reg(group, g);
           var flat = []; g.traverse(function (o) { if (o.isMesh) flat.push(o); });
           W.addInteractable({
