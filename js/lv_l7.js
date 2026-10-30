@@ -326,20 +326,46 @@
   }
 
   // 字条（舱壁纸片 + 交互）
+  // v2.5 F2 / A3-02：贴墙锚点改用涂鸦同式（levels.js buildGraffitiDecals）——
+  // 锚到墙 tile 中心、沿墙到房间法线偏移 T/2+0.03。旧式以字条 tile 中心沿
+  // 法线 +1.1 外推，会把纸推离墙面约 2.6m 悬空（实测 back=2.6）。四邻无墙时
+  // 在 3 格内借最近的贴墙地板格锚定（入口舱环封环后，靠舱壁的字条格其外侧
+  // 环格已是真墙，通常直接命中）；仍无墙则平放地面作散落纸，不用默认法线硬放。
   function addNote7(W, tx, ty, title, body) {
     var id = 'note_L7_' + tx + '_' + ty;
     W.addChunkContent(tx, ty, function (group) {
       var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      var n = { x: 0, z: 1 };
-      for (var i = 0; i < 4; i++) {
-        if (W.isWall(tx + dirs[i][0], ty + dirs[i][1])) { n = { x: -dirs[i][0], z: -dirs[i][1] }; break; }
+      function wallAnchor(atx, aty) {
+        for (var i = 0; i < 4; i++) {
+          var wx = atx + dirs[i][0], wy = aty + dirs[i][1];
+          if (W.isWall(wx, wy)) return { wx: wx, wy: wy, nx: -dirs[i][0], nz: -dirs[i][1] };
+        }
+        return null;
+      }
+      var anchor = wallAnchor(tx, ty);
+      if (!anchor && W.map) { // 借墙：3 格内最近的有墙地板格
+        for (var r = 1; r <= 3 && !anchor; r++)
+          for (var dy2 = -r; dy2 <= r && !anchor; dy2++)
+            for (var dx2 = -r; dx2 <= r && !anchor; dx2++) {
+              if (Math.max(Math.abs(dx2), Math.abs(dy2)) !== r) continue;
+              var bx2 = tx + dx2, by2 = ty + dy2;
+              if (W.map.tiles[by2 * W.map.w + bx2] !== 1) continue;
+              anchor = wallAnchor(bx2, by2);
+            }
       }
       var m = new THREE.Mesh(
         new THREE.PlaneGeometry(0.55, 0.75),
         new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') })
       );
-      m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-      m.rotation.y = Math.atan2(n.x, n.z);
+      if (anchor) {
+        m.position.set(BR.tileCX(anchor.wx) + anchor.nx * (T / 2 + 0.03), 1.5,
+          BR.tileCZ(anchor.wy) + anchor.nz * (T / 2 + 0.03));
+        m.rotation.y = Math.atan2(anchor.nx, anchor.nz);
+      } else { // 无墙可贴：平放地面（散落纸），不再悬空
+        m.rotation.x = -Math.PI / 2;
+        m.rotation.z = 0.4;
+        m.position.set(BR.tileCX(tx), 0.04, BR.tileCZ(ty));
+      }
       W.reg(group, m);
       W.addInteractable({
         id: id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
@@ -614,13 +640,24 @@
         sg.rotateX(-Math.PI / 2);
         sg.translate(ocx, 0, ocz);
         paintSeaColors(sg);
+        // v2.5 F2 / A3-11：裙边与内层海面统一材质（同 sea_detail 贴图/高光/
+        // 自发光），贴图 repeat 按尺寸比缩放使斑块尺度与内层一致，消除交界
+        // 色带；裙边高度由 SURF-0.03 降到 -0.12（低于内层波谷 SURF-0.135
+        // 一带之下），避免波谷处裙边戳穿内层形成浅色楔形色块——交界处只剩
+        // 远雾中的低台阶，不再有穿插接缝。
+        var skTex = BR.Textures.get('sea_detail');
+        if (skTex && skTex.clone) {
+          skTex = skTex.clone(); skTex.needsUpdate = true;
+          skTex.wrapS = skTex.wrapT = THREE.RepeatWrapping;
+          skTex.repeat.set(760 / (ox1w - ox0w), 760 / (oz1w - oz0w));
+        } else skTex = null;
         var sm = new THREE.MeshPhongMaterial({
-          color: 0xffffff, specular: 0x5a6d76, shininess: 40,
-          vertexColors: true
+          color: 0xffffff, specular: 0x8fa3ad, shininess: 90,
+          map: skTex, vertexColors: true, emissive: 0x0a1c22
         });
         trackMat(W, sm);
         var sk = new THREE.Mesh(sg, sm);
-        sk.position.y = SURF - 0.03; // 紧贴内层海面之下（2cm，无可见断层）
+        sk.position.y = -0.12;
         sk.frustumCulled = false;
         W.scene.add(sk);
         trackScene(sk);
@@ -723,16 +760,20 @@
         var c = document.createElement('canvas'); c.width = 4; c.height = 128;
         var x2 = c.getContext('2d');
         var g = x2.createLinearGradient(0, 0, 0, 128);
+        // v2.5 F2 / A3-10：雾环硬边羽化——旧渐变峰值 alpha 0.55 集中在 0.45~0.80
+        // 窄带内，三环峰值同高叠出同心硬弧带。改为全程缓坡（峰值 0.20）、材质
+        // 不透明度下调、柱高 30→48 拉宽竖向带宽、三环竖向错峰（yOff），使
+        // 有效峰值由约 0.28 降至约 0.07 且不再同高对齐。
         g.addColorStop(0.00, 'rgba(89,97,106,0)');
-        g.addColorStop(0.45, 'rgba(89,97,106,0.42)');
-        g.addColorStop(0.62, 'rgba(89,97,106,0.55)');
-        g.addColorStop(0.80, 'rgba(89,97,106,0.30)');
+        g.addColorStop(0.25, 'rgba(89,97,106,0.10)');
+        g.addColorStop(0.50, 'rgba(89,97,106,0.20)');
+        g.addColorStop(0.75, 'rgba(89,97,106,0.10)');
         g.addColorStop(1.00, 'rgba(89,97,106,0)');
         x2.fillStyle = g; x2.fillRect(0, 0, 4, 128);
         var hazeTex = new THREE.CanvasTexture(c);
         L.haze = [];
         var rings = [
-          { r: 55, op: 0.50 }, { r: 100, op: 0.42 }, { r: 150, op: 0.34 }
+          { r: 55, op: 0.34, yOff: 0 }, { r: 100, op: 0.28, yOff: 4 }, { r: 150, op: 0.22, yOff: 8 }
         ];
         for (var i = 0; i < rings.length; i++) {
           var hm = new THREE.MeshBasicMaterial({
@@ -741,8 +782,8 @@
           });
           trackMat(W, hm);
           var cyl = new THREE.Mesh(
-            new THREE.CylinderGeometry(rings[i].r, rings[i].r, 30, 48, 1, true), hm);
-          cyl.position.set(ocx, 4, ocz);
+            new THREE.CylinderGeometry(rings[i].r, rings[i].r, 48, 48, 1, true), hm);
+          cyl.position.set(ocx, 6 + (rings[i].yOff || 0), ocz);
           cyl.renderOrder = -5;
           cyl.frustumCulled = false;
           W.scene.add(cyl);
@@ -858,7 +899,9 @@
           // 地板覆层：钢板（盖住 abyss 贴图，舱内可辨认）
           var fl = new THREE.Mesh(
             new THREE.PlaneGeometry(ew, eh),
-            new THREE.MeshLambertMaterial({ map: BR.Textures.get('deck_plate') })
+            // v2.5 F2 / A3-12：地板过曝发白——材质加乘色 0x8f959a 压一档反射，
+            // 使 deck_plate 在舱内灯光下回到深灰钢板观感（板缝可辨）。
+            new THREE.MeshLambertMaterial({ map: BR.Textures.get('deck_plate'), color: 0x8f959a })
           );
           trackMat(W, fl.material);
           fl.rotation.x = -Math.PI / 2;
@@ -874,8 +917,27 @@
           trackMat(W, found.material);
           found.position.set(cx, -4.5, cz);
           W.reg(group, found);
+          // W-fix2(2026-10-28)：封堵舱环缺口。gen 走廊切割会让入口舱外环个别
+          // tile 仍是地板(1)（如本局西墙两格），墙箱不生成 → 舱壁整段缺失、
+          // 舱内直望海面（异常 #8 的墙板悬空感、#5 帧的远墙缺口同源）。此处只
+          // 补渲染墙板（rust_metal、满高、立在环 tile 与舱内的边界线上），
+          // 不动 tiles/碰撞/连通——玩家仍可涉水穿过缺口，属已知取舍（见修复记录）。
+          var sealM = new THREE.MeshLambertMaterial({ map: BR.Textures.get('rust_metal') });
+          trackMat(W, sealM);
+          var sealH = (map.theme && map.theme.wallH) || 3.2;
+          function sealTile(tx, ty) {
+            if (W.map.tiles[ty * W.map.w + tx] !== 1) return;      // 只补地板缺口（墙 tile 自有墙箱）
+            if (tx === meta.door.tx && ty === meta.door.ty) return; // 门 tile 除外
+            if (tx === entry.x - 1) bx(0.34, sealH, T, sealM, entry.x * T, sealH / 2, ty * T + T / 2);
+            else if (tx === entry.x + entry.w) bx(0.34, sealH, T, sealM, (entry.x + entry.w) * T, sealH / 2, ty * T + T / 2);
+            else if (ty === entry.y - 1) bx(T, sealH, 0.34, sealM, tx * T + T / 2, sealH / 2, entry.y * T);
+            else if (ty === entry.y + entry.h) bx(T, sealH, 0.34, sealM, tx * T + T / 2, sealH / 2, (entry.y + entry.h) * T);
+          }
+          for (var sy2 = entry.y; sy2 < entry.y + entry.h; sy2++) { sealTile(entry.x - 1, sy2); sealTile(entry.x + entry.w, sy2); }
+          for (var sx2 = entry.x; sx2 < entry.x + entry.w; sx2++) { sealTile(sx2, entry.y - 1); sealTile(sx2, entry.y + entry.h); }
           // 暖光：安全感（灯池之外独立 1 盏，随区块释放）
-          var pl = new THREE.PointLight(0xffd9a0, 1.05, 16, 2);
+          // v2.5 F2 / A3-12：舱内暖光强度 1.05→0.72、距离 16→13，减地板直射过曝
+          var pl = new THREE.PointLight(0xffd9a0, 0.72, 13, 2);
           pl.position.set(cx, 2.4, cz);
           W.reg(group, pl);
           // 上下铺 ×1（靠墙）：钢架 + 两层床垫 + 枕头
@@ -896,6 +958,8 @@
             bb(1.9, 0.16, 0.9, cloth, 0, 1.44, 0);    // 上层床垫
             bb(0.5, 0.12, 0.7, cloth, -0.6, 0.66, 0); // 枕头
             W.reg(group, bg);
+            // v2.5 道具碰撞：上下铺整体 2.0×1.0（床板/床垫实测），舱内地板 yBase 0
+            W.addPropBox(bx0, bz0, 1.0, 0.5, { rot: rot, yBase: 0 });
           }
           // 折叠椅 ×2
           for (var ci = 0; ci < 2; ci++) {
@@ -911,12 +975,15 @@
             for (var lg = 0; lg < 4; lg++)                  // 椅腿
               cb(0.05, 0.46, 0.05, steel, lg < 2 ? -0.18 : 0.18, 0.23, lg % 2 ? -0.18 : 0.18);
             W.reg(group, ch);
+            // v2.5 道具碰撞：折叠椅 0.45×0.45（座面实测；靠背顶高约 1.0m，需绕行）
+            W.addPropBox(chx, chz, 0.225, 0.235, { rot: ch.rotation.y, yBase: 0 });
           }
           // 临时置物架：立柱 + 层板 + 杂物箱/罐
           var shT = takeFar();
           if (shT) {
             var shx = BR.tileCX(shT[0]), shz = BR.tileCZ(shT[1]);
-            var sh = new THREE.Group(); sh.position.set(shx, 0, shz); sh.rotation.y = (rng.next() * 2 | 0) * Math.PI / 2;
+            var shRot = (rng.next() * 2 | 0) * Math.PI / 2;
+            var sh = new THREE.Group(); sh.position.set(shx, 0, shz); sh.rotation.y = shRot;
             function sb(w, h, d, m, x, y, z) {
               var ms = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
               ms.position.set(x, y, z); sh.add(ms); return ms;
@@ -928,6 +995,8 @@
               sb(0.28 + rng.next() * 0.2, 0.25 + rng.next() * 0.25, 0.3, bi2 % 2 ? wood : cloth,
                 (rng.next() - 0.5) * 1.0, 0.5 + ((rng.next() * 3) | 0) * 0.6, (rng.next() - 0.5) * 0.4);
             W.reg(group, sh);
+            // v2.5 道具碰撞：置物架层板 1.5×0.8（实测），高 1.8
+            W.addPropBox(shx, shz, 0.75, 0.4, { rot: shRot, yBase: 0 });
           }
           // 膝盖高积水：半透明水面（0.45m），下透舱内钢板地面
           var pdT = takeFar();
@@ -936,7 +1005,7 @@
             var pm = new THREE.Mesh(
               new THREE.PlaneGeometry(2.6, 2.6),
               new THREE.MeshPhongMaterial({
-                color: 0x3d5a66, transparent: true, opacity: 0.42,
+                color: 0x46545c, transparent: true, opacity: 0.38, // v2.5 F2 / A3-12：积水面色调向新地板靠拢，减菱形色块突兀感
                 shininess: 120, specular: 0xaac4d0, depthWrite: false
               })
             );
@@ -1001,6 +1070,8 @@
             brokenPivot.rotation.z = -0.12;
             locker.add(brokenPivot);
             W.reg(group, locker);
+            // v2.5 道具碰撞：储物柜柜体 LW×LD = 1.2×0.6（实测），高 1.9；柜门开合摆幅不计
+            W.addPropBox(lfx, lfz, 0.6, 0.3, { rot: locker.rotation.y, yBase: 0 });
             locker.updateMatrixWorld(true);
             var lockerMeshes = [];
             locker.children.forEach(function (c) {
@@ -1055,6 +1126,8 @@
             dp(1.34, 0.03, 0.75, steelD, 0, 0.755, 0);                // 屉柜顶板
             dp(0.03, 0.42, 0.72, steelD, 0, 0.56, 0);                 // 中隔板
             W.reg(group, deskGroup);
+            // v2.5 道具碰撞：抽屉桌桌面 1.5×0.85（实测）；抽屉拉出段（+z 0.45）为开合件不计
+            W.addPropBox(deskFx, deskFz, 0.75, 0.425, { yBase: 0 });
           }
           // 抽屉滑动动画（drawer kind 默认无动画，这里覆盖）
           function slideDrawerTo(bin, z) {
@@ -1188,6 +1261,8 @@
               rag2.position.set(0.1, 0.08, 0.2); rag2.rotation.y = -0.4; cm.group.add(rag2);
             }
             W.reg(group, cm.group);
+            // v2.5 道具碰撞：板条箱 buildCrateMesh wd=1.05 → 半宽/半深 0.525
+            W.addPropBox(cfx, cfz, 0.525, 0.525, { rot: cm.group.rotation.y, yBase: 0 });
             BR.Container.create(W, {
               id: 'crate_l7_' + kind2 + '_' + cT[0] + '_' + cT[1], kind: 'crate',
               tx: cT[0], ty: cT[1], group: group, visual: { lid: cm.lid },
@@ -1294,7 +1369,10 @@
               new THREE.MeshBasicMaterial({ map: BR.Textures.get('note'), color: 0xd6c491 })
             );
             trackMat(W, paperM.material);
-            paperM.position.set(BR.tileCX(pick[0]) + nx * 1.32, 1.6, BR.tileCZ(pick[1]) + nz * 1.32);
+            // v2.5 F2 / A3-02：锚到墙 tile 中心 + 法线*(T/2+0.03)（涂鸦同式）。
+            // 旧式以纸所在 tile 中心沿舱内方向 +1.32 把纸拉离墙面（实测 back=2.82）。
+            paperM.position.set(BR.tileCX(pick[0] + pick[2][0]) + nx * (T / 2 + 0.03), 1.6,
+              BR.tileCZ(pick[1] + pick[2][1]) + nz * (T / 2 + 0.03));
             paperM.rotation.y = Math.atan2(nx, nz);
             paperM.rotation.z = 0.04; // 微微歪斜，像很久没人管
             W.reg(group, paperM);
@@ -1379,6 +1457,11 @@
             top.position.set((x0 + x1) / 2, deckH + railH, (z0 + z1) / 2);
             top.rotation.y = -Math.atan2(z1 - z0, x1 - x0);
             W.reg(group, top);
+            // v2.5 道具碰撞：甲板栏杆（立柱 Ø0.08/扶手 0.07 厚，取半厚 0.05），甲板面 yBase=deckH(0.72)
+            if (Math.abs(x1 - x0) > Math.abs(z1 - z0))
+              W.addPropBox((x0 + x1) / 2, (z0 + z1) / 2, len / 2, 0.05, { yBase: deckH });
+            else
+              W.addPropBox((x0 + x1) / 2, (z0 + z1) / 2, 0.05, len / 2, { yBase: deckH });
           }
           // 外边缘（远离舱室的一边）+ 两侧（停船侧留开口：只建一半）
           var ox = dnx, oz = dny; // 外法线
@@ -1414,6 +1497,8 @@
           var lid = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.12, 1.05), wood);
           lid.position.y = 0.86; g.add(lid);
           W.reg(group, g);
+          // v2.5 道具碰撞：补给箱箱体 1.05×1.05（实测），舱内地板 yBase 0
+          W.addPropBox(BR.tileCX(p.tx), BR.tileCZ(p.ty), 0.525, 0.525, { yBase: 0 });
           W.addInteractable({
             id: id, kind: 'cache', chunkKey: W.chunkKeyOf(p.tx, p.ty),
             meshes: [boxM, lid], pos: g.position.clone().add(new THREE.Vector3(0, 1, 0)), radius: 2.6,
@@ -1442,7 +1527,11 @@
       poiList(map, 'entry_door').forEach(function (p) {
         var doorId = p.data.doorId;
         W.addDoor({
-          id: doorId, tx: p.tx, ty: p.ty, axis: p.data.axis || 'x', locked: false,
+          // W-fix2(2026-10-28)：axis 按 POI 外法线推导。POI 未携带 axis，旧默认 'x'
+          // 与 gen_l7 的字母约定又和 world 相反（world：'x'=门扇跨 X 贴南北墙、
+          // 'z'=旋转 90°跨 Z 贴东西墙），西/东墙舱盖门会被建成横置门扇堵过道
+          // （异常 #3）。nx≠0 = 门在东西墙 → 'z'；ny≠0 = 门在南北墙 → 'x'。
+          id: doorId, tx: p.tx, ty: p.ty, axis: p.data.nx ? 'z' : 'x', locked: false,
           label: '舱盖',
           prompt: function () { return '推开舱盖'; },
           use: function (d) {
@@ -1630,14 +1719,33 @@
         var woodM = new THREE.MeshLambertMaterial({ color: 0x5a4a36 }); trackMat(W, woodM);
         var barM = new THREE.MeshLambertMaterial({ color: 0x6a5a48 }); trackMat(W, barM);
         L.debris = [];
-        for (var di = 0; di < 9; di++) {
-          var ds = sampleDeepWater(-100, 8, 33); // 浅水台地：海床深度 <12m
-          var dx0, dz0;
-          if (ds && ter && BR.L7Terrain.depthAt(ds.x, ds.z, ter) < 12) { dx0 = ds.x; dz0 = ds.z; }
-          else {
-            var ang = bRng.next() * 6.2832, drad = 10 + bRng.next() * 20;
-            dx0 = ccx + Math.cos(ang) * drad; dz0 = ccz + Math.sin(ang) * drad;
+        // W-fix2(2026-10-28)：漂浮物采样避开舱体+甲板 footprint 并预留最大漂移
+        // 半径（dr≤0.65 → 漂移 ≤3.9m）。旧采样只查水深，舱下海床深约 5m 也算
+        // "浅水台地"，桶/木板会生成进舱内或漂进甲板边缘（异常 #4 舱内圆桶）。
+        var structRects = [
+          { x0: entry.x * T - T, z0: entry.y * T - T, x1: (entry.x + entry.w) * T + T, z1: (entry.y + entry.h) * T + T },
+          { x0: meta.deck.x0 * T - T, z0: meta.deck.y0 * T - T, x1: (meta.deck.x1 + 1) * T + T, z1: (meta.deck.y1 + 1) * T + T }
+        ];
+        function structClear(x, z, pad) {
+          for (var si = 0; si < structRects.length; si++) {
+            var sr = structRects[si];
+            if (x > sr.x0 - pad && x < sr.x1 + pad && z > sr.z0 - pad && z < sr.z1 + pad) return false;
           }
+          return true;
+        }
+        for (var di = 0; di < 9; di++) {
+          var ddr = 0.65 * 6 + 0.6; // 最大漂移半径 + 余量
+          var dx0 = null, dz0 = null;
+          for (var dtry = 0; dtry < 14 && dx0 === null; dtry++) {
+            var ds = sampleDeepWater(-100, 8, 33); // 浅水台地：海床深度 <12m
+            if (ds && ter && BR.L7Terrain.depthAt(ds.x, ds.z, ter) < 12 && structClear(ds.x, ds.z, ddr)) { dx0 = ds.x; dz0 = ds.z; }
+          }
+          for (var dai = 0; dai < 12 && dx0 === null; dai++) {
+            var ang = bRng.next() * 6.2832, drad = 10 + bRng.next() * 20;
+            var fx0 = ccx + Math.cos(ang) * drad, fz0 = ccz + Math.sin(ang) * drad;
+            if (structClear(fx0, fz0, ddr)) { dx0 = fx0; dz0 = fz0; }
+          }
+          if (dx0 === null) { dx0 = ccx + 26; dz0 = ccz; } // 终极兜底：舱体以东远水，必在结构外
           var dm;
           if (di % 3 === 0) dm = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.9, 9), barM);
           else if (di % 3 === 1) dm = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 0.35), woodM);

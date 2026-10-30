@@ -94,12 +94,35 @@
     opts = opts || {};
     const id = 'note_' + W.map.level + '_' + tx + '_' + ty;
     W.addChunkContent(tx, ty, (group) => {
-      const n = wallNormal(W, tx, ty);
+      let n = wallNormal(W, tx, ty);
+      let ax = tx, ay = ty; // 锚点地板 tile（缺省 = POI tile；无邻墙兜底时移到墙面旁的地板 tile）
+      // v2.5 F6 兜底：POI 四邻无墙时 wallNormal 只给缺省法线、公式无墙可贴（实测
+      // L0(38,35)/L1(30,17) 四邻皆地板，字条仍浮空）——按同心环（≤3 格）找最近墙
+      // tile 的可用面（该面外侧须为地板），把锚点移到该面旁的地板 tile，之后仍走
+      // 下方统一的地板锚点公式。有邻墙时本兜底不触发，行为与公式直改完全一致。
+      const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      if (!DIRS4.some(([dx, dy]) => W.isWall(tx + dx, ty + dy))) {
+        let best = null;
+        for (let r = 1; r <= 3; r++) {
+          for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const wx = tx + dx, wy = ty + dy;
+            if (!W.isWall(wx, wy)) continue;
+            for (const [fx, fy] of DIRS4) {
+              if (W.isWall(wx + fx, wy + fy)) continue; // 该面被墙挡住，不可贴
+              const fcx = BR.tileCX(wx) + fx * (T / 2), fcz = BR.tileCZ(wy) + fy * (T / 2);
+              const d = Math.hypot(fcx - BR.tileCX(tx), fcz - BR.tileCZ(ty));
+              if (!best || d < best.d) best = { d, wx, wy, fx, fy };
+            }
+          }
+        }
+        if (best) { ax = best.wx + best.fx; ay = best.wy + best.fy; n = { x: best.fx, z: best.fy }; }
+      }
       const m = new THREE.Mesh(
         new THREE.PlaneGeometry(0.55, 0.75),
         new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') })
       );
-      m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
+      m.position.set(BR.tileCX(ax) - n.x * (T / 2 - 0.04), 1.5, BR.tileCZ(ay) - n.z * (T / 2 - 0.04));
       m.rotation.y = Math.atan2(n.x, n.z);
       W.reg(group, m);
       W.addInteractable({
@@ -129,8 +152,8 @@
   // 贴墙：position = tile中心 - 法线*(T/2-0.04)（法线 n 为墙→房间方向），
   // 正面朝房间：rotation.y = atan2(n.x, n.z)；rotation.z 做面内轻微倾斜（手绘感）。
   // 材质按 (text|sub|color|arrow) 复用（BR.Textures.graffitiMaterial 缓存），每处涂鸦 1 个 draw call。
-  // 注意：旧贴花（海报/字条）用的 +n*(T/2-0.05) 会把贴花放到 tile 另一侧、离墙面约 3m 浮空；
-  // 涂鸦按"贴墙"语义用 -n 修正（旧贴花保持不动，避免影响其他已验证的视觉）。
+  // 注意：贴墙物锚点统一用地板锚点公式 -n*(T/2-ε)（v2.5 F6：addNote 与马尼拉告示已由
+  // 错误的 +n 公式改为与涂鸦一致的 -n 公式，此前字条/告示离墙 1.55~5.2m 浮空，见审计 A1-01~04）。
   function buildGraffitiDecals(map, W) {
     const list = (map.pois || []).filter(p => p.type === 'graffiti');
     for (const p of list) {
@@ -1015,6 +1038,8 @@
     W.addChunkContent(tx, ty, (group) => {
       const cm = BR.buildCrateMesh(W);
       cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
+      // v2.5 道具碰撞：板条箱占地为 buildCrateMesh 的 wd=1.05 见方（方形盒，四壁同宽），半宽/半深各 1.05/2
+      W.addPropBox(cm.group.position.x, cm.group.position.z, 0.525, 0.525);
       W.reg(group, cm.group);
       addPropShadow(W, group, cm.group.position.x, cm.group.position.z, 0.8); // H 路：接触阴影
       // 迁跃浆果来源之一：每只箱子 2% 概率（按箱子 id 确定性派生，保证复现；build 时即确定，重建一致）
@@ -1034,6 +1059,9 @@
       if (W.state.picked.includes(id)) return; // 已采摘：存档恢复时不再出现
       const g = new THREE.Group();
       g.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
+      // v2.5 道具碰撞：灌木叶团/浆果分布半径约 0.55（在本钩子的已采摘早退之后，采摘后重建不再登记）
+      // tag 用灌木稳定 id：采摘成功时 W.removePropByTag(id) 立即清碰撞，不等区块卸载
+      W.addPropCircle(g.position.x, g.position.z, 0.55, { tag: id });
       const rng = new BR.RNG(BR.hashSeed(id)); // 布局确定性，不随加载变化
       const leaf = new THREE.MeshLambertMaterial({ color: 0x2e5a2e });
       for (let i = 0; i < 5; i++) { // 暗绿叶团
@@ -1066,6 +1094,7 @@
           W.state.picked.push(id);
           BR.bus.emit('picked', { id });
           W.removeInteractable(id);
+          W.removePropByTag(id);
           group.remove(g);
           BR.UI.updateInv();
         }
@@ -1078,12 +1107,27 @@
   //   不传则保持旧行为：同层野生切出（noclipRandom）。L0/L1/L2/L3/FUN 均不传。
   function buildThinWalls(map, W, opts) {
     opts = opts || {};
-    W._thinWalls = (map.pois || []).filter(p => p.type === 'thin_wall').map(p => ({
+    const twPois = (map.pois || []).filter(p => p.type === 'thin_wall');
+    W._thinWalls = twPois.map(p => ({
       x: BR.tileCX(p.tx), z: BR.tileCZ(p.ty),
       dx: p.data.dx || 0, dz: p.data.dz || 1,
       charge: 0, cool: 0, hintTold: false,
       cross: (opts.cross && opts.cross.length) ? opts.cross.slice() : null
     }));
+    // v2.5 道具碰撞：本函数实际不生成网格/墙段（只登记 POI 供 thinWallTick 挤压检测），
+    // 没有“段生成处/mesh AABB”可挂；粒度退到每个 POI 一段：薄墙位于该地板 tile 朝
+    // (dx,dz) 一侧的 tile 边界上（相邻墙 tile 本身已是 tile 碰撞，此盒是地板侧的冗余封边，
+    // 半厚 0.08、沿墙长一整 tile 即半长 T/2）。登记放进该 tile 的区块钩子，与其他道具同
+    // 生命周期：区块卸载按 chunkKey 清除、重建钩子重跑重新登记；不改变 thinWallTick 的
+    // 距离/挤压判定（玩家仍可贴到边界前蓄力切出）。
+    for (const p of twPois) {
+      const dx = p.data.dx || 0, dz = p.data.dz || 1;
+      const bx = BR.tileCX(p.tx) + dx * (T / 2), bz = BR.tileCZ(p.ty) + dz * (T / 2);
+      W.addChunkContent(p.tx, p.ty, () => {
+        if (dx) W.addPropBox(bx, bz, 0.08, T / 2);
+        else W.addPropBox(bx, bz, T / 2, 0.08);
+      });
+    }
   }
   function thinWallTick(dt) {
     const W = BR.World, P = BR.Player;
@@ -1343,6 +1387,16 @@
     const item = opts.item;
     if (!item) return null;
     const id = 'fpick_' + item + '_' + opts.tx + '_' + opts.ty + '_' + (opts.suffix || 'furn');
+    // v2.5 道具碰撞：在柜子分支 return 之前登记，保证柜/桌两种容器与桌子已拾取早退路径都覆盖
+    // （家具本体在拾取后仍存在）；尺寸对 buildCabinetMesh（1.05×0.55）/ buildTableMesh 桌面（1.3×0.8）各取一半。
+    // opts.skipPropCollider 为真时跳过（马尼拉八角圆桌已按圆单独登记，避免被通用 table 矩形重复登记）。
+    if (!opts.skipPropCollider) {
+      if (opts.container === 'cabinet') {
+        W.addPropBox(opts.fx, opts.fz, 0.53, 0.28, { rot: opts.furniture ? opts.furniture.rotation.y : 0 });
+      } else {
+        W.addPropBox(opts.fx, opts.fz, 0.65, 0.40, opts.furniture ? { rot: opts.furniture.rotation.y } : undefined);
+      }
+    }
     if (opts.container === 'cabinet') return addCabinetTwoStage(W, opts, id, item);
     // H 路：家具底部接触阴影（桌/柜调用方已把 furniture mesh 摆好，位置取 fx/fz）
     addPropShadow(W, opts.group, opts.fx, opts.fz, opts.container === 'cabinet' ? 0.75 : 1.0);
@@ -2036,14 +2090,20 @@
         tbase.position.y = 0.04; table.add(tbase);
         table.position.set(cx, 0, cz);
         W.reg(group, table);
+        // v2.5 道具碰撞：中央八角圆桌按圆柱半径 1.05 登记为圆（下方 addFurniturePickup 补
+        // skipPropCollider，避免再被通用 table 矩形重复登记）
+        W.addPropCircle(cx, cz, 1.05);
         [[cx - 1.85, cz, Math.PI / 2], [cx + 1.85, cz, -Math.PI / 2]].forEach(pt => {
           const ch = buildChairMesh();
           ch.position.set(pt[0], 0, pt[1]); ch.rotation.y = pt[2];
           W.reg(group, ch);
+          // v2.5 道具碰撞：椅子坐面 0.5×0.5，半宽/半深各 0.25，带其 rotation.y
+          W.addPropBox(pt[0], pt[1], 0.25, 0.25, { rot: pt[2] });
         });
         BR.addFurniturePickup(W, {
           tx: tcx, ty: tcy, item: 'almond', suffix: 'manila_table',
-          group, fx: cx, fz: cz, topY: 0.80, container: 'table'
+          group, fx: cx, fz: cz, topY: 0.80, container: 'table',
+          skipPropCollider: true
         });
         // 5) 桌上散落文件：多语言穿墙指南（可读装饰字条，非收集系统）
         addTablePaper(W, group, tcx, tcy, cx - 0.62, 0.795, cz + 0.30, 0.5, '《穿墙指南》', MANILA_NOCLIP_TEXT);
@@ -2071,7 +2131,7 @@
         const n = wallNormal(W, ptx, pty);
         const pm = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.94),
           new THREE.MeshBasicMaterial({ map: manilaPosterTexture() }));
-        pm.position.set(BR.tileCX(ptx) + n.x * (T / 2 - 0.05), 1.62, BR.tileCZ(pty) + n.z * (T / 2 - 0.05));
+        pm.position.set(BR.tileCX(ptx) - n.x * (T / 2 - 0.05), 1.62, BR.tileCZ(pty) - n.z * (T / 2 - 0.05));
         pm.rotation.y = Math.atan2(n.x, n.z);
         W.reg(group, pm);
         W.addInteractable({
