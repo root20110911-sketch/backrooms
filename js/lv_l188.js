@@ -646,6 +646,7 @@
           mat.position.set(px(sp.tx) - 0.4, 0.11, pz(sp.ty) + 0.6);
           mat.rotation.y = 0.25;
           W.reg(group, mat);
+          // v2.5 不登记道具碰撞：床垫高仅 0.22m 可踏，且中心距出生点约 0.72m（<1m）
           for (var i = 0; i < 4; i++) {
             var paper = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.4),
               new THREE.MeshBasicMaterial({ color: 0xb8b0a0 }));
@@ -882,6 +883,8 @@
               leg.position.set(b[0] + ox, 0.27, b[1]);
               W.reg(group, leg);
             });
+            // v2.5 道具碰撞：中庭长椅（坐面 2.2×0.55，绕开步道两侧仍可通行）
+            if (W.addPropBox) W.addPropBox(b[0], b[1], 1.1, 0.275, { floor: 0, yBase: 0 });
           });
           // 星空（无自然光：星星不照明，只做视觉）
           var starGeo = new THREE.BufferGeometry();
@@ -1131,7 +1134,10 @@
           regVoice(w, 'event');
         }
 
-        /* ② room：可观察的普通房间（床 + 床头柜台灯，近物遮远物） */
+        /* ② room：可观察的普通房间（床 + 床头柜台灯，近物遮远物）
+         * v2.5 决策：凸窗盒内全部家具（②的床/床头柜、③party 的派对桌/礼物盒等）
+         * 一律不登记道具碰撞——窗盒底沿离地约 1m、玩家进不去，登记成地面碰撞
+         * 反而会挡住窗前的观看/交互站位。气球/彩带等悬空装饰同理不登记。 */
         function buildRoom(group, w) {
           var back = bayShell(group, w, 1.8, 2.3, 1.6);
           setBackTex(back, 'room_warm');
@@ -1538,8 +1544,11 @@
           doorM.rotation.y = Math.atan2(dx, dz);
           W.reg(group, doorM);
           var sign = basicPlane(0.9, 0.3, 'exit_sign');
-          sign.position.set(wx + dx * 0.12, 2.62, wz + dz * 0.12);
-          sign.rotation.y = Math.atan2(dx, dz);
+          // F3/A3-07：旧位 = 门心再朝墙内 +0.12，牌面埋进门板/墙体后且朝向朝墙，完全不可见。
+          // 改锚门上方墙面（房间侧）：墙面在 POI 中心 + dir*(T/2)，牌面回退 0.03 贴墙（back≈0.03），
+          // 牌心 y=2.9（牌底 2.75 > 门顶 2.7，不被门板遮挡），朝向房间（-dir）。
+          sign.position.set(px(p.tx) + dx * (T / 2 - 0.03), 2.9, pz(p.ty) + dz * (T / 2 - 0.03));
+          sign.rotation.y = Math.atan2(-dx, -dz);
           W.reg(group, sign);
           var dname = (BR.Levels[dest] && BR.Levels[dest].name) || dest;
           W.addInteractable({
@@ -1600,6 +1609,11 @@
               W.reg(group, m);
               return m;
             }
+            // v2.5 道具碰撞：楼层号与 _l188floor 同编号（baseY=F2Y→1，1F→0），yBase=家具底面高度
+            var propOpts = { floor: baseY > 0 ? 1 : 0, yBase: baseY };
+            function regProp(pcx, pcz, hw, hd) {
+              if (W.addPropBox) W.addPropBox(pcx, pcz, hw, hd, propOpts);
+            }
             var fl = new THREE.Mesh(new THREE.PlaneGeometry(w * T - 0.4, h * T - 0.4),
               W._l188woodMat);
             fl.rotation.x = -Math.PI / 2;
@@ -1615,10 +1629,13 @@
               B(bw2 - 0.1, 0.18, 1.8, 0x8a7a5c, bx, 0.48, bz);     // 床垫
               B(bw2 - 0.3, 0.14, 0.4, 0xb0a890, bx, 0.6, bz - 0.6); // 枕头
               B(bw2, 0.55, 0.12, 0x3a2c1c, bx, 0.55, bz - 1.0);    // 床头板
+              // 整体占地：床架深 1.9 + 床头板向后多出约 0.11，中心略向 -z 偏
+              regProp(bx, bz - 0.05, bw2 / 2, 1.0);
             }
             function nightstand(bx, bz, lit) {                    // 床头柜 + 台灯
               B(0.5, 0.55, 0.45, 0x3a2c1c, bx, 0.275, bz);
               B(0.4, 0.04, 0.35, 0x2a2018, bx, 0.57, bz);
+              regProp(bx, bz, 0.25, 0.225);
               if (lit) {
                 B(0.1, 0.3, 0.1, 0x1c1c20, bx, 0.74, bz);
                 var shade = glowPlane(0.26, 0.2, 'win_warm');
@@ -1627,6 +1644,7 @@
               }
             }
             function luggage(bx, bz) {                            // 行李箱 + 旅行袋
+              // v2.5 不登记：整组高 <0.4m，属可跨越的地面杂物
               B(0.72, 0.28, 0.45, 0x5a2c1c, bx, 0.14, bz);
               B(0.6, 0.1, 0.36, 0x3a1c12, bx, 0.33, bz);
               B(0.5, 0.35, 0.3, 0x2c3a4a, bx + 0.8, 0.175, bz + 0.1);
@@ -1649,6 +1667,8 @@
                 B(0.08, 0.75, 0.08, 0x3a2c1c, cx + 1.6 + o, 0.37, cz - 1.0);
               });
               B(0.45, 0.5, 0.45, 0x2e2620, cx + 1.6, 0.25, cz - 0.2); // 椅
+              regProp(cx + 1.6, cz - 1.0, 0.7, 0.35);   // 书桌（桌面 1.4×0.7）
+              regProp(cx + 1.6, cz - 0.2, 0.225, 0.225); // 椅
               var dlamp = glowPlane(0.3, 0.24, 'win_warm');           // 桌灯
               dlamp.position.set(cx + 1.3, baseY + 1.0, cz - 1.0);
               W.reg(group, dlamp);
@@ -1662,6 +1682,9 @@
             var cab = box(1.1, 2.2, 0.6, 0x3a2c1c);
             cab.position.set(cx + w * T / 2 - 1.0, baseY + 1.1, cz - h * T / 2 + 0.8);
             W.reg(group, cab);
+            // v2.5 道具碰撞：衣柜贴北墙，正面（+z）敞向房内；交互点在柜前 1.0m、
+            // 半径 2.6，登记后（半深 0.3）仍可稳稳站进交互半径。
+            regProp(cab.position.x, cab.position.z, 0.55, 0.3);
             var cabId = 'cabinet_' + num;
             if (W.state.picked.indexOf(cabId) < 0 && !locked) {
               var loot = new BR.RNG(BR.hashSeed('cab:' + num)).pick(['almond', 'bandage', 'almond', 'empty']);
@@ -1764,6 +1787,8 @@
               leaf.position.set(px(c[0]) + 0.9, 0.8 + i * 0.45, pz(c[1]) + 0.9);
               W.reg(group, leaf);
             }
+            // v2.5 道具碰撞：转角花盆（盆口半径约 0.28，取 0.3）
+            if (W.addPropCircle) W.addPropCircle(px(c[0]) + 0.9, pz(c[1]) + 0.9, 0.3, { floor: 0, yBase: 0 });
           });
         });
         [[20, 37], [42, 37]].forEach(function (c) { // 南走廊长椅
@@ -1776,6 +1801,8 @@
               leg.position.set(px(c[0]) + o, 0.25, pz(c[1]) - 0.9);
               W.reg(group, leg);
             });
+            // v2.5 道具碰撞：长椅贴走廊北侧，走廊南侧约 2.1m 通道不受影响
+            if (W.addPropBox) W.addPropBox(px(c[0]), pz(c[1]) - 0.9, 1.0, 0.25, { floor: 0, yBase: 0 });
           });
         });
       })();
@@ -1835,9 +1862,12 @@
               var backr = box(2.4, 0.7, 0.25, 0x3a2230);
               backr.position.set(s[0] - Math.sin(s[2]) * 0.5, 0.85, s[1] - Math.cos(s[2]) * 0.5);
               W.reg(group, backr);
+              // v2.5 道具碰撞：坐面+靠背整体占地约 2.4×1.08，中心向靠背侧偏约 0.09
+              if (W.addPropBox) W.addPropBox(s[0], s[1] - Math.cos(s[2]) * 0.09, 1.2, 0.54, { floor: 0, yBase: 0 });
             });
             var tbl = box(1.2, 0.4, 0.7, 0x3a2c1c);
             tbl.position.set(84, 0.2, 126); W.reg(group, tbl);
+            if (W.addPropBox) W.addPropBox(84, 126, 0.6, 0.35, { floor: 0, yBase: 0 }); // 休息室茶几
           });
         }
         var staff = poi1('staff_room'); // 员工室 (40..44, 39..43)
@@ -1849,8 +1879,11 @@
               sh.position.set(px(43), 0.8 + i * 0.6, pz(42) + 1.2);
               W.reg(group, sh);
             }
+            // v2.5 道具碰撞：三层搁板为同一货架单元，按整单元占地登记一次
+            if (W.addPropBox) W.addPropBox(px(43), pz(42) + 1.2, 1.1, 0.25, { floor: 0, yBase: 0 });
             var dk = box(1.6, 0.08, 0.8, 0x3a2c1c);
             dk.position.set(px(41), 0.75, pz(40) - 1.0); W.reg(group, dk);
+            if (W.addPropBox) W.addPropBox(px(41), pz(40) - 1.0, 0.8, 0.4, { floor: 0, yBase: 0 }); // 员工桌
           });
         }
         var radio = poi1('radio'); // 休息室收音机
@@ -1913,7 +1946,27 @@
           var nn = L188_NOTES[p.data.noteId] || ['字条', '……'];
           W.addChunkContent(p.tx, p.ty, function (group) {
             var m = basicPlane(0.5, 0.65, 'note');
-            m.position.set(px(p.tx), 1.5, pz(p.ty) - 1.2);
+            // F3/A3-06 贴墙锚定（与涂鸦同口径）：在 POI 周边 2 格内找最近的「地板 tile + 相邻墙」，
+            // 锚到墙面（地板中心 - 法线*(T/2-0.05)，back≈0.05）并朝向房间。
+            // 旧硬编码 pz-1.2 一律朝北偏移：对西墙休息室/东墙员工室横向脱开，西走廊字条悬在走廊正中央。
+            var anchor = null;
+            for (var r = 0; r <= 2 && !anchor; r++) {
+              for (var dx2 = -r; dx2 <= r && !anchor; dx2++) for (var dy2 = -r; dy2 <= r && !anchor; dy2++) {
+                if (Math.max(Math.abs(dx2), Math.abs(dy2)) !== r) continue;
+                var fx = p.tx + dx2, fy = p.ty + dy2;
+                if (W.tile(fx, fy) !== 1) continue;
+                var dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+                for (var di = 0; di < 4; di++) {
+                  if (W.isWall(fx + dirs[di][0], fy + dirs[di][1])) { anchor = { fx: fx, fy: fy, nx: -dirs[di][0], nz: -dirs[di][1] }; break; }
+                }
+              }
+            }
+            if (anchor) {
+              m.position.set(px(anchor.fx) - anchor.nx * (T / 2 - 0.05), 1.5, pz(anchor.fy) - anchor.nz * (T / 2 - 0.05));
+              m.rotation.y = Math.atan2(anchor.nx, anchor.nz);
+            } else {
+              m.position.set(px(p.tx), 1.5, pz(p.ty)); // 周边无墙：留在 POI 中心（本关 3 张字条均有相邻墙，不走此支）
+            }
             W.reg(group, m);
             var nid = 'note_l188_' + p.tx + '_' + p.ty;
             W.addInteractable({
