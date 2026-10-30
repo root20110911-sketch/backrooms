@@ -4,6 +4,58 @@
   const T = BR.TILE;
   const { ITEM_NAME, wallNormal, addNote, buildGraffitiDecals, manilaPosterTexture, buildChairMesh, addTablePaper, manilaOverlay, itemMesh, addPickup, interactKeyLabel, markLiveOpened, wasLiveOpened, setLidOpenPose, animLidOpen, setCabinetDoorOpen, setCabinetDoorClosed, animCabinetDoorClose, animCabinetDoor, boxGeo, sphGeo, cylGeo, coneGeo, addPropShadow, buildCrateMesh, spawnInnerPickup, wireCrateTwoStage, addCrate, addBerryBush, buildThinWalls, thinWallTick, wildCutout, noclipRandom, buildTableMesh, buildCabinetMesh, buildFurnitureMesh, addFurniturePickup, addCabinetTwoStage, buildDoors, poiList, buildVents, ensureLoopCleanup } = BR._lvShare;
 
+  /* ================= v2.5 F8：字条无邻墙兜底（L2/L3/FUN 三处 addNoteShared 共用） =================
+   * 背景：F7 已把三处字条公式改对（地板锚点 -n*(T/2-0.04)），但部分 POI 锚 tile 四邻
+   * 无墙、法线只能取默认值，公式再对也贴不上墙（种子 20261023 实测：L2 24_47、
+   * L3 24_17、FUN 线索 x3 皆四邻无墙）。本帮手与 levels.js addNote 的 F6 兜底同语义：
+   *   档1 wall：有相邻墙 -> 原公式逐字不变（位置与 F7 修后一致）；
+   *   档2 ring：无邻墙 -> 同心环（切比雪夫 <=3 格）找最近「墙 tile 且其外侧为地板」
+   *     的面，锚点移到该面旁的地板 tile，再走同一公式；
+   *   档3 sign：环内仍无墙 -> 按 lv_l11.js F3 做法改立式告示牌（木桩落地 + 纸面架
+   *     在桩上），位置留在原 POI 处，不悬空。
+   * 入参 m 为已建好的字条 Plane mesh；帮手负责定位 + W.reg，并返回
+   * { tier, meshes, pos } 供调用方登记交互（sign 档 meshes 含木桩）。
+   * 挂 BR._placeNoteShared：本文件 L2/L3/FUN 是各自独立的顶层 IIFE，只能经 BR 共用。 */
+  function placeNoteShared(W, group, tx, ty, m) {
+    const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    let n = null;
+    for (const [dx, dy] of DIRS4) if (W.isWall(tx + dx, ty + dy)) { n = { x: -dx, z: -dy }; break; }
+    let ax = tx, ay = ty, tier = 'wall';
+    if (!n) {
+      let best = null;
+      for (let r = 1; r <= 3; r++) {
+        for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const wx = tx + dx, wy = ty + dy;
+          if (!W.isWall(wx, wy)) continue;
+          for (const [fx, fy] of DIRS4) {
+            if (W.tile(wx + fx, wy + fy) !== 1) continue; // 该面外侧须为地板
+            const fcx = BR.tileCX(wx) + fx * (T / 2), fcz = BR.tileCZ(wy) + fy * (T / 2);
+            const d = Math.hypot(fcx - BR.tileCX(tx), fcz - BR.tileCZ(ty));
+            if (!best || d < best.d) best = { d, wx, wy, fx, fy };
+          }
+        }
+      }
+      if (best) { ax = best.wx + best.fx; ay = best.wy + best.fy; n = { x: best.fx, z: best.fy }; tier = 'ring'; }
+    }
+    if (n) {
+      m.position.set(BR.tileCX(ax) - n.x * (T / 2 - 0.04), 1.5, BR.tileCZ(ay) - n.z * (T / 2 - 0.04));
+      m.rotation.y = Math.atan2(n.x, n.z);
+      W.reg(group, m);
+      return { tier, meshes: [m], pos: m.position.clone() };
+    }
+    // 档3 立式告示牌：木桩 0.09x1.5x0.09，桩心 y=0.75 即桩底 y=0 落地板；纸面架在桩上
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.5, 0.09),
+      new THREE.MeshLambertMaterial({ color: 0x4a4035 }));
+    post.position.set(BR.tileCX(tx), 0.75, BR.tileCZ(ty));
+    W.reg(group, post);
+    m.position.set(BR.tileCX(tx), 1.32, BR.tileCZ(ty) + 0.06);
+    m.rotation.y = 0;
+    W.reg(group, m);
+    return { tier: 'sign', meshes: [m, post], pos: m.position.clone() };
+  }
+  BR._placeNoteShared = placeNoteShared;
+
   /* ================= L1 ================= */
 
   /* ---------- M.E.G. 前哨交易站（POI 'meg_shop'，gen.js placeMegShopL1 放置） ----------
@@ -104,6 +156,9 @@
       counter.position.set(ccx, 0, ccz);
       counter.rotation.y = Math.atan2(n.x, n.z);
       reg(counter);
+      // v2.5 道具碰撞：柜台桌 1.8×0.9 + 队员 NPC（柜台后，玩家不可穿身而过）
+      W.addPropBox(ccx, ccz, 0.90, 0.45, { rot: counter.rotation.y });
+      W.addPropCircle(nx, nz, 0.25);
       // —— 帐篷：四柱 + 帆布顶 ——
       const tent = new THREE.Group();
       const poleM = lam(0x3a3f45);
@@ -125,6 +180,7 @@
         bar.position.set(ccx + n.z * s * 1.7, 0.45, ccz - n.x * s * 1.7);
         bar.rotation.y = ba; // 长轴顺柜台朝向（前后）
         reg(bar);
+        W.addPropBox(bar.position.x, bar.position.z, 0.04, 1.20, { rot: ba }); // v2.5 道具碰撞：侧围挡长条 0.08×2.4
       });
       // —— 暖灯：吊线 + 灯泡 + 点光源 ——
       const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, wallH - 2.1, 6), lam(0x222222));
@@ -306,6 +362,7 @@
           b.position.set(BR.tileCX(p.tx) + (i - 1) * 1.1, 0.45, BR.tileCZ(p.ty) + (i % 2) * 0.9);
           b.rotation.y = i * 0.4;
           W.reg(group, b);
+          W.addPropBox(b.position.x, b.position.z, 0.45, 0.45, { rot: b.rotation.y }); // v2.5 道具碰撞：补给箱 0.9×0.9
         }
       });
     });
@@ -324,11 +381,16 @@
         f.rotation.y = Math.floor(rng.next() * 4) * Math.PI / 2; // 确定性朝向
         W.reg(group, f);
         if (item) {
+          // 带拾取：登记由 addFurniturePickup 内部按 opts（furniture/rot）完成，不重复登记
           BR.addFurniturePickup(W, {
             tx: p.tx, ty: p.ty, item, suffix: 'furn' + i,
             group, fx, fz, topY: kind === 'cabinet' ? 1.54 : 0.78,
             container: kind, furniture: f
           });
+        } else {
+          // v2.5 道具碰撞：纯装饰家具（无拾取，不走 addFurniturePickup）在此自行登记
+          if (kind === 'cabinet') W.addPropBox(fx, fz, 0.53, 0.28, { rot: f.rotation.y });
+          else W.addPropBox(fx, fz, 0.65, 0.40, { rot: f.rotation.y });
         }
       });
     });
@@ -442,6 +504,17 @@
           };
         }
         W.addDoor(def);
+        if (d.label === '虚空之门') {
+          // v2.5 F10b：关门瞄准容差。world.js 通用门交互物 radius 硬编码 3.2，但本门开后
+          // 门扇绕铰链转开，瞄准门扇的射线命中距离实测 3.43–4.67m，恒被 rayInteract 的
+          // 距离过滤丢弃，常规站位关不上（回归线 R1 §4f）。只给本门这一扇放宽到 5.0：
+          // addDoor 已先注册建门钩子，内容钩子按注册顺序执行，本钩子运行时交互物已存在；
+          // 区块卸载会清掉交互物、重建时钩子重跑，本设置会自动恢复。其他门不受影响。
+          W.addChunkContent(d.tx, d.ty, () => {
+            const it = W.interactables.find(i => i.id === 'door_' + d.id);
+            if (it) it.radius = 5.0;
+          });
+        }
       }
       // 出口门加刻痕标记
       poiList(map, 'exit_door').forEach(p => {
@@ -449,7 +522,7 @@
           const m = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9),
             new THREE.MeshBasicMaterial({ map: BR.Textures.get('stain'), transparent: true, opacity: 0.8, color: 0xcccccc }));
           const fx = BR.tileCX(p.data.fx != null ? p.data.fx : p.tx), fz = BR.tileCZ(p.data.fy != null ? p.data.fy : p.ty);
-          m.position.set(fx, 1.5, fz);
+          m.position.set(fx + (BR.tileCX(p.tx) - fx) / T * (T / 2 - 0.04), 1.5, fz + (BR.tileCZ(p.ty) - fz) / T * (T / 2 - 0.04)); // v2.5 F7：沿门 tile 方向推进贴门面（原停在地板 tile 中心离门面 1.5m）
           m.rotation.y = Math.atan2(BR.tileCX(p.tx) - fx, BR.tileCZ(p.ty) - fz);
           W.reg(group, m);
           const L = new THREE.PointLight(0xfff2cc, 0.8, 8, 2);
@@ -469,7 +542,7 @@
         W.addChunkContent(p.tx, p.ty, (group) => {
           const n = wallNormal(W, p.tx, p.ty);
           const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.07, 8, 18), W.mat('metal'));
-          wheel.position.set(BR.tileCX(p.tx) + n.x * 1.25, 1.4, BR.tileCZ(p.ty) + n.z * 1.25);
+          wheel.position.set(BR.tileCX(p.tx) - n.x * (T / 2 - 0.12), 1.4, BR.tileCZ(p.ty) - n.z * (T / 2 - 0.12));
           W.reg(group, wheel);
           const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.4, 8), W.mat('metal'));
           stem.rotation.x = Math.PI / 2; stem.rotation.z = Math.PI / 2;
@@ -508,6 +581,7 @@
           const cm = BR.buildCrateMesh(W);
           cm.group.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
           W.reg(group, cm.group);
+          W.addPropBox(cm.group.position.x, cm.group.position.z, 0.525, 0.525); // v2.5 道具碰撞：板条箱占地 1.05×1.05（buildCrateMesh wd=1.05）
           BR.wireCrateTwoStage(W, group, cm, {
             id, tx: pp.tx, ty: pp.ty, item: (pp.data && pp.data.item) || 'empty'
           });
@@ -534,17 +608,12 @@
     function addNoteShared(W, tx, ty, title, body) {
       const id = 'note_' + W.map.level + '_' + tx + '_' + ty;
       W.addChunkContent(tx, ty, (group) => {
-        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        let n = { x: 0, z: 1 };
-        for (const [dx, dy] of dirs) if (W.isWall(tx + dx, ty + dy)) { n = { x: -dx, z: -dy }; break; }
         const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
           new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-        m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-        m.rotation.y = Math.atan2(n.x, n.z);
-        W.reg(group, m);
+        const placed = BR._placeNoteShared(W, group, tx, ty, m); // v2.5 F8：无邻墙兜底（见文件头帮手）
         W.addInteractable({
           id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
-          meshes: [m], pos: m.position.clone(), radius: 2.4,
+          meshes: placed.meshes, pos: placed.pos, radius: 2.4,
           prompt: () => BR.interactKeyLabel() + '阅读字条', canUse: () => true,
           use: () => {
             BR.Audio.paper(); BR.UI.showNote(title, body);
@@ -585,17 +654,12 @@
     function addNoteShared(W, tx, ty, title, body) {
       const id = 'note_' + W.map.level + '_' + tx + '_' + ty;
       W.addChunkContent(tx, ty, (group) => {
-        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        let n = { x: 0, z: 1 };
-        for (const [dx, dy] of dirs) if (W.isWall(tx + dx, ty + dy)) { n = { x: -dx, z: -dy }; break; }
         const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
           new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-        m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-        m.rotation.y = Math.atan2(n.x, n.z);
-        W.reg(group, m);
+        const placed = BR._placeNoteShared(W, group, tx, ty, m); // v2.5 F8：无邻墙兜底（见文件头帮手）
         W.addInteractable({
           id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
-          meshes: [m], pos: m.position.clone(), radius: 2.4,
+          meshes: placed.meshes, pos: placed.pos, radius: 2.4,
           prompt: () => BR.interactKeyLabel() + '阅读字条', canUse: () => true,
           use: () => {
             BR.Audio.paper(); BR.UI.showNote(title, body);
@@ -633,8 +697,8 @@
           W.reg(group, frame);
           W.elevator = { panels: [p1, p2], ind };
           // 按钮（电梯左侧墙上）
-          const bx = BR.tileCX(p.tx) + dx * 0.6 - dz * 1.6;
-          const bz = BR.tileCZ(p.ty) + dz * 0.6 + dx * 1.6;
+          const bx = BR.tileCX(p.tx) + dx * (T / 2 - 0.06) - dz * 1.6;
+          const bz = BR.tileCZ(p.ty) + dz * (T / 2 - 0.06) + dx * 1.6;
           const btn = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.12),
             new THREE.MeshLambertMaterial({ color: 0x8a8f96 }));
           btn.position.set(bx, 1.45, bz);
@@ -697,6 +761,7 @@
             const hum = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 0.5), W.mat('pipe'));
             hum.position.y = 0.25; g.add(hum);
             W.reg(group, g);
+            W.addPropBox(g.position.x, g.position.z, 0.675, 0.375, { rot: g.rotation.y }); // v2.5 道具碰撞：发电机体 1.35×0.75（交互半径 2.8 内可达）
             BR.Audio.addLoop('gen_' + id, 'machine', g.position.x, g.position.z, on ? 0.5 : 0.12);
             W.addInteractable({
               id: 'genbtn_' + id, kind: 'generator', chunkKey: W.chunkKeyOf(sx, sy),
@@ -730,6 +795,7 @@
             f.position.set(BR.tileCX(p.tx) + Math.cos(ang) * 4.2, 1.15, BR.tileCZ(p.ty) + Math.sin(ang) * 4.2);
             f.rotation.y = -ang + Math.PI / 2;
             W.reg(group, f);
+            W.addPropBox(f.position.x, f.position.z, 1.55, 0.05, { rot: f.rotation.y }); // v2.5 道具碰撞：栅栏片 3.1 宽薄板（八片成环）
           }
         });
       });
@@ -740,6 +806,7 @@
           const cm = BR.buildCrateMesh(W);
           cm.group.position.set(BR.tileCX(pp.tx), 0, BR.tileCZ(pp.ty));
           W.reg(group, cm.group);
+          W.addPropBox(cm.group.position.x, cm.group.position.z, 0.525, 0.525); // v2.5 道具碰撞：板条箱占地 1.05×1.05（buildCrateMesh wd=1.05）
           BR.wireCrateTwoStage(W, group, cm, {
             id, tx: pp.tx, ty: pp.ty, item: (pp.data && pp.data.item) || 'empty'
           });
@@ -957,15 +1024,10 @@
         W.addChunkContent(p.tx, p.ty, (group) => {
           const m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
             new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-          const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-          let n = { x: 0, z: 1 };
-          for (const [dx, dy] of dirs) if (W.isWall(p.tx + dx, p.ty + dy)) { n = { x: -dx, z: -dy }; break; }
-          m.position.set(BR.tileCX(p.tx) + n.x * 1.1, 1.5, BR.tileCZ(p.ty) + n.z * 1.1);
-          m.rotation.y = Math.atan2(n.x, n.z);
-          W.reg(group, m);
+          const placed = BR._placeNoteShared(W, group, p.tx, p.ty, m); // v2.5 F8：无邻墙兜底（见文件头帮手）
           W.addInteractable({
             id, kind: 'clue', chunkKey: W.chunkKeyOf(p.tx, p.ty),
-            meshes: [m], pos: m.position.clone(), radius: 2.4,
+            meshes: placed.meshes, pos: placed.pos, radius: 2.4,
             prompt: () => BR.interactKeyLabel() + '阅读字条',
             canUse: () => true,
             use: () => {
@@ -1025,6 +1087,7 @@
             new THREE.MeshBasicMaterial({ color: 0xffd0e0 }));
           candle.position.y = 1.15; g.add(candle);
           W.reg(group, g);
+          W.addPropBox(x, z, 0.90, 0.55); // v2.5 道具碰撞：蛋糕桌 1.8×1.1
           // 气球
           const rng = new BR.RNG(BR.hashSeed('balloon' + p.tx + p.ty));
           const cols = [0xff5060, 0x50a0ff, 0xffd050, 0x60e080, 0xc080ff];
@@ -1056,7 +1119,7 @@
             W.addChunkContent(tx, ty, (group) => {
               const m = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 1.4),
                 new THREE.MeshBasicMaterial({ map: BR.Textures.get('posterFun') }));
-              m.position.set(BR.tileCX(tx) + n.x * (T / 2 - 0.04), 1.7, BR.tileCZ(ty) + n.z * (T / 2 - 0.04));
+              m.position.set(BR.tileCX(tx) - n.x * (T / 2 - 0.04), 1.7, BR.tileCZ(ty) - n.z * (T / 2 - 0.04));
               m.rotation.y = Math.atan2(n.x, n.z);
               W.reg(group, m);
             });
