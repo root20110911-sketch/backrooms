@@ -60,21 +60,59 @@
     }
     return { x: 0, z: 1 };
   }
+  function wallNormalOrNull(W, tx, ty) { // 同 wallNormal，但无相邻墙时返回 null（不给默认法线冒充）
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var i = 0; i < 4; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      if (W.isWall(tx + dx, ty + dy)) return { x: -dx, z: -dy };
+    }
+    return null;
+  }
+  // 贴墙锚点（与 levels.js buildGraffitiDecals 同口径）：在 (tx,ty) 周边 maxR 格内找最近的
+  // 「地板 tile + 相邻墙」，返回 {fx, fy, nx, nz}（n 为墙→房间法线）。
+  // 锚点位置 = 地板 tile 中心 - n*(T/2-0.05)，距墙面 back≈0.05；找不到返回 null。
+  function findWallAnchor(W, tx, ty, maxR) {
+    for (var r = 0; r <= maxR; r++) {
+      for (var dx = -r; dx <= r; dx++) for (var dy = -r; dy <= r; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        var fx = tx + dx, fy = ty + dy;
+        if (W.tile(fx, fy) !== 1) continue;
+        var n = wallNormalOrNull(W, fx, fy);
+        if (n) return { fx: fx, fy: fy, nx: n.x, nz: n.z };
+      }
+    }
+    return null;
+  }
   var ITEM_NAME = { almond: '杏仁水', bandage: '绷带' };
   function hashRng(str) { return new BR.RNG(BR.hashSeed(str)); }
 
   function addNote(W, tx, ty, title, body, idSuffix) {
     var id = 'note_l11_' + tx + '_' + ty + '_' + (idSuffix || '0');
     W.addChunkContent(tx, ty, function (group) {
-      var n = wallNormal(W, tx, ty);
+      var anchor = findWallAnchor(W, tx, ty, 3);
       var m = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.75),
         new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') }));
-      m.position.set(BR.tileCX(tx) + n.x * 1.1, 1.5, BR.tileCZ(ty) + n.z * 1.1);
-      m.rotation.y = Math.atan2(n.x, n.z);
+      var meshes = [m];
+      if (anchor) {
+        // 贴墙口径（涂鸦同式）：地板 tile 中心 - 法线*(T/2-0.05)，back≈0.05。
+        // 旧式 +n*1.1 沿法线（墙→房间）反推，把字条推离墙面约 2.6m 悬空。
+        m.position.set(BR.tileCX(anchor.fx) - anchor.nx * (T / 2 - 0.05), 1.5, BR.tileCZ(anchor.fy) - anchor.nz * (T / 2 - 0.05));
+        m.rotation.y = Math.atan2(anchor.nx, anchor.nz);
+      } else {
+        // 周边 3 格内无墙可贴（如广场字条：POI 在喷泉广场中央，四邻全是地板）：
+        // 改立式告示牌（木桩落地 + 纸面架在桩上），不悬空贴墙纸。
+        var post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.5, 0.09),
+          new THREE.MeshLambertMaterial({ color: 0x4a4035 }));
+        post.position.set(BR.tileCX(tx), 0.75, BR.tileCZ(ty));
+        W.reg(group, post);
+        meshes.push(post);
+        m.position.set(BR.tileCX(tx), 1.32, BR.tileCZ(ty) + 0.06);
+        m.rotation.y = 0;
+      }
       W.reg(group, m);
       W.addInteractable({
         id: id, kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
-        meshes: [m], pos: m.position.clone(), radius: 2.4,
+        meshes: meshes, pos: m.position.clone(), radius: 2.4,
         prompt: function () { return '阅读字条'; },
         canUse: function () { return true; },
         use: function () {
@@ -94,6 +132,9 @@
     W.addChunkContent(tx, ty, function (group) {
       var cm = BR.buildCrateMesh(W);
       cm.group.position.set(BR.tileCX(tx), 0, BR.tileCZ(ty));
+      // v2.5 道具碰撞：占地取 levels.js buildCrateMesh 的 wd=1.05（半宽 0.525，无旋转）；
+      // 交互点在箱体上方 1m、半径 2.6，登记后仍可正常贴近开箱。
+      if (W.addPropBox) W.addPropBox(BR.tileCX(tx), BR.tileCZ(ty), 0.525, 0.525);
       W.reg(group, cm.group);
       BR.wireCrateTwoStage(W, group, cm, { id: id, tx: tx, ty: ty, item: item || 'empty' });
     });
@@ -734,6 +775,12 @@
           var table = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.9),
             new THREE.MeshLambertMaterial({ color: 0x4a4035 }));
           table.position.y = 0.8; awn.add(table);
+          // F3/A3-08：补四条桌腿（与桌面同色木料），腿顶接桌面 underside 0.76，桌板不再悬空
+          [[-0.7, -0.35], [0.7, -0.35], [-0.7, 0.35], [0.7, 0.35]].forEach(function (o) {
+            var leg = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.76, 0.07),
+              new THREE.MeshLambertMaterial({ color: 0x4a4035 }));
+            leg.position.set(o[0], 0.38, o[1]); awn.add(leg);
+          });
           awn.position.set(cx + n.x * 0.4, 0, cz + n.z * 0.4);
           W.reg(group, awn);
           var flagTex = signTexture(['M.E.G.'], 'rgba(255,200,60,0.95)');
@@ -908,8 +955,22 @@
           var sign = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.95),
             new THREE.MeshBasicMaterial({ map: st2 }));
           sign._ownMat = true;
-          sign.position.set(cx + n.x * 1.3, 2.6, cz + n.z * 1.3);
-          sign.rotation.y = Math.atan2(n.x, n.z);
+          // F3/A3-05 贴墙口径：招牌锚到站口背后墙面（POI 中心 - n*(T/2-0.05)，back≈0.05）；
+          // 旧 +n*1.3 把招牌推到楼梯结构上方悬空 2.82m。无相邻墙时改立杆招牌（双柱落地）。
+          var wn = wallNormalOrNull(W, p.tx, p.ty);
+          if (wn) {
+            sign.position.set(cx - wn.x * (T / 2 - 0.05), 2.6, cz - wn.z * (T / 2 - 0.05));
+            sign.rotation.y = Math.atan2(wn.x, wn.z);
+          } else {
+            sign.position.set(cx + n.x * 1.3, 2.6, cz + n.z * 1.3);
+            sign.rotation.y = Math.atan2(n.x, n.z);
+            [-0.8, 0.8].forEach(function (off) {
+              var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.6, 8),
+                new THREE.MeshLambertMaterial({ color: 0x2c3138 }));
+              pole.position.set(cx + n.x * 1.3 + n.z * off, 1.3, cz + n.z * 1.3 - n.x * off);
+              W.reg(group, pole);
+            });
+          }
           W.reg(group, sign);
           var Li = new THREE.PointLight(0x6ad2ff, 0.9, 12, 2);
           Li.position.set(cx, 2.4, cz); W.reg(group, Li);
@@ -937,12 +998,15 @@
           var sm = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.9),
             new THREE.MeshBasicMaterial({ map: BR.Textures.get('shop_sign') }));
           sm._ownMat = true;
-          sm.position.set(BR.tileCX(p.tx) + n.x * 1.2, 2.5, BR.tileCZ(p.ty) + n.z * 1.2);
+          // F3/A3-04 贴墙口径：招牌锚到店面墙面（POI 中心 - n*(T/2-0.05)，back≈0.05）；
+          // 旧 +n*1.2 沿墙→街道法线外推，招牌离立面 2.72m 悬空。
+          sm.position.set(BR.tileCX(p.tx) - n.x * (T / 2 - 0.05), 2.5, BR.tileCZ(p.ty) - n.z * (T / 2 - 0.05));
           sm.rotation.y = Math.atan2(n.x, n.z);
           W.reg(group, sm);
           var awn = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.07, 1.1),
             new THREE.MeshLambertMaterial({ color: [0x5a2a2a, 0x2a4a5a, 0x4a4a2a, 0x2a4a2a, 0x3a2a4a][idx % 5] }));
-          awn.position.set(BR.tileCX(p.tx) + n.x * 0.8, 2.0, BR.tileCZ(p.ty) + n.z * 0.8);
+          // 雨棚：内缘嵌入墙面 0.05、向外挑出 1.05——中心 = 墙面 + n*(1.1/2-0.05) = POI 中心 - n*1.0
+          awn.position.set(BR.tileCX(p.tx) - n.x * 1.0, 2.0, BR.tileCZ(p.ty) - n.z * 1.0);
           awn.rotation.y = Math.atan2(n.x, n.z);
           W.reg(group, awn);
           W.addInteractable({
