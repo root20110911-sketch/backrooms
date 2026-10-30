@@ -395,7 +395,7 @@ map: mozTex || BR.Textures.get('pool_tile'), color: 0xf5f1e8
 });
 M.trim = new THREE.MeshLambertMaterial({ map: BR.Textures.get('pool_trim') || BR.Textures.get('pool_tile')});
 M.sunStreak = new THREE.MeshBasicMaterial({ // 太阳在水面的倒影光柱
-color: 0xfff3d0, transparent: true, opacity: 0.22,
+color: 0xfff3d0, transparent: true, opacity: 0.12, // v2.5 F1：0.22→0.15 过曝修复；F10a：0.15→0.12
 blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
 M.pink = new THREE.MeshBasicMaterial({ // 粉色开口辉光（tick 微脉动）
@@ -408,7 +408,10 @@ blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
 M.whiteGlow = new THREE.MeshBasicMaterial({ // 入口白光开口
 map: BR.Textures.get('sunlit_whiteglow'), transparent: true, opacity: 0.95,
-depthWrite: false, side: THREE.DoubleSide
+// v2.5 F9（审计 A4-05）：改 AdditiveBlending。原 NormalBlending 下纯白 1.0 经
+// ACES+本关 exposure 0.55 压成灰（实测 gate 区比墙面暗 10.8），盖住受光更亮的
+// 墙面呈灰色泪滴污渍、与"发光开口"意图相反；加色后只增不减（实测 +31.5）。
+blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
 M.darkPanel = new THREE.MeshBasicMaterial({ color: 0x04070c}); // 返回门：黑暗开口
 M.darkEdge = new THREE.MeshBasicMaterial({
@@ -426,7 +429,7 @@ color: 0x0e3a50, transparent: true, opacity: 0.45, depthWrite: false
 M.reflectStill = new THREE.MeshBasicMaterial({ // 镜面池静水：只留天空反射
 // v2.4 W-d1：改用高对比 sunlit_reflect_still + 不透明度 0.92 + 白色，
 // "天空之境"一眼成立（原 0.72/0xe4f3fe 太灰，水面读成白板）。
-map: BR.Textures.get('sunlit_reflect_still') || reflTex, transparent: true, opacity: 0.92,
+map: BR.Textures.get('sunlit_reflect_still') || reflTex, transparent: true, opacity: 0.70, // v2.5 F1：0.92→0.78 过曝修复（镜面池近不透明亮层）；F10a：0.78→0.70 再压一档
 color: 0xffffff, depthWrite: false, side: THREE.DoubleSide
 });
 M.mirrorGlint = new THREE.MeshBasicMaterial({ // v2.4 W-d1：镜面池太阳闪光带
@@ -444,7 +447,7 @@ color: 0xffffff, transparent: true, opacity: 0,
 blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
 M.whiteSpill = new THREE.MeshBasicMaterial({ // 入口地面光 spill
-map: BR.Textures.get('sunlit_whiteglow'), transparent: true, opacity: 0.35,
+map: BR.Textures.get('sunlit_whiteglow'), transparent: true, opacity: 0.17, // v2.5 F1：0.35→0.22（加色溢光在亮地板上剪切为纯白盘，与 A4-05 建议同向）；F10a：0.22→0.17
 blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
 });
 FX.pinkMat = M.pink;
@@ -476,7 +479,8 @@ g.position.set(cx, 0, cz);
 var skyTex = BR.Textures.get('sunlit_sky');
 var dome = new THREE.Mesh(
 new THREE.SphereGeometry(380, 28, 18),
-new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false})
+// v2.5 F1：穹顶贴图下半纯白是露天机位主亮源，材质色乘 0xe2ecf5 整体压一档（气质不变）；F10a：再压至 0xd9e7f3
+new THREE.MeshBasicMaterial({ map: skyTex, color: 0xd9e7f3, side: THREE.BackSide, fog: false, depthWrite: false})
 );
 dome.renderOrder = -10;
 g.add(dome);
@@ -488,7 +492,7 @@ map: sunTex, transparent: true, blending: THREE.AdditiveBlending,
 fog: false, depthWrite: false
 }));
 sun.position.copy(SUN_DIR).multiplyScalar(350);
-sun.scale.set(90, 90, 1);
+sun.scale.set(55, 55, 1); // v2.5 F1：90→55（审计 A4-01 太阳精灵加色烧白）
 g.add(sun);
 W._levelMats.push(sun.material);
 // 云层：9 朵精灵（低画质减半）
@@ -806,24 +810,47 @@ FX.phantom = { mesh: ring, t: 2.5 };
 function buildAbyssNote(W, map, L, M) {
 var cr = L.crackRect;
 if (!cr) return;
-// 裂缝旁找一个可行走 tile 放字条，面向裂缝
-var ax = -1, ay = -1, fx = 0, fz = 1, found = false;
-for (var yy = cr.ty0 - 1; yy <= cr.ty1 + 1 && !found; yy++)
-for (var xx = cr.tx0 - 1; xx <= cr.tx1 + 1 && !found; xx++) {
+// 裂缝旁找可行走 tile 放字条，面向裂缝
+var ccx = (cr.tx0 + cr.tx1 + 1) / 2 * TILE, ccz = (cr.ty0 + cr.ty1 + 1) / 2 * TILE;
+// v2.5 F1（审计 A4-03）：原代码把字条放在 tile 正中心（离墙实测 2.52m 悬空，与"墙上的刻字"
+// 文案矛盾）。改为：候选 tile 须有相邻墙面，按"墙面内偏 0.05m"贴墙锚定，法线优先朝裂缝。
+var DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+var cand = [];
+for (var yy = cr.ty0 - 1; yy <= cr.ty1 + 1; yy++)
+for (var xx = cr.tx0 - 1; xx <= cr.tx1 + 1; xx++) {
 if (xx >= cr.tx0 && xx <= cr.tx1 && yy >= cr.ty0 && yy <= cr.ty1) continue;
 if (W.tile(xx, yy) !== 1) continue;
-ax = xx; ay = yy; found = true;
-var ccx = (cr.tx0 + cr.tx1 + 1) / 2 * TILE, ccz = (cr.ty0 + cr.ty1 + 1) / 2 * TILE;
-fx = ccx - BR.tileCX(xx); fz = ccz - BR.tileCZ(yy);
+cand.push([xx, yy]);
 }
-if (!found) return;
+if (!cand.length) return;
+var pick = null;
+for (var pass = 0; pass < 2 && !pick; pass++) {
+for (var ci = 0; ci < cand.length && !pick; ci++) {
+for (var di = 0; di < 4; di++) {
+var dx = DIRS[di][0], dy = DIRS[di][1];
+if (!W.isWall(cand[ci][0] + dx, cand[ci][1] + dy)) continue;
+var wnx = -dx, wnz = -dy;
+var dot = wnx * (ccx - BR.tileCX(cand[ci][0])) + wnz * (ccz - BR.tileCZ(cand[ci][1]));
+if (pass === 0 && dot <= 0) continue;
+pick = { tx: cand[ci][0], ty: cand[ci][1], nx: wnx, nz: wnz };
+break;
+}
+}
+}
+var ax = pick ? pick.tx : cand[0][0], ay = pick ? pick.ty : cand[0][1];
+var fx = ccx - BR.tileCX(ax), fz = ccz - BR.tileCZ(ay);
 W.addChunkContent(ax, ay, function (group) {
 var n = new THREE.Mesh(
 new THREE.PlaneGeometry(0.55, 0.75),
 new THREE.MeshBasicMaterial({ map: BR.Textures.get('note') })
 );
+if (pick) {
+n.position.set(BR.tileCX(ax) - pick.nx * (TILE / 2 - 0.05), 1.5, BR.tileCZ(ay) - pick.nz * (TILE / 2 - 0.05));
+n.rotation.y = Math.atan2(pick.nx, pick.nz);
+} else { // 兜底（候选 tile 均无邻墙）：保持旧行为
 n.position.set(BR.tileCX(ax), 1.5, BR.tileCZ(ay));
 n.rotation.y = Math.atan2(fx, fz);
+}
 W.reg(group, n);
 W.addInteractable({
 id: 'note_l372_abyss', kind: 'note', chunkKey: W.chunkKeyOf(ax, ay),
@@ -1073,6 +1100,8 @@ W.addChunkContent(p.tx, p.ty, function (group) {
 var cm = BR.buildCrateMesh(W);
 cm.group.position.set(BR.tileCX(p.tx), 0, BR.tileCZ(p.ty));
 W.reg(group, cm.group);
+// v2.5 道具碰撞：板条箱 buildCrateMesh wd=1.05 → 半宽/半深 0.525
+W.addPropBox(BR.tileCX(p.tx), BR.tileCZ(p.ty), 0.525, 0.525, { yBase: 0 })
 var item = (p.data && p.data.item) || 'almond';
 BR.wireCrateTwoStage(W, group, cm, { id: id, tx: p.tx, ty: p.ty, item: item});
 });
@@ -1089,16 +1118,47 @@ if (map.pois[i].type === 'spawn') { spawnPoi = map.pois[i]; break;}
 }
 if (!spawnPoi) return;
 var tx = spawnPoi.tx, ty = spawnPoi.ty;
-W.addChunkContent(tx, ty, function (group) {
+// v2.5 F1（审计 A4-02）：原代码无条件假设出生 tile 西侧紧邻墙面（偏移 1.1m + 朝向写死），
+// 实际出生点在 6–11 格宽房间内部，字条悬空房中央（实测 8m 内无墙）。改为 BFS 找最近的
+// 贴墙可行走 tile（优先西墙，保持原朝向意图），按"墙面内偏 0.05m"锚定。
+var DIRS37 = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+function findWallAnchor(wantNx, wantNz) {
+var seen = {}, q = [[tx, ty, 0]];
+seen[tx + ',' + ty] = 1;
+while (q.length) {
+var c = q.shift();
+if (W.tile(c[0], c[1]) === 1) {
+for (var i = 0; i < 4; i++) {
+var dx = DIRS37[i][0], dy = DIRS37[i][1];
+if (W.isWall(c[0] + dx, c[1] + dy) && (wantNx == null || (-dx === wantNx && -dy === wantNz)))
+return { tx: c[0], ty: c[1], nx: -dx, nz: -dy };
+}
+}
+if (c[2] >= 10) continue;
+for (var j = 0; j < 4; j++) {
+var qx = c[0] + DIRS37[j][0], qy = c[1] + DIRS37[j][1], kk = qx + ',' + qy;
+if (!seen[kk] && W.tile(qx, qy) === 1) { seen[kk] = 1; q.push([qx, qy, c[2] + 1]); }
+}
+}
+return null;
+}
+var anchor = findWallAnchor(1, 0) || findWallAnchor(null, null);
+var atx = anchor ? anchor.tx : tx, aty = anchor ? anchor.ty : ty;
+W.addChunkContent(atx, aty, function (group) {
 var n = new THREE.Mesh(
 new THREE.PlaneGeometry(0.55, 0.75),
 new THREE.MeshBasicMaterial({ map: BR.Textures.get('note')})
 );
+if (anchor) {
+n.position.set(BR.tileCX(atx) - anchor.nx * (TILE / 2 - 0.05), 1.5, BR.tileCZ(aty) - anchor.nz * (TILE / 2 - 0.05));
+n.rotation.y = Math.atan2(anchor.nx, anchor.nz);
+} else { // 兜底（理论不可达）：保持旧行为
 n.position.set(BR.tileCX(tx) - 1.1, 1.5, BR.tileCZ(ty));
 n.rotation.y = Math.PI / 2;
+}
 W.reg(group, n);
 W.addInteractable({
-id: 'note_l372_intro', kind: 'note', chunkKey: W.chunkKeyOf(tx, ty),
+id: 'note_l372_intro', kind: 'note', chunkKey: W.chunkKeyOf(atx, aty),
 meshes: [n], pos: n.position.clone(), radius: 2.4,
 prompt: function () { return (BR.interactKeyLabel? BR.interactKeyLabel(): 'E') + ' 阅读字条';},
 canUse: function () { return true;},
@@ -1230,8 +1290,12 @@ name: 'Level 37.2 ——「Sunlit Pools」',
 theme: {
   // v2.3：与 L37（lightInt 0.55 / fogFar 60 / 无天空）拉开气质差距 ——
   // 更亮、更暖、看得更远，一眼即知不是 L37。
-  bg: 0xe8f4fd, fogNear: 22, fogFar: 120, ambient: 0xf6fbff, ambInt: 1.15,
-  sky: 0xcfe8fa, ground: 0xa9cfe4, light: 0xfff3da, lightInt: 1.35,
+  // v2.5 F1 过曝修复（审计 A4-01）：雾色压深、ambInt 1.15→0.72、lightInt 1.35→0.9、
+  // 本关单独 exposure 0.55——目标 YAVG 140–160（"天空之境"明亮气质保留，只回正常曝光）
+  // v2.5 F10a 收尾：exposure 0.55→0.45（回归 R1 实测均值 165.1 仍超带，续压一档；
+  // 另配合 reflectStill 0.78→0.70、穹顶乘色 0xd9e7f3、whiteSpill 0.22→0.17、sunStreak 0.15→0.12）
+  bg: 0xb2d2ea, fogNear: 22, fogFar: 120, ambient: 0xf6fbff, ambInt: 0.72, exposure: 0.45,
+  sky: 0xbad8f0, ground: 0xa9cfe4, light: 0xfff3da, lightInt: 0.9,
   wallH: 3.2, wall: 'pool_tile', floor: 'pool_floor', ceil: 'pool_ceil',
   surface: 'tile', fixtureEvery: 6, hum: 0
 },

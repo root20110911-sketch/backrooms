@@ -145,21 +145,34 @@
     return c;
   });
   // neon_sign：霓虹招牌底板（"QUARTER HUB" 粉蓝霓虹）
+  // v2.5 F9：原画布为贴图系统默认 256×256 方幅，64px 粗体 "QUARTER" 字宽溢出
+  // 画布左右缘，首尾字母被裁。改用 512×256 宽幅画布（与招牌面 5.6×2.4 近比例），
+  // 并按 measureText 实测字宽自适应缩字号，两侧各留 32px 给描边+辉光（shadowBlur 26），
+  // 保证字样首尾完整不出界；颜色/辉光/底板/噪点等其余绘制不变。
   BR.Textures.registerTex('neon_sign', function (w, h) {
-    var c = mkCanvas(w, h), x = c.getContext('2d');
-    x.fillStyle = '#0a0a12'; x.fillRect(0, 0, w, h);
+    var CW = 512, CH = 256;
+    var c = mkCanvas(CW, CH), x = c.getContext('2d');
+    x.fillStyle = '#0a0a12'; x.fillRect(0, 0, CW, CH);
     function neon(text, y, color, glow) {
-      x.font = 'bold 64px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      var size = 64;
+      x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.font = 'bold ' + size + 'px sans-serif';
+      var maxW = CW - 64; // 两侧各留 32px：字本身 + 辉光都不出界
+      var tw = x.measureText(text).width;
+      if (tw > maxW) {
+        size = Math.max(20, Math.floor(size * maxW / tw));
+        x.font = 'bold ' + size + 'px sans-serif';
+      }
       x.shadowColor = color; x.shadowBlur = 26;
       x.strokeStyle = color; x.lineWidth = 3;
-      x.strokeText(text, w / 2, y);
+      x.strokeText(text, CW / 2, y);
       x.shadowBlur = 0;
       x.strokeStyle = glow; x.lineWidth = 1.5;
-      x.strokeText(text, w / 2, y);
+      x.strokeText(text, CW / 2, y);
     }
-    neon('QUARTER', h * 0.32, '#ff5fa2', '#ffd9ec');
-    neon('HUB', h * 0.72, '#5fd4ff', '#d9f4ff');
-    grain(x, w, h, 300, 0.08, 3400);
+    neon('QUARTER', CH * 0.32, '#ff5fa2', '#ffd9ec');
+    neon('HUB', CH * 0.72, '#5fd4ff', '#d9f4ff');
+    grain(x, CW, CH, 300, 0.08, 3400);
     return c;
   });
 
