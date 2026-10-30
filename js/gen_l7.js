@@ -552,6 +552,26 @@
       else dnx = (door.tx < entry.x) ? -1 : 1;
     }
 
+    /* ---- 舱壁封环（v2.5 F2 / A3-01）：挖海时外环被 continue 跳过、只保留了
+     * 结构层旧值，走廊刻过的环格以 tile=1 留下成为可涉水穿舱的缺口。门位已定，
+     * 此处把入口舱外环全部 tile 强制写 0（含四角），仅门 tile 例外（门 tile
+     * 本就是 0+door 对象，由 world 门系统放行）。影响面已核：collectOcean /
+     * openOcean 本就排除环格，海洋 POI 与障碍布设不依赖环格；舱内连通只经门
+     * （BFS 以 doorSet 为可通集合），ensureConnected 不依赖环地板；海床高度场
+     * 是纯坐标函数，与 tiles 无关。lv_l7 的 sealTile 保留不动（环格变 0 后
+     * 其判定 tiles!==1 直接跳过，自然成为 no-op 的防御层）。 */
+    (function sealEntryRing() {
+      var rx, ry;
+      for (rx = entry.x - 1; rx <= entry.x + entry.w; rx++) {
+        if (!(rx === door.tx && entry.y - 1 === door.ty)) setTile(map, rx, entry.y - 1, 0);
+        if (!(rx === door.tx && entry.y + entry.h === door.ty)) setTile(map, rx, entry.y + entry.h, 0);
+      }
+      for (ry = entry.y; ry < entry.y + entry.h; ry++) {
+        if (!(entry.x - 1 === door.tx && ry === door.ty)) setTile(map, entry.x - 1, ry, 0);
+        if (!(entry.x + entry.w === door.tx && ry === door.ty)) setTile(map, entry.x + entry.w, ry, 0);
+      }
+    })();
+
     /* ---- 楼梯：门内侧 tile 为平台（0.72m），再向内一格为楼梯坡道 ---- */
     var lx = door.fx, ly = door.fy; // 平台 tile（门内侧）
     var stairCands = [

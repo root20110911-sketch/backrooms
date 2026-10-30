@@ -709,9 +709,31 @@
     for (var shi = 0; shi < shopPts.length; shi++)
       addPOI('shop', shopPts[shi][0], shopPts[shi][1], { idx: shi, item: shopItems[shi % 2] });
 
-    // 路灯 ×7-9：沿主干道
-    var lampCands = streetTiles().filter(function (t) { return !noPOI[T(t[0], t[1])] && !nearPOI(t[0], t[1], 3); });
-    var lampPts = farthest(lampCands, 7 + rng.int(0, 2), 6);
+    // 路灯 ×7-9：沿主干道。F3/A3-09：候选排除建筑 footprint（buildings bbox 外扩 1 格缓冲），
+    // 避免灯落进建筑占地（如种子 6 路灯 (52,7) 落在 garage 建筑东南角 tile 上，灯锥只照亮车库室内）。
+    // 可进入建筑 bbox 为硬排除（其墙环/室内不做切除渲染，灯落进去必然穿墙）；
+    // 缓冲档候选不足时逐档放宽（只排 bbox → 仅硬排除），保证路灯数不掉出 [7,10]。
+    function inBbox(x, y, pad) {
+      for (var bi = 0; bi < buildings.length; bi++) {
+        var b = buildings[bi];
+        if (x >= b.x0 - pad && x <= b.x1 + pad && y >= b.y0 - pad && y <= b.y1 + pad) return true;
+      }
+      return false;
+    }
+    function inEnterableBbox(x, y) {
+      for (var bi = 0; bi < buildings.length; bi++) {
+        var b = buildings[bi];
+        if (b.enterable && x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) return true;
+      }
+      return false;
+    }
+    var lampTarget = 7 + rng.int(0, 2);
+    var lampBase = streetTiles().filter(function (t) { return !noPOI[T(t[0], t[1])] && !nearPOI(t[0], t[1], 3) && !inEnterableBbox(t[0], t[1]); });
+    var lampPts = farthest(lampBase.filter(function (t) { return !inBbox(t[0], t[1], 1); }), lampTarget, 6);
+    if (lampPts.length < lampTarget)
+      lampPts = farthest(lampBase.filter(function (t) { return !inBbox(t[0], t[1], 0); }), lampTarget, 6);
+    if (lampPts.length < lampTarget)
+      lampPts = farthest(lampBase, lampTarget, 6);
     for (var li = 0; li < lampPts.length; li++) addPOI('streetlamp', lampPts[li][0], lampPts[li][1], {});
 
     // 井盖：普通 ×5-8（纯装饰）+ 特定 ×1（→L2，原著连接）
