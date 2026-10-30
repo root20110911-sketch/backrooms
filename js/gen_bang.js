@@ -140,6 +140,11 @@
     addRoom(map, FAKE.cx0, FAKE.cy0, 2, 2);
     // 真出口门洞（第 8 条东端）：门 tile 本身保持地板，由门阻挡
     carveRect(map, EXIT.doorTx, EXIT.doorTy, 1, 1);
+    // v2.5 F5（A2-03）：假储藏室南侧补墙——储藏室 rows 32-33 与第 6 走廊 rows 34-35
+    // 原本直接相邻、无墙相隔（玩家可从走廊直走入、涂鸦假设的南墙不存在）。
+    // 把 row 33 的储藏室宽度段（x = FAKE.cx0..cx0+1）回填为墙：储藏室只剩 row 32，
+    // 南墙内面即 row 33 北面；此后只能经 row 31 的假门进入。放在全部 carve 之后防被覆盖。
+    for (x = FAKE.cx0; x < FAKE.cx0 + 2; x++) map.tiles[(FAKE.cy0 + 1) * map.w + x] = 0;
 
     // ---- POI ----
     var y0_0 = laneY0(0);
@@ -322,6 +327,20 @@
       if (!found) issues.push('spawn→bang_exit 精细网格不可达');
     } else {
       issues.push('缺 spawn / bang_exit POI');
+    }
+    // ⑤ v2.5 F5 假储藏室封闭性断言：储藏室（FAKE.cx0..cx0+1 × cy0）四邻除北侧假门/
+    //    观察窗所在 row（cy0-1，由门与窗框封闭）外，西/东/南三侧必须全是墙 tile；
+    //    南侧 row cy0+1 曾整段缺墙（A2-03：走廊可直走入、涂鸦悬空）。只加断言，
+    //    失败只进 issues（经 placeBang 既有日志/passOk 通道警告），不改其他行为。
+    for (var sx2 = FAKE.cx0; sx2 < FAKE.cx0 + 2; sx2++) {
+      if (map.tiles[(FAKE.cy0 + 1) * map.w + sx2] !== 0)
+        issues.push('假储藏室南侧缺墙 @' + sx2 + ',' + (FAKE.cy0 + 1));
+    }
+    for (var sy2 = FAKE.cy0; sy2 < FAKE.cy0 + 1; sy2++) {
+      if (map.tiles[sy2 * map.w + (FAKE.cx0 - 1)] !== 0)
+        issues.push('假储藏室西侧缺墙 @' + (FAKE.cx0 - 1) + ',' + sy2);
+      if (map.tiles[sy2 * map.w + (FAKE.cx0 + 2)] !== 0)
+        issues.push('假储藏室东侧缺墙 @' + (FAKE.cx0 + 2) + ',' + sy2);
     }
     return { ok: issues.length === 0, issues: issues };
   }

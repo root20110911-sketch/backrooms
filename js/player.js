@@ -989,7 +989,7 @@
       this.vel.x = BR.damp(this.vel.x, 0, cfg.FRICTION, dt);
       this.vel.z = BR.damp(this.vel.z, 0, cfg.FRICTION, dt);
     }
-    if (this._collide) world.moveCircle(this.pos, this.vel.x * dt, this.vel.z * dt, cfg.RADIUS);
+    if (this._collide) world.moveCircle(this.pos, this.vel.x * dt, this.vel.z * dt, cfg.RADIUS, true);
     else { this.pos.x += this.vel.x * dt; this.pos.z += this.vel.z * dt; }
 
     // E 路（v1.4）：跳跃 / 游泳垂直物理（真实位移，非镜头晃动）
