@@ -381,59 +381,11 @@
         var doorZ = sz + wd.z * (wd.s * T - T / 2 - 0.12);
         var doorRotY = Math.atan2(-wd.x, -wd.z);
         W.addChunkContent(p.tx, p.ty, function (group) {
-          // —— 楼梯 flight（v2.5 重建）——
-          // 旧实现根因（原代码即此处）：踏板组硬编码在 POI 中心 (sx,sz)、沿 +Z 轴
-          // 逐级下降，与贴最近墙的钢门（门面方向由 wd 决定）完全脱钩——轴线与
-          // 门洞中心线垂直且错位约 4.4m；只有 5 级薄踏面（厚 0.18、无立板/弦/基座），
-          // 首级底面悬空 0.66m；末级起沉到地板平面以下被地板遮挡，只剩半截浮板；
-          // 配套的坑面/微光面也在地板以下（y=-0.62/-0.55），同样不可见，一并移除。
-          // 新实现：参照 lv_l7.js buildStairsDeck 的正确写法——锚点用同块算好的
-          // 钢门门位（原点 = doorX/doorZ，rotation.y = doorRotY，局部 +Z 朝房间内
-          // 即 -wd），梯跑轴线即门洞中心线；两侧全高侧板落地作支撑（同 L7 侧板），
-          // 平台按 L7 两件式（顶板 + 下方实心基座）。门前留 1.15m 落地站立区
-          // （深色门槛面收边），其后 7 级踏步逐级朝钢门下降（下行终点即钢门，
-          // 与门上「下行」路牌语义一致）：踏步用实心盒，盒高 = 该级顶面高
-          // （≥ 级高 0.18，即级高 ≤ 盒厚）、盒深 = 级距 0.5 相邻相接无空气缝、
-          // 盒底落在地板上，无悬空。材质沿用楼梯间深色踏面 0x2c2e33、侧板/基座
-          // 深钢 0x232529（同 L7 steelD 的深色侧板口径）。
-          // 注意：楼梯本体不登记道具碰撞——它在钢门接近路径上且切出靠门口交互，
-          // 登记会挡住交互；门前 1.15m 站立区保持可站立。
-          var flight = new THREE.Group();
-          flight.position.set(doorX, 0, doorZ);
-          flight.rotation.y = doorRotY;
-          var stepM = new THREE.MeshLambertMaterial({ color: 0x2c2e33 });
-          var boardM = new THREE.MeshLambertMaterial({ color: 0x232529 });
-          var SW = 2.2;               // 梯宽（与旧踏板、L7 楼梯同宽）
-          var RISE = 0.18, TREAD = 0.5, NST = 7;   // 7 级 × 0.18 = 1.26 走完总高差
-          var Z0 = 1.21;              // 首级前面距门中心：0.06 门厚半 + 1.15 站立区
-          for (var i = 0; i < NST; i++) {
-            var topY = (i + 1) * RISE; // i=0 为靠门最低级（顶面 0.18），向房间内逐级升高
-            var stp = new THREE.Mesh(new THREE.BoxGeometry(SW, topY, TREAD), stepM);
-            stp.position.set(0, topY / 2, Z0 + TREAD * (i + 0.5));
-            flight.add(stp);
-          }
-          var runEnd = Z0 + TREAD * NST;   // 4.71：踏步区远端
-          var platTop = NST * RISE;        // 1.26：平台顶面 = 最高级顶面
-          // 平台（L7 两件式：顶板 + 下方实心基座落地）
-          var platBase = new THREE.Mesh(new THREE.BoxGeometry(SW, platTop - 0.1, 0.9), boardM);
-          platBase.position.set(0, (platTop - 0.1) / 2, runEnd + 0.45);
-          flight.add(platBase);
-          var platSlab = new THREE.Mesh(new THREE.BoxGeometry(SW, 0.1, 0.9), stepM);
-          platSlab.position.set(0, platTop - 0.05, runEnd + 0.45);
-          flight.add(platSlab);
-          // 两侧全高侧板（同 L7 侧板：0.08 厚、高 = 总高差、长 = 梯跑长，底落地板作支撑）
-          [-1, 1].forEach(function (sd) {
-            var board = new THREE.Mesh(new THREE.BoxGeometry(0.08, platTop, TREAD * NST), boardM);
-            board.position.set(sd * 1.15, platTop / 2, Z0 + TREAD * NST / 2);
-            flight.add(board);
-          });
-          // 门前深色门槛面（站立区收边，与楼梯间深色金属风格一致）
-          var sill = new THREE.Mesh(new THREE.PlaneGeometry(SW, 1.15),
-            new THREE.MeshBasicMaterial({ color: 0x0a0b0d }));
-          sill.rotation.x = -Math.PI / 2;
-          sill.position.set(0, 0.02, 0.06 + 0.575);
-          flight.add(sill);
-          W.reg(group, flight);
+          // —— 装饰楼梯已移除（v2.5.1，用户裁定）——
+          // 本关的下行实际是走到钢门前按 E 交互触发切出；v2.5 曾按 L7 口径在此
+          // 重建过一套 7 级踏步+平台的装饰楼梯，但它既与「下行」语义矛盾、又未
+          // 登记碰撞（拍摄时可穿入），故整套 prop 删除。楼梯间只保留钢门与
+          // 「▼ 下行 / STAIRS」路牌，房间为空。
           // 钢门框 + 标识（贴最近的墙，朝向房间；门用薄盒体而非平面，避免共面射线 miss）
           var door = new THREE.Mesh(new THREE.BoxGeometry(1.3, 2.4, 0.12),
             new THREE.MeshLambertMaterial({ map: BR.Textures.get('l6_door_steel') }));
