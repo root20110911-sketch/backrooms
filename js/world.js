@@ -111,6 +111,9 @@
 
   // H 路：遮挡检查用的复用向量（避免每 0.12s 的交互检测产生 GC）
   const _occDir = new THREE.Vector3();
+  // 性能优化：手电方向逐帧计算复用的向量/欧拉角（原先每帧 new Vector3 + new Euler）
+  const _flashDir = new THREE.Vector3();
+  const _flashEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
   W.tile = function (tx, ty) {
     const m = this.map;
@@ -642,8 +645,8 @@
     const pcx = Math.floor(BR.worldTX(px) / CH), pcy = Math.floor(BR.worldTY(pz) / CH);
     const q = BR.QUALITY || {};
     const R = 2; // 加载半径（区块）
-    // 入队缺失区块（按距离排序）
-    this.buildQueue = [];
+    // 入队缺失区块（按距离排序）。性能优化：队列数组复用，不再每帧新建
+    if (!this.buildQueue) this.buildQueue = []; else this.buildQueue.length = 0;
     for (let cy = pcy - R; cy <= pcy + R; cy++)
       for (let cx = pcx - R; cx <= pcx + R; cx++) {
         // C 路 v1.4：完全落在地图外的区块不建（56×56 恰为 7×8 区块，无半包区块）
@@ -720,29 +723,51 @@
     }
   };
 
+  // 性能优化：实体上下文对象只建一次、逐帧刷新字段（原先每帧新建对象 + 闭包）。
+  // Entities.update 在同一帧内同步消费 ctx，不跨帧持有，复用安全；
+  // losTo 改读 ctx 上缓存的本帧坐标，语义与原先一致。
   W.entityCtx = function (px, pz) {
     const P = BR.Player;
-    return {
-      playerPos: P ? P.pos : new THREE.Vector3(),
-      playerNoise: P ? P.noise : 0,
-      crouching: P ? P.crouching : false,
-      running: P ? P.running : false,
-      flashlightOn: P ? P.flashlightOn : false,
-      losTo: (x, z) => this.los(px, pz, x, z),
-      blackout: this.blackout
-    };
+    if (!this._ctxObj) {
+      const self = this;
+      this._ctxObj = {
+        playerPos: new THREE.Vector3(),
+        playerNoise: 0, crouching: false, running: false, flashlightOn: false,
+        blackout: false, _px: 0, _pz: 0,
+        losTo: (x, z) => self.los(self._ctxObj._px, self._ctxObj._pz, x, z)
+      };
+    }
+    const c = this._ctxObj;
+    if (P) c.playerPos = P.pos;
+    c.playerNoise = P ? P.noise : 0;
+    c.crouching = P ? P.crouching : false;
+    c.running = P ? P.running : false;
+    c.flashlightOn = P ? P.flashlightOn : false;
+    c.blackout = this.blackout;
+    c._px = px; c._pz = pz;
+    return c;
   };
 
   W.updateLights = function (dt, px, pz) {
     const q = BR.QUALITY || {};
     const maxL = q.maxLights || 5;
-    // 最近的灯具分配点光源
-    const near = [];
-    for (const f of this.fixtures) {
-      const d2 = (f.x - px) * (f.x - px) + (f.z - pz) * (f.z - pz);
-      if (d2 < 30 * 30) near.push({ f, d2 });
+    // 最近的灯具分配点光源。性能优化：选择结果缓存 0.25s（或玩家移动 >4m、
+    // 灯具总数变化时重算）——灯光绑定本身有淡入淡出，4Hz 重选无可感差异；
+    // 原先每帧全量遍历 + 新建 {f,d2} 对象 + 排序，是逐帧 GC 的主要来源之一。
+    // 注意：blackout/闪烁/强度仍在下方逐帧计算，不受缓存影响。
+    let near = this._nearSel;
+    const mdx = px - (this._nearSelX || 0), mdz = pz - (this._nearSelZ || 0);
+    if (!near || this.time - (this._nearSelT || 0) > 0.25 ||
+        mdx * mdx + mdz * mdz > 16 || this._nearSelNF !== this.fixtures.length) {
+      near = this._nearSel = [];
+      for (const f of this.fixtures) {
+        const d2 = (f.x - px) * (f.x - px) + (f.z - pz) * (f.z - pz);
+        if (d2 < 30 * 30) near.push({ f, d2 });
+      }
+      near.sort((a, b) => a.d2 - b.d2);
+      this._nearSelT = this.time; this._nearSelX = px; this._nearSelZ = pz;
+      this._nearSelNF = this.fixtures.length;
     }
-    near.sort((a, b) => a.d2 - b.d2);
     const th = this.theme || {};
     const lp = this._lp || {};
     const lightHex = lp.light != null ? lp.light : (th.light != null ? th.light : 0xfff0d2); // v2.4 W-shadowlight：关卡灯光气质色温
@@ -810,7 +835,7 @@
       if (on) {
         const P = BR.Player;
         this.flashSpot.position.set(px, P.eyeY(), pz);
-        const d = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(P.pitch, P.yaw, 0, 'YXZ'));
+        const d = _flashDir.set(0, 0, -1).applyEuler(_flashEuler.set(P.pitch, P.yaw, 0));
         this.flashSpot.target.position.set(px + d.x * 8, P.eyeY() + d.y * 8, pz + d.z * 8);
       }
     }
