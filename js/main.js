@@ -10,6 +10,9 @@
     flags: { clues: 0, gens: 0 },
     renderer: null,
     fps: 0, _fpsN: 0, _fpsT: 0,
+    // 性能优化：动态分辨率（仅 quality=auto 时启用，手动档不干预）
+    _dynOn: false, _dynSteps: null, _dynIdx: 0, _dynPr: null, _dynShadow: null,
+    _dynLowN: 0, _dynHighN: 0, _dynCool: 0, _dynWarm: 0,
     _saveT: 0,
     checkpoint: null,
     // P0-4：异步关卡加载保护
@@ -138,7 +141,72 @@
     if (BR.World && BR.World.setShadowLevel) BR.World.setShadowLevel(BR.QUALITY.shadow | 0);
     // H 路：灯池已存在（换关/设置页切画质）则立即按档重调灯距与粒子
     if (BR.World && BR.World.scene && BR.World.applyLightTuning) BR.World.applyLightTuning();
+    // 性能优化：auto 档启用动态分辨率——以当前档为上限（cap），阶梯在 cap..1.0 之间；
+    // 起步取 ≤1.5 的第一档（桌面 high 不再一上来就 pr=2 全速渲染），阴影起步 1 档
+    // （桌面 1024 / 移动 512），帧率持续富余时由 _dynEval 先升阴影、再升分辨率回上限，
+    // 持续不足时先降分辨率、到底再降阴影（下限 1，不自动关阴影，保观感）。
+    // 手动档（high/medium/low）：_dynOn=false，本函数其余行为与以往完全一致。
+    if (s === 'auto') {
+      const cap = this._pr;
+      const steps = [2, 1.75, 1.5, 1.25, 1.1, 1.0].filter(x => x <= cap + 1e-6);
+      if (!steps.length || steps[0] !== cap) steps.unshift(cap);
+      this._dynSteps = steps;
+      let idx = steps.findIndex(x => x <= 1.5 + 1e-6);
+      this._dynIdx = idx >= 0 ? idx : 0;
+      this._dynPr = steps[this._dynIdx];
+      this._dynShadow = Math.min(BR.QUALITY.shadow | 0, 1);
+      this._dynLowN = 0; this._dynHighN = 0; this._dynCool = 0; this._dynWarm = 6;
+      this._dynOn = true;
+      if (this.renderer) this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._dynPr));
+      if (BR.World && BR.World.setShadowLevel && this._dynShadow !== (BR.QUALITY.shadow | 0)) {
+        BR.World.setShadowLevel(this._dynShadow);
+      }
+    } else {
+      this._dynOn = false; this._dynSteps = null; this._dynPr = null; this._dynShadow = null;
+    }
     BR.log('quality', q);
+  };
+
+  /* 性能优化：动态分辨率评估（每产生一个 FPS 样本调用一次，样本约 0.5s）。
+   * 防抖：切关/切档后宽限 6 个样本；每次调整后冷却 5 个样本；
+   * 降档需连续 2 个样本 <45fps，升档需连续 6 个样本 >57fps（迟滞防横跳）。
+   * 注：G.fps 由钳制后的 dt 累计，真实帧率 <20 时读数饱和在 20——仍 <45，
+   * 降档方向不受影响；>57 区间读数真实，升档判断可信。 */
+  G._dynEval = function (f) {
+    if (!this._dynOn || !this.renderer || !this._dynSteps) return;
+    if (this._dynWarm > 0) { this._dynWarm--; return; }
+    if (this._dynCool > 0) this._dynCool--;
+    if (f < 45) { this._dynLowN++; this._dynHighN = 0; }
+    else if (f > 57) { this._dynHighN++; this._dynLowN = 0; }
+    else { this._dynLowN = 0; this._dynHighN = 0; }
+    const maxIdx = this._dynSteps.length - 1;
+    if (this._dynLowN >= 2 && this._dynCool === 0) {
+      if (this._dynIdx < maxIdx) {
+        this._dynIdx++;
+        this._dynPr = this._dynSteps[this._dynIdx];
+        this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._dynPr));
+        this._dynCool = 5; this._dynLowN = 0;
+        BR.log('dyn pr ->', this._dynPr, 'fps', f.toFixed(1));
+      } else if (this._dynShadow > 1) {
+        this._dynShadow--;
+        if (BR.World && BR.World.setShadowLevel) BR.World.setShadowLevel(this._dynShadow);
+        this._dynCool = 5; this._dynLowN = 0;
+        BR.log('dyn shadow ->', this._dynShadow, 'fps', f.toFixed(1));
+      }
+    } else if (this._dynHighN >= 6 && this._dynCool === 0) {
+      if (this._dynShadow < (BR.QUALITY.shadow | 0)) {
+        this._dynShadow++;
+        if (BR.World && BR.World.setShadowLevel) BR.World.setShadowLevel(this._dynShadow);
+        this._dynCool = 5; this._dynHighN = 0;
+        BR.log('dyn shadow ->', this._dynShadow, 'fps', f.toFixed(1));
+      } else if (this._dynIdx > 0) {
+        this._dynIdx--;
+        this._dynPr = this._dynSteps[this._dynIdx];
+        this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, this._dynPr));
+        this._dynCool = 5; this._dynHighN = 0;
+        BR.log('dyn pr ->', this._dynPr, 'fps', f.toFixed(1));
+      }
+    }
   };
 
   /* ---------- 开局 / 读档 ---------- */
@@ -255,6 +323,9 @@
           // H 路：灯池刚重建，按当前画质档调灯距/粒子（applyQuality 在开局已跑过，
           // 但那时灯池还不存在；设置页切画质则走 applyQuality 里的即时重调）
           if (BR.World.applyLightTuning) BR.World.applyLightTuning();
+          // 性能优化：World.build 会按 QUALITY.shadow 重置阴影档，auto 动态档需在建后恢复
+          if (this._dynOn && this._dynShadow != null && BR.World.setShadowLevel) BR.World.setShadowLevel(this._dynShadow);
+          this._dynWarm = 6; // 切关宽限：建图突发开销不触发降档（约 3 秒样本）
           // 从事件恢复计数器
           this.flags.gens = ws.events.filter(e => e.indexOf('gen_') === 0).length;
           this.flags.clues = ws.events.filter(e => e.indexOf('clue_') === 0).length;
@@ -531,7 +602,11 @@
     dt = Math.min(dt, 0.05);
     // FPS
     this._fpsN++; this._fpsT += dt;
-    if (this._fpsT >= 0.5) { this.fps = this._fpsN / this._fpsT; this._fpsN = 0; this._fpsT = 0; }
+    if (this._fpsT >= 0.5) {
+      this.fps = this._fpsN / this._fpsT; this._fpsN = 0; this._fpsT = 0;
+      // 性能优化：动态分辨率只在游玩中评估（暂停/标题帧率不作数）
+      if (this.state === 'playing') this._dynEval(this.fps);
+    }
 
     if (this.state === 'playing' || this.state === 'paused') {
       if (this.state === 'playing') {

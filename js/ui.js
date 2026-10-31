@@ -880,7 +880,8 @@
 
   /* ---------- 调试面板 ---------- */
   U.updateDebug = function () {
-    if (!BR.DEBUG) { this.$debug.style.display = 'none'; return; }
+    // 性能优化：非 DEBUG 时只在首次隐藏（原先每帧写一次 style）
+    if (!BR.DEBUG) { if (this.$debug.style.display !== 'none') this.$debug.style.display = 'none'; return; }
     this.$debug.style.display = 'block';
     const st = BR.World.getStats();
     const fps = BR.Game.fps || 0;
